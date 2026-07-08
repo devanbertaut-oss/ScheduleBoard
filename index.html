@@ -6,10 +6,26 @@
 <title>DPW547 Look-Ahead</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <style>
+  html{color-scheme:dark}
   html,body{margin:0;background:#0e1014}
+  html[data-boot="light"]{color-scheme:light}
+  html[data-boot="light"],html[data-boot="light"] body{background:#f4f5f7}
   #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
     color:#8f97a8;font:600 15px "Barlow Condensed",system-ui,sans-serif;letter-spacing:.05em}
+  html[data-boot="light"] #boot{color:#5b6270}
 </style>
+<script>
+  /* Resolve the saved theme before first paint so the boot screen and page
+     chrome don't flash the wrong background on light-mode machines. */
+  (function(){
+    try{
+      var t = localStorage.getItem("lafable-theme") || "system";
+      var light = t==="light" || (t==="system" &&
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
+      document.documentElement.setAttribute("data-boot", light? "light":"dark");
+    }catch(e){}
+  })();
+</script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
@@ -175,6 +191,25 @@ function LookAhead(){
   const [modal, setModal] = useState(null); // {type, ...}
   const [addingIn, setAddingIn] = useState(null); // 'crew'|'sub'|'site'
   const [loaded, setLoaded] = useState(false);
+  const [umOverrides, setUmOverrides] = useState({}); // catalog idx -> edited UM
+  const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
+    try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
+  });
+
+  /* theme: reflect onto the root + document so native controls and the boot
+     background follow the chosen mode (system follows OS prefers-color-scheme) */
+  useEffect(()=>{
+    try{ localStorage.setItem("lafable-theme", theme); }catch(e){}
+    const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+    const apply = ()=>{
+      const light = theme==="light" || (theme==="system" && mq && mq.matches);
+      document.documentElement.setAttribute("data-boot", light? "light":"dark");
+      document.documentElement.style.colorScheme = light? "light":"dark";
+      document.body.style.background = light? "#f4f5f7":"#0e1014";
+    };
+    apply();
+    if(theme==="system" && mq){ mq.addEventListener?.("change", apply); return ()=>mq.removeEventListener?.("change", apply); }
+  },[theme]);
 
   /* persistence */
   useEffect(()=>{ (async()=>{
@@ -186,6 +221,7 @@ function LookAhead(){
         if (s.tasks) setTasks(s.tasks); if (s.logs) setLogs(s.logs);
         if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
         if (s.eosMeta) setEosMeta(s.eosMeta); if (s.wk) setWk(s.wk);
+        if (s.umOverrides) setUmOverrides(s.umOverrides);
       }
     }catch(e){ /* first run — seeds stand */ }
     setLoaded(true);
@@ -195,9 +231,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,loaded]);
 
   /* fonts */
   useEffect(()=>{
@@ -260,7 +296,7 @@ function LookAhead(){
   const subsOnly  = crews.filter(c=>c.type==="sub");
 
   return (
-    <div className="la-root">
+    <div className="la-root" data-theme={theme}>
       <style>{CSS}</style>
 
       {/* ============ TOP BAR ============ */}
@@ -284,6 +320,10 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
+          <button className="themebtn" title={"Theme: "+theme+" — click to change"}
+            onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
+            {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
+          </button>
         </div>
       </header>
 
@@ -335,14 +375,14 @@ function LookAhead(){
       </>}
 
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} openSched={ci=>setModal({type:"sched",ci})}/>}
+      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>}
 
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
-      {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,logs,taskCalc,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
@@ -730,7 +770,12 @@ function Trends({crews,tasks,logs,taskCalc,wk}){
 }
 
 /* ============ CATALOG / CTC ============ */
-function CatalogView({installedFor,fcst,openSched}){
+function CatalogView({installedFor,fcst,umOverrides,setUmOverrides,openSched}){
+  const setUM = (i,v)=> setUmOverrides(o=>{
+    const c={...o}; const t=v.trim();
+    if(!t || t.toUpperCase()===CATALOG[i][CI.UM].toUpperCase()) delete c[i]; else c[i]=t.toUpperCase();
+    return c;
+  });
   const [q,setQ]=useState("");
   const rows = useMemo(()=>{
     const s=q.trim().toLowerCase();
@@ -749,7 +794,9 @@ function CatalogView({installedFor,fcst,openSched}){
           return <tr key={i}>
             <td className="mono">{r[CI.CC]}</td><td className="mono">{r[CI.PAY]}</td>
             <td><i className="dot" style={{background:CATS[r[CI.CAT]].bg}}/>{r[CI.TASK].slice(0,44)}{r[CI.TASK].length>44?"…":""}</td>
-            <td>{r[CI.UM]}</td><td className="r">{r[CI.MH]?fmtN(r[CI.MH],3):"—"}</td>
+            <td><input className="umin" value={umOverrides[i] ?? r[CI.UM]} title="Unit of measure (editable)"
+              onChange={e=>setUM(i,e.target.value)} maxLength={8}/></td>
+            <td className="r">{r[CI.MH]?fmtN(r[CI.MH],3):"—"}</td>
             <td className="r">{r[CI.BID]?fmt$(r[CI.BID],2):"—"}</td>
             <td className={"r "+(f.drift>0.005?"neg":"")}>{fmt$(unitCost(r),2)}{f.drift?` → ${fmt$(f.uc,2)}`:""}</td>
             <td className="r">{est?fmtN(est):"—"}</td><td className="r">{fmtN(inst)}</td>
@@ -763,35 +810,113 @@ function CatalogView({installedFor,fcst,openSched}){
 }
 
 /* ============ PRINT ============ */
-function PrintModal({crews,weekTasks,logs,taskCalc,wk,close}){
-  const [preset,setPreset]=useState("brett");
-  const P={
-    brett:{label:"Brett — field quantities", cols:["Day","Crew","Item","Plan qty","Installed","Δ"]},
-    mike:{label:"Mike — planned vs actual", cols:["Day","Crew","Item","Plan qty","Actual","PPC","Plan MH","Act MH"]},
-    fredy:{label:"Fredy — budget vs actual cost", cols:["Day","Crew","Item","Plan qty","Budget cost","Earned $","Actual MH $","Var"]},
+/* Report presets choose a default set of columns; every column is individually
+   toggleable afterwards. Columns reuse the same live calcs as the rest of the app
+   (taskCalc / fcst / installedFor / unitCost). Suffixes: (wk)=this week per task,
+   (td)=item to-date from logged data (live CTC), (item)=whole pay item / budget. */
+function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close}){
+  const REPORTS = {
+    quantities:{label:"Quantities — plan vs actual", cols:["day","crew","pay","desc","loc","planq","actq","qvar","pct"]},
+    cost:{label:"Cost — budget vs actual vs forecast", cols:["day","crew","pay","desc","buduc","fuc","actd","budi","cvar","fac"]},
+    field:{label:"Field — installed vs plan", cols:["day","crew","pay","desc","loc","planq","actq","pct","planmh","actmh"]},
   };
-  const rows = weekTasks.slice().sort((a,b)=>a.day-b.day).map(t=>({t,c:taskCalc(t), crew:crews.find(x=>x.id===t.res)?.name||"?"}));
+  const [report,setReport]=useState("quantities");
+  const [sel,setSel]=useState(()=>new Set(REPORTS.quantities.cols));
+  const [inclCrews,setInclCrews]=useState(true);
+  const [inclSubs,setInclSubs]=useState(true);
+  const [inclNotes,setInclNotes]=useState(true);
+  const pick = r => { setReport(r); setSel(new Set(REPORTS[r].cols)); };
+  const toggle = k => setSel(s=>{ const n=new Set(s); n.has(k)?n.delete(k):n.add(k); return n; });
+
+  // item-to-date aggregates from all logged work (matches fcst's live-CTC basis)
+  const tdMap = useMemo(()=>{
+    const m={};
+    tasks.forEach(t=>{ const l=logs[t.id]; if(l){ (m[t.ci]=m[t.ci]||{qty:0,mh:0}); m[t.ci].qty+=l.qty||0; m[t.ci].mh+=l.mh||0; } });
+    Object.keys(m).forEach(ci=>{ const it=CATALOG[ci]; m[ci].actCost = m[ci].mh*cfg.laborRate + m[ci].qty*(it[CI.UM$]+it[CI.UT]); });
+    return m;
+  },[tasks,logs,cfg]);
+
+  const COLS = [
+    {k:"day",   label:"Day",              get:r=>DAYS[r.t.day]},
+    {k:"crew",  label:"Crew / Sub",       get:r=>r.crew},
+    {k:"phase", label:"Phase Code",       get:r=>r.it[CI.CC]},
+    {k:"loc",   label:"Location",         get:r=>r.sta},
+    {k:"pay",   label:"Pay Item",         get:r=>r.it[CI.PAY]},
+    {k:"desc",  label:"Description",      get:r=>r.it[CI.TASK]},
+    {k:"planq", label:"Plan Qty (wk)",  n:1, get:r=>fmtN(r.t.qty)+" "+r.um},
+    {k:"actq",  label:"Actual Qty (wk)",n:1, get:r=>r.lg?fmtN(r.c.actQty):"—"},
+    {k:"qvar",  label:"Qty Var",        n:1, get:r=>r.lg?fmtN(r.c.actQty-r.t.qty):"—"},
+    {k:"rem",   label:"Remaining (task)",n:1, get:r=>fmtN((r.it[CI.EST]||0)-installedFor(r.ci))},
+    {k:"pct",   label:"%",              n:1, get:r=>r.lg&&r.t.qty?pct(r.c.actQty/r.t.qty):"—"},
+    {k:"planmh",label:"Plan MH (wk)",   n:1, get:r=>fmtN(r.c.planMH)},
+    {k:"actmh", label:"Actual MH (wk)", n:1, get:r=>r.lg?fmtN(r.c.actMH):"—"},
+    {k:"pf",    label:"PF",             n:1, get:r=>r.c.actMH?(r.c.earnMH/r.c.actMH).toFixed(2):"—"},
+    {k:"buduc", label:"Budget UC",      n:1, get:r=>fmt$(unitCost(r.it),2)},
+    {k:"fuc",   label:"Fcst UC",        n:1, get:r=>fmt$(r.f.uc,2)},
+    {k:"aucd",  label:"Actual UC (td)", n:1, get:r=>r.td.qty?fmt$(r.td.actCost/r.td.qty,2):"—"},
+    {k:"budi",  label:"Budget $ (item)",n:1, get:r=>fmt$(unitCost(r.it)*(r.it[CI.EST]||0))},
+    {k:"actd",  label:"Actual $ (td)",  n:1, get:r=>(r.td.qty||r.td.mh)?fmt$(r.td.actCost):"—"},
+    {k:"earnp", label:"Earned Pay (td)",n:1, get:r=>fmt$(r.td.qty*r.it[CI.BID])},
+    {k:"fac",   label:"FAC",            n:1, get:r=>fmt$(r.fac)},
+    {k:"cvar",  label:"Cost Var",       n:1, get:r=>fmt$(unitCost(r.it)*(r.it[CI.EST]||0)-r.fac)},
+  ];
+
+  const rows = weekTasks.slice().sort((a,b)=>a.day-b.day).map(t=>{
+    const c=taskCalc(t), it=c.it, ci=t.ci, cr=crews.find(x=>x.id===t.res);
+    const f=fcst(ci), td=tdMap[ci]||{qty:0,mh:0,actCost:0};
+    return { t, c, it, ci, lg:logs[t.id], crew:cr?.name||"?", ctype:cr?.type||"crew",
+      um:umOverrides[ci] ?? it[CI.UM],
+      sta:t.sta?`${fmtN(t.sta[0],2)}–${fmtN(t.sta[1],2)}`:"—",
+      f, td, fac:f.uc*(it[CI.EST]||0) };
+  }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs));
+
+  const active = COLS.filter(c=>sel.has(c.k));
+  const rowName = id => (siteRows.find(s=>s.id===id)||crews.find(c=>c.id===id)||{}).name || "";
+  const noteList = inclNotes ? notes.slice().sort((a,b)=>a.day-b.day) : [];
+
   return (
-    <Modal close={close} w={760}>
-      <div className="crewhead"><h3 style={{margin:0}}>Print / PDF — {wkTitle(wk)}</h3>
-        <select value={preset} onChange={e=>setPreset(e.target.value)}>{Object.entries(P).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select>
-        <button className="cta" onClick={()=>window.print()}>Print</button>
+    <Modal close={close} w={860}>
+      <div className="prcfg no-print">
+        <div className="crewhead"><h3 style={{margin:0}}>Print / export to PDF — {wkTitle(wk)}</h3></div>
+        <div className="repbtns">
+          {Object.entries(REPORTS).map(([k,v])=>
+            <button key={k} className={report===k?"on":""} onClick={()=>pick(k)}>{v.label}</button>)}
+        </div>
+        <div className="colhdr">Columns</div>
+        <div className="colgrid">
+          {COLS.map(c=>
+            <label key={c.k}><input type="checkbox" checked={sel.has(c.k)} onChange={()=>toggle(c.k)}/>{c.label}</label>)}
+        </div>
+        <div className="rowtoggles">
+          <label><input type="checkbox" checked={inclCrews} onChange={e=>setInclCrews(e.target.checked)}/>Crews</label>
+          <label><input type="checkbox" checked={inclSubs} onChange={e=>setInclSubs(e.target.checked)}/>Subcontractors</label>
+          <label><input type="checkbox" checked={inclNotes} onChange={e=>setInclNotes(e.target.checked)}/>Notes / deliveries</label>
+        </div>
+        <p className="dim2" style={{fontSize:12,margin:"10px 0 0"}}>Report covers the week on screen. Qty/MH = this week; UC / FAC / earned = item to-date (live CTC). Save as PDF from the browser dialog (landscape).</p>
+        <div className="btnrow">
+          <button className="cta" onClick={()=>window.print()}>Generate &amp; print</button>
+          <button className="ghost" onClick={close}>Cancel</button>
+        </div>
       </div>
+
       <div className="printarea">
-        <div className="ptitle">DPW547 · Job 2124013 — Look-Ahead · {wkTitle(wk)} · {P[preset].label}</div>
+        <div className="ptitle">DPW547 · Job 2124013 — Look-Ahead · {wkTitle(wk)} · {REPORTS[report].label}</div>
         <table className="dt list">
-          <thead><tr>{P[preset].cols.map(c=><th key={c} className={c.includes("qty")||c.includes("MH")||c.includes("$")||c==="Actual"||c==="PPC"||c==="Δ"||c==="Var"||c.includes("cost")||c.includes("Installed")?"r":""}>{c}</th>)}</tr></thead>
-          <tbody>{rows.map(({t,c,crew})=>{
-            const lg=logs[t.id];
-            const base=[DAYS[t.day],crew,c.it[CI.TASK].slice(0,36)];
-            let cells;
-            if(preset==="brett") cells=[...base, fmtN(t.qty)+" "+c.it[CI.UM], lg?fmtN(c.actQty):"—", lg?fmtN(c.actQty-t.qty):"—"];
-            else if(preset==="mike") cells=[...base, fmtN(t.qty), lg?fmtN(c.actQty):"—", lg&&t.qty?pct(c.actQty/t.qty):"—", fmtN(c.planMH), lg?fmtN(c.actMH):"—"];
-            else { const earned=c.actQty*unitCost(c.it), spent=c.actMH*58 + c.actQty*(c.it[CI.UM$]+c.it[CI.UT]);
-              cells=[...base, fmtN(t.qty), fmt$(c.budCost), lg?fmt$(earned):"—", lg?fmt$(spent):"—", lg?fmt$(earned-spent):"—"]; }
-            return <tr key={t.id}>{cells.map((x,i)=><td key={i} className={i>2?"r":""}>{x}</td>)}</tr>;
-          })}</tbody>
+          <thead><tr>{active.map(c=><th key={c.k} className={c.n?"r":""}>{c.label}</th>)}</tr></thead>
+          <tbody>{rows.length? rows.map(r=>
+            <tr key={r.t.id}>{active.map(c=><td key={c.k} className={c.n?"r":""}>{c.get(r)}</td>)}</tr>)
+            : <tr><td colSpan={Math.max(1,active.length)} className="empty">No matching tasks scheduled this week.</td></tr>}
+          </tbody>
         </table>
+        {inclNotes && noteList.length>0 && <>
+          <div className="ptitle" style={{marginTop:16}}>Notes &amp; Deliveries</div>
+          <table className="dt list">
+            <thead><tr><th>Day</th><th>Where</th><th>Note</th></tr></thead>
+            <tbody>{noteList.map(n=>
+              <tr key={n.id}><td>{DAYS[n.day]}</td><td>{rowName(n.row)}</td><td>{n.text}</td></tr>)}
+            </tbody>
+          </table>
+        </>}
       </div>
     </Modal>
   );
@@ -842,7 +967,20 @@ function Modal({children,close,w=520}){
 /* ============ CSS ============ */
 const CSS = `
 .la-root{--bg:#0e1014;--pn:#161923;--pn2:#1d212c;--ln:#2a2f3c;--tx:#e9ebf2;--dm:#8f97a8;--dm2:#626a7c;--acc:#f97316;--good:#4ade80;--bad:#f87171;--warn:#fbbf24;
+ --tabon:#2a3040;--cellln:#1b1f29;--cellhov:#141824;--mdln:#333a4a;--ovl:rgba(5,7,12,.72);--barfill:#3f77c9;--pillGoodBg:#153524;--pillBadBg:#3a1717;
+ --noteWbg:#3d2f12;--noteWln:#7a5a1c;--noteWtx:#fcd77f;--noteCbg:#43181a;--noteCln:#8a3237;--noteCtx:#ffb0b4;--noteIbg:#3a3620;--noteIln:#6b6236;--noteItx:#efe3a8;
+ color-scheme:dark;
  background:var(--bg);color:var(--tx);min-height:100vh;font:14px/1.45 "IBM Plex Mono",ui-monospace,monospace;padding-bottom:60px}
+.la-root[data-theme="dark"]{color-scheme:dark}
+.la-root[data-theme="light"]{--bg:#f4f5f7;--pn:#ffffff;--pn2:#eef0f4;--ln:#d5d9e0;--tx:#1a1d24;--dm:#5b6270;--dm2:#8a91a0;--acc:#e2600f;--good:#15803d;--bad:#dc2626;--warn:#b45309;
+ --tabon:#dfe4ec;--cellln:#e4e7ee;--cellhov:#eef1f6;--mdln:#cdd3dd;--ovl:rgba(30,36,48,.42);--barfill:#3f77c9;--pillGoodBg:#dcfce7;--pillBadBg:#fee2e2;
+ --noteWbg:#fdf3d6;--noteWln:#e6c876;--noteWtx:#8a6410;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#f6f2d6;--noteIln:#e0d79a;--noteItx:#6e6417;
+ color-scheme:light}
+@media (prefers-color-scheme: light){
+.la-root[data-theme="system"]{--bg:#f4f5f7;--pn:#ffffff;--pn2:#eef0f4;--ln:#d5d9e0;--tx:#1a1d24;--dm:#5b6270;--dm2:#8a91a0;--acc:#e2600f;--good:#15803d;--bad:#dc2626;--warn:#b45309;
+ --tabon:#dfe4ec;--cellln:#e4e7ee;--cellhov:#eef1f6;--mdln:#cdd3dd;--ovl:rgba(30,36,48,.42);--barfill:#3f77c9;--pillGoodBg:#dcfce7;--pillBadBg:#fee2e2;
+ --noteWbg:#fdf3d6;--noteWln:#e6c876;--noteWtx:#8a6410;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#f6f2d6;--noteIln:#e0d79a;--noteItx:#6e6417;
+ color-scheme:light}}
 .la-root *{box-sizing:border-box}
 .la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Barlow Condensed",sans-serif;letter-spacing:.04em}
 .la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
@@ -851,7 +989,7 @@ const CSS = `
 .proj{color:var(--acc);font-size:13px;margin-left:8px}.proj em{color:var(--dm);font-style:normal}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
 .tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
-.tabs button.on{background:#2a3040;color:var(--tx)}
+.tabs button.on{background:var(--tabon);color:var(--tx)}
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Barlow Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
@@ -860,6 +998,9 @@ const CSS = `
 .cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#1a0d02!important}
 .cta:disabled{opacity:.4;cursor:default}
 .ghost{background:transparent}
+.themebtn{min-width:74px}
+.umin{width:60px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 6px;font:12px "IBM Plex Mono";text-transform:uppercase}
+.umin:focus{outline:none;border-color:var(--acc)}
 .danger{background:transparent;border:1px solid #7f2f2f;color:var(--bad);border-radius:8px;padding:7px 13px;font-weight:600;cursor:pointer}
 .sm{padding:4px 10px!important;font-size:13px!important}
 .kpis{display:flex;gap:10px;padding:12px 18px 4px;flex-wrap:wrap}
@@ -884,8 +1025,8 @@ thead .rescol{z-index:12}
 .secrow .addbtn:hover{color:var(--acc);border-color:var(--acc)}
 .addrow td{padding:8px 4px}
 .addrow input{background:var(--pn2);border:1px solid var(--acc);color:var(--tx);border-radius:8px;padding:6px 10px;width:280px;margin-right:8px;font:inherit}
-.cell{border-bottom:1px solid #1b1f29;border-left:1px solid #1b1f29;vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
-.cell:hover{background:#141824}
+.cell{border-bottom:1px solid var(--cellln);border-left:1px solid var(--cellln);vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
+.cell:hover{background:var(--cellhov)}
 .chip{display:inline-block;border:0;border-radius:8px;padding:5px 11px;font-weight:700;font-size:14px;cursor:pointer}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
@@ -898,16 +1039,16 @@ thead .rescol{z-index:12}
 .cnums{display:flex;justify-content:space-between;font-size:12px}
 .cnums b{font-weight:600}.cnums span{opacity:.7;font-size:10.5px}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
-.note.warn{background:#3d2f12;border-color:#7a5a1c;color:#fcd77f}
-.note.crit{background:#43181a;border-color:#8a3237;color:#ffb0b4}
-.note.info{background:#3a3620;border-color:#6b6236;color:#efe3a8}
-.ovl{position:fixed;inset:0;background:rgba(5,7,12,.72);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;z-index:60;overflow:auto}
-.modal{background:var(--pn);border:1px solid #333a4a;border-radius:14px;padding:20px 22px;width:100%;position:relative;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+.note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
+.note.crit{background:var(--noteCbg);border-color:var(--noteCln);color:var(--noteCtx)}
+.note.info{background:var(--noteIbg);border-color:var(--noteIln);color:var(--noteItx)}
+.ovl{position:fixed;inset:0;background:var(--ovl);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;z-index:60;overflow:auto}
+.modal{background:var(--pn);border:1px solid var(--mdln);border-radius:14px;padding:20px 22px;width:100%;position:relative;box-shadow:0 30px 70px rgba(0,0,0,.5)}
 .modal .x{position:absolute;top:10px;right:12px;background:none;border:0;color:var(--dm);font-size:15px;cursor:pointer}
 .chiprow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .pill{border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
 .pill.dim{background:var(--pn2);color:var(--dm);border:1px solid var(--ln)}
-.pill.pgood{background:#153524;color:var(--good)}.pill.pbad{background:#3a1717;color:var(--bad)}
+.pill.pgood{background:var(--pillGoodBg);color:var(--good)}.pill.pbad{background:var(--pillBadBg);color:var(--bad)}
 .dt{width:100%;border-collapse:collapse;margin:10px 0;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;overflow:hidden}
 .dt th,.dt td{padding:7px 10px;border-bottom:1px solid var(--ln);text-align:left;font-size:13px}
 .dt th{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:600;white-space:nowrap}
@@ -929,7 +1070,7 @@ thead .rescol{z-index:12}
 .btnrow .sp{flex:1}
 .search{width:100%;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:9px;padding:10px 12px;font:14px "IBM Plex Mono";margin-bottom:8px}
 .results{max-height:300px;overflow:auto;border:1px solid var(--ln);border-radius:10px}
-.results button{display:flex;width:100%;gap:8px;align-items:center;background:none;border:0;border-bottom:1px solid #1b1f29;color:var(--tx);padding:8px 10px;cursor:pointer;text-align:left;font:13px "IBM Plex Mono"}
+.results button{display:flex;width:100%;gap:8px;align-items:center;background:none;border:0;border-bottom:1px solid var(--cellln);color:var(--tx);padding:8px 10px;cursor:pointer;text-align:left;font:13px "IBM Plex Mono"}
 .results button:hover{background:var(--pn2)}
 .results i{width:9px;height:9px;border-radius:2px;flex:none}
 .results em{margin-left:auto;color:var(--dm2);font-style:normal;font-size:11px;flex:none}
@@ -940,7 +1081,7 @@ thead .rescol{z-index:12}
 .selitem button{margin-left:auto}
 .budbar label{color:var(--dm);font-size:12px}
 .bar{position:relative;height:10px;background:var(--bg);border:1px solid var(--ln);border-radius:6px;margin:5px 0 2px;overflow:hidden}
-.bar i{position:absolute;left:0;top:0;bottom:0;background:#3f77c9}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--barfill)}
 .bar u{position:absolute;top:0;bottom:0;background:var(--acc);opacity:.85}
 .warnline{color:var(--warn);font-size:12px;margin-top:4px}
 .qmode{display:flex;gap:6px;margin:12px 0 4px}
@@ -967,11 +1108,21 @@ thead .rescol{z-index:12}
 .printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
 .printarea .dt th{color:#555}
 .ptitle{font:700 15px "Barlow Condensed";margin-bottom:6px}
+.repbtns{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
+.repbtns button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:9px;padding:8px 14px;font:600 14px "Barlow Condensed";letter-spacing:.03em;cursor:pointer}
+.repbtns button.on{border-color:var(--acc);color:var(--acc)}
+.colhdr{font-family:"Barlow Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:12px;margin:2px 0 6px}
+.colgrid{columns:2;column-gap:28px;margin-bottom:8px}
+.colgrid label{display:flex;gap:9px;align-items:center;break-inside:avoid;padding:4px 0;font:15px "Barlow Condensed";color:var(--tx);text-transform:none;letter-spacing:0;cursor:pointer}
+.colgrid input,.rowtoggles input{width:16px;height:16px;accent-color:var(--acc);cursor:pointer;flex:none}
+.rowtoggles{display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--ln);padding-top:12px;margin-top:6px}
+.rowtoggles label{display:flex;gap:8px;align-items:center;font:15px "Barlow Condensed";color:var(--tx);cursor:pointer}
 @media print{
  body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
  .ovl{position:absolute;inset:0;background:#fff;padding:0}
  .modal{box-shadow:none;border:0;max-width:100%!important;background:#fff;color:#111}
- .modal .x,.btnrow,.crewhead select,.crewhead .cta{display:none}
+ .modal .x,.btnrow,.crewhead select,.crewhead .cta,.prcfg{display:none!important}
+ .prcfg,.prcfg *{visibility:hidden}
  .printarea{max-height:none;overflow:visible}
 }
 `;
