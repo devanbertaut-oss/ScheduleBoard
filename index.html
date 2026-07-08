@@ -1,0 +1,983 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>DPW547 Look-Ahead</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<style>
+  html,body{margin:0;background:#0e1014}
+  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#8f97a8;font:600 15px "Barlow Condensed",system-ui,sans-serif;letter-spacing:.05em}
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="boot">Loading the board&hellip;</div>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useEffect, useRef } = React;
+const _LS = (()=>{ try{ localStorage.setItem('__t','1'); localStorage.removeItem('__t'); return true; }catch(e){ return false; } })();
+const store = {
+  async get(k){ if(!_LS) return null; const v = localStorage.getItem(k); return v==null? null : { value:v }; },
+  async set(k,v){ if(_LS) localStorage.setItem(k, v); return { value:v }; }
+};
+
+/* ============================================================
+   DPW547 LOOK-AHEAD — Fable build v3
+   Catalog = real QPC (MHs tab unit-cost detail + PayItemTrackingAccount qtys)
+   CATALOG row: [pay, task, cc, um, mh/u, bid, uLabor, uEquip, uMat, uSub, uTruck, uMisc, budgetQty, reportedQty, cat]
+   ============================================================ */
+const CATALOG=[["C202(52)(C)","Concrete Roadway Breaking","02.45.01.00","SY",0.02,0.0,0.85,2.58,0.0,0.0,0.0,0.0,10796.07,0.0,4],["C202(52)(C)","Removal And Disposal Of Existing Portland Cement Concrete Pavement","02.45.13.13","SY",0.0667,0.0,2.6,1.85,0.0,5.0,0.0,0.0,10796.07,593.0,4],["C202(52)(D)","Removal And Disposal Of Existing Sidewalk, Driveway, Foot Lap (Concrete, Brick, Asphalt, Etc.)","02.45.13.15","SY",0.0,20.0,0.0,0.0,0.0,20.0,0.0,0.0,4703.05,489.0,4],["C202(52)(E)","Removal And Disposal Of Existing Curb (Concrete, Asphalt, Brick,  Etc.)","02.45.13.16","LF",0.004,1.8,0.17,0.52,0.0,0.42,0.0,0.0,315.0,0.0,4],["C202(52)(F)","Removal And Disposal Of Existing Curb And Gutter Bottom","02.45.13.20","LF",0.005,2.5,0.21,0.65,0.0,1.57,0.0,0.0,5410.0,0.0,4],["C202(52)(I)","Asphalt Roadway Breaking","02.45.02.00","SY",0.01,0.0,0.43,1.29,0.0,0.0,0.0,0.0,8450.0,0.0,4],["C202(52)(I)","Removal And Disposal Of Existing Asphaltic Concrete Pavement","02.45.13.14","SY",0.0667,0.0,2.6,1.85,0.0,5.0,0.0,0.0,8450.0,0.0,4],["C203(51)","Roadway Excavation","31.23.19.00","CY",0.2625,52.0,10.25,7.27,0.0,15.75,0.0,0.0,5492.46,132.6,5],["GI 0200(02)","Unsuitable Subgrade, Excavation, & Sand Filling","31.23.13.10","CY",0.35,40.0,13.67,10.24,9.48,21.0,13.39,0.0,4310.0,1003.0,5],["C203(59)","Geotextile Fabric For Stabilization","32.10.00.02","SY",0.0,2.0,0.0,0.0,1.19,0.0,0.0,0.0,20096.07,593.0,5],["C203(60)","Geogrid","32.10.00.57","SY",0.0,3.0,0.0,0.0,1.71,0.0,0.0,0.0,17936.07,593.0,5],["C302(51)","Base Course Dump And Spread","32.07.13.00","TON",0.1522,0.0,6.07,4.21,50.7,0.0,8.1,0.0,8004.92,0.0,5],["C302(51)","Base Course Fine Grading","32.07.23.00","SY",0.0467,0.0,1.86,0.92,0.0,0.0,0.0,0.0,17958.38,1403.3,5],["C306(52)","Scarifying And Compacting Road Bed","31.23.13.01","SY",0.0175,0.01,0.7,0.37,0.0,0.0,0.0,0.0,18250.0,0.0,6],["C402(51)","Traffic Maintenance Aggregate","01.55.13.00","CY",0.0,30.0,0.0,0.0,45.69,0.0,18.5,0.0,1.0,0.3,5],["C502(53)","Superpave Asphaltic Concrete (2.5\" Thick)","32.12.19.02","SY",0.0,35.0,0.0,0.0,0.0,30.0,0.0,0.0,17950.0,0.0,4],["C507(51)","Asphaltic Binder (4.5\" Thick)","32.12.16.05","SY",0.0,57.0,0.0,0.0,0.0,55.0,0.0,0.0,7930.0,0.0,4],["C509(51)","Cold Planing Asphaltic Pavement (2.5\" Average Thick)","32.12.01.73","SY",0.0,10.0,0.0,0.0,0.0,10.0,0.0,0.0,10030.0,0.0,4],["C601(54)(G)","Reinforced Concrete Pavement (8\" Thick)","32.13.13.04","SY",0.0,150.0,0.0,0.0,53.57,28.94,0.0,0.0,10376.07,593.0,4],["C701(53)(I.S.4)","Reinforced Concrete Pipe (24\", Class IV, Solid)","33.40.18.24","LF",1.25,270.0,51.17,24.36,92.73,45.5,17.75,0.0,160.0,0.0,4],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,8.0,0.0,0.0,9026.0,0.0,6],["C701(54)(I.3S)","Reinforced Concrete Arch Pipe (29\"X18\", Class III, Solid)","33.40.19.24","LF",1.4583,355.0,59.7,28.42,121.53,51.75,18.83,0.0,30.0,0.0,4],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,8.0,0.0,0.0,9026.0,0.0,6],["C701(54)(M.3S)","Reinforced Concrete Arch Pipe (44\"X27\", Class III, Solid)","33.40.19.30","LF",1.4583,600.0,59.7,39.18,161.73,59.75,27.13,0.0,0.0,0.0,4],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,16.0,0.0,0.0,9026.0,0.0,6],["C701(54)(M.4S)","Reinforced Concrete Arch Pipe (44\"X27\", Class IV, Solid)","33.40.19.37","LF",1.4583,625.0,59.7,39.18,215.98,59.75,22.83,0.0,1180.0,0.0,4],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,16.0,0.0,0.0,9026.0,0.0,6],["C701(54)(N.3S)","Reinforced Concrete Arch Pipe (51\"X31\", Class III, Solid)","33.40.19.42","LF",1.75,625.0,71.64,47.02,208.45,97.5,33.34,0.0,520.0,506.0,4],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,18.75,0.0,0.0,9026.0,0.0,6],["C701(59)(F)","Reinforced Concrete Wye Or Arch Equivalent - New (15\")","33.40.17.15","EACH",0.0,1000.0,0.0,0.0,1471.01,0.0,0.0,0.0,12.0,0.0,4],["C701(59)(G)","Reinforced Concrete Wye Or Arch Equivalent - New (18\")","33.40.17.18","EACH",0.0,1000.0,0.0,0.0,1744.63,0.0,0.0,0.0,3.0,0.0,4],["C701(59)(H)","Reinforced Concrete Wye Or Arch Equivalent - New (21\")","33.40.17.21","EACH",0.0,1000.0,0.0,0.0,2280.94,0.0,0.0,0.0,1.0,0.0,4],["C701(59)(I)","Reinforced Concrete Wye Or Arch Equivalent - New (24\")","33.40.17.24","EACH",0.0,1000.0,0.0,0.0,2280.94,0.0,0.0,0.0,8.0,0.0,4],["C701(59)(K)","Reinforced Concrete Wye Or Arch Equivalent - New (30\")","33.40.17.30","EACH",0.0,1000.0,0.0,0.0,2963.91,0.0,0.0,0.0,7.0,0.0,4],["C701(59)(M)","Reinforced Concrete Wye Or Arch Equivalent - New (36\")","33.40.17.36","EACH",0.0,1000.0,0.0,0.0,3624.98,0.0,0.0,0.0,13.0,0.0,4],["C701(65)(B)","Reinforced Concrete Wye Or Arch Equivalent - Existing (6\")","33.40.17.06","EACH",0.0,1.0,0.0,0.0,1.0,0.0,0.0,0.0,9.0,0.0,4],["C701(65)(C)","Reinforced Concrete Wye Or Arch Equivalent - Existing (8\")","33.40.17.08","EACH",0.0,1.0,0.0,0.0,1.0,0.0,0.0,0.0,2.0,0.0,4],["C701(65)(E)","Reinforced Concrete Wye Or Arch Equivalent - Existing (12\")","33.40.17.12","EACH",0.0,1.0,0.0,0.0,1.0,0.0,0.0,0.0,8.0,0.0,4],["C701(65)(G)","Reinforced Concrete Wye Or Arch Equivalent - Existing (18\")","33.40.10.18","EACH",56.0,13500.0,2292.42,1045.76,4442.04,840.0,283.69,0.0,3.0,0.0,4],["C701(65)(H)","Reinforced Concrete Wye Or Arch Equivalent - Existing (21\")","33.40.10.21","EACH",56.0,13500.0,2292.42,1045.76,4544.0,840.0,283.69,0.0,2.0,0.0,4],["C701(67)","Clean And Flush Culvert","33.43.01.01","LF",0.0,14.5,0.0,0.0,0.0,9.5,0.0,0.0,6340.0,144.9,0],["C701(73.I)","Abandoning Existing Drainage Pipes In Place And Fill With Flowable Material (24\")","31.23.23.36","LF",0.1,65.0,4.0,0.97,23.68,7.14,0.0,0.0,130.0,0.0,0],["C701(74)","Removal And Disposal Of Exist Drain Lines (Not In Same Trench) Including Backfilling With River Sand And Compaction","33.49.30.00","LF",0.4375,125.0,17.91,8.53,9.67,19.69,13.66,0.0,330.0,0.0,5],["C702(52)(J)","No. 1 Standard Drain Manhole","33.49.14.01","VF",3.0,0.0,122.81,58.47,255.86,45.0,16.5,0.0,70.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",16.6667,0.0,665.95,162.17,201.93,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(K)","No. 2 Standard Drain Manhole","33.49.14.02","VF",3.6,0.0,147.37,70.16,415.57,54.0,16.5,0.0,70.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",16.6667,0.0,665.95,162.17,201.93,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(L)","No. 3 Standard Drain Manhole","33.49.14.03","VF",2.1,0.0,85.97,52.2,206.4,31.5,16.5,0.0,50.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",16.6667,0.0,665.95,162.17,201.93,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(M.4)","No. 4 Standard Drain Manhole","33.49.14.04","EACH",70.0,0.0,2865.53,1740.1,3524.88,1050.0,368.55,0.0,1.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",25.0,0.0,998.92,243.25,182.09,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(M.7)","No. 7 Standard Drain Manhole","33.49.14.07","EACH",70.0,0.0,2865.53,1740.1,4025.56,1050.0,351.0,0.0,44.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",25.0,0.0,998.92,243.25,182.09,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(M.8)","No. 8 Standard Drain Manhole","33.49.14.08","EACH",70.0,0.0,2865.53,1740.1,4257.66,1050.0,400.05,0.0,9.0,9.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",25.0,0.0,998.92,243.25,182.09,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(M.9)","Special Drain Manhole No. 9","33.49.14.09","EACH",95.0,18000.0,3864.45,1983.35,3913.49,1050.0,400.05,0.0,1.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",25.0,0.0,998.92,243.25,182.09,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(M.10)","Specialized Drainage Manhole W/ Weir","33.49.14.10","EACH",70.0,0.0,2865.53,1740.1,7015.51,1050.0,351.0,0.0,8.0,1.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",12.5,0.0,499.46,121.62,155.41,0.0,0.0,0.0,85.0,0.0,3],["C702(52)(N)","Drainage - D-3340 Manhole","33.49.20.00","EACH",210.0,0.0,8596.59,5220.3,3731.39,3150.0,400.05,0.0,1.0,0.0,3],["MULTIPLE","Drain Manhole Adjustment","33.49.16.27","EACH",12.5,0.0,499.46,121.62,155.41,0.0,0.0,0.0,85.0,0.0,3],["C702(53)(J)","Type A Catch Basins Adjustment","33.49.16.30","EACH",12.5,1250.0,499.46,121.62,163.52,0.0,0.0,0.0,43.0,0.0,3],["C702(53)(M)","No. 1 Standard Catch Basin","33.49.17.02","EACH",23.3333,0.0,955.18,454.73,2797.04,175.0,87.15,0.0,14.0,0.0,3],["MULTIPLE","New Structure Adjust - CB","33.49.16.28","EACH",16.6667,0.0,665.95,162.17,173.42,0.0,0.0,0.0,104.0,0.0,3],["C702(53)(N)","Double No. 1 Catch Basin","33.49.17.09","EACH",35.0,0.0,1432.76,921.75,5142.09,525.0,112.88,0.0,43.0,4.0,3],["MULTIPLE","New Structure Adjust - CB","33.49.16.28","EACH",12.5,0.0,499.46,121.62,173.42,0.0,0.0,0.0,104.0,0.0,3],["C702(53)(S)","24\" X 30\" Clear Opening Standard Drop Inlet","33.49.17.08","EACH",17.5,0.0,716.38,341.05,2631.51,131.25,87.15,0.0,4.0,0.0,3],["C702(53)(S)","New Structure Adj - DI","33.49.16.29","EACH",12.5,0.0,499.46,121.62,173.42,0.0,0.0,0.0,4.0,0.0,3],["C702(53)(T)","Single Mountable Catch Basin","33.49.17.03","EACH",23.3333,0.0,955.18,454.73,2046.45,175.0,87.15,0.0,4.0,0.0,3],["MULTIPLE","New Structure Adjust - CB","33.49.16.28","EACH",12.5,0.0,499.46,121.62,173.42,0.0,0.0,0.0,104.0,0.0,3],["C702(53)(V)","Rehabilitate Existing Catch Basin","33.30.05.07","EACH",0.0,1500.0,0.0,0.0,0.0,900.0,0.0,0.0,36.0,0.0,3],["C702(54)(A)(1)","Adjust Manhole Or Drop Inlet Up To 6\" With Brick And Mortar","33.49.16.22","EACH",12.5,1000.0,499.46,121.62,96.02,0.0,0.0,0.0,4.0,0.0,3],["C702(54)(A)(3)","Adjust Manhole Or Drop Inlet Over 6\" With Brick And Mortar","33.49.16.23","EACH",20.0,1500.0,799.14,194.6,173.42,0.0,0.0,0.0,23.0,0.0,3],["C702(54)(I)","Rehabilitate Existing Manhole","33.30.05.01","VF",0.0,500.0,0.0,0.0,0.0,257.0,0.0,0.0,60.0,0.0,3],["C706(51)","Concrete Sidewalk (4\" Thick)","32.10.00.09","SY",0.0,52.0,0.0,0.0,23.89,25.0,0.4,0.0,2960.0,0.0,4],["C706(52)","Concrete Driveway (6\" Thick)","32.10.00.13","SY",0.0,65.0,0.0,0.0,37.8,25.0,0.4,0.0,680.0,213.7,4],["C706(58)","Relaying Brick Sidewalk","32.10.00.11","SY",0.0,1000.0,0.0,0.0,37.22,340.0,0.38,0.0,60.0,0.0,4],["C706(59)","Relaying Historic Street Track","02.41.91.00","LF",1.6667,20.0,66.59,16.22,12.04,0.0,0.0,0.0,50.0,0.0,6],["C706(61)","Letter Or Number For Tile Street Name","33.10.00.60","EACH",0.0,75.0,0.0,0.0,43.78,0.0,0.0,0.0,110.0,0.0,6],["C707(55)","Concrete Mountable Curb With Dowels","32.16.00.10","LF",0.0,75.0,0.0,0.0,4.99,25.0,0.0,0.0,190.0,0.0,4],["C707(56)","6\" Concrete Barrier Curb With Dowels","33.16.00.11","LF",0.0,25.0,0.0,0.0,4.99,25.0,0.0,0.0,4365.0,0.0,4],["C707(59)","Concrete Mountable Curb And Gutter Bottom","32.16.00.08","LF",0.0,100.0,0.0,0.0,14.69,35.0,0.0,0.0,40.0,0.0,4],["C707(60)","6\" Concrete Barrier Curb & Gutter Bottom Or Rolling Strip","32.16.00.12","LF",0.0,85.0,0.0,0.0,14.69,35.0,0.0,0.0,840.0,0.0,4],["C714(51)","Sodding","32.92.23.00","SY",0.0,20.0,0.0,0.0,0.0,15.0,0.0,0.0,1740.0,0.0,5],["C719(63)","Tree Treatment","32.93.00.52","EACH",0.0,550.0,0.0,0.0,0.0,350.0,0.0,0.0,50.0,0.0,6],["C724(51)(A)","Asphaltic Concrete Repair","32.10.00.38","SY",0.2475,135.0,9.8,7.49,24.8,89.24,3.5,0.0,380.0,0.0,4],["C724(51)(C)","Concrete Pavement Repair","32.13.13.06","SY",0.6578,185.0,25.93,19.86,78.38,58.47,3.5,0.0,300.0,0.0,4],["C724(55)","Pothole Repair On Access Routes","32.10.00.59","TON",0.0,140.0,0.0,0.0,0.0,140.0,0.0,0.0,670.0,0.0,6],["C729(51)","Traffic Sign","10.14.02.01","EACH",0.0,100.0,0.0,0.0,0.0,295.0,0.0,0.0,80.0,0.0,6],["C729(71)(A)","Street Name Sign On Existing Post","10.14.02.02","EACH",0.0,200.0,0.0,0.0,0.0,200.0,0.0,0.0,45.0,0.0,6],["C729(71)(B)","Street Name Sign On New Post","10.14.02.00","EACH",0.0,300.0,0.0,0.0,0.0,295.0,0.0,0.0,9.0,0.0,6],["C732(52)(B.1)","Plastic Pavement Striping (Solid White Line) (6\" Width)","32.17.24.06","LF",0.0,8.0,0.0,0.0,0.0,4.79,0.0,0.0,838.0,0.0,4],["C732(52)(B.2)","Plastic Pavement Striping (Solid Yellow Line) (6\" Width)","32.17.24.07","LF",0.0,8.0,0.0,0.0,0.0,4.79,0.0,0.0,140.0,0.0,4],["C732(52)(D.1)","Plastic Pavement Striping (Solid White Line) (12\" Width)","32.17.24.12","LF",0.0,30.0,0.0,0.0,0.0,19.16,0.0,0.0,120.0,0.0,4],["C732(52)(E.1)","Plastic Pavement Striping (Solid White Line) (24\" Width)","32.17.24.24","LF",0.0,62.0,0.0,0.0,0.0,38.31,0.0,0.0,200.0,0.0,4],["CF-3","Saw Cutting (Sidewalk Driveways And Curb)","03.80.13.01","LF",0.0,8.0,0.0,0.0,0.0,8.0,0.0,0.0,1630.0,0.0,4],["CF-4","Pavement Saw Cutting Adjacent To Existing Pavement And Utility Trenches","03.80.13.02","LF",0.0,14.0,0.0,0.0,0.0,7.2,0.0,0.0,3780.0,364.0,4],["CF-5","Removal Of Handicap Ramps, Curb And Gutter, And Concrete Sidewalks At Intersections Incl Saw Cutting","02.45.13.17","SY",0.0,35.0,0.0,0.0,0.0,35.0,0.0,0.0,1083.0,0.0,4],["CF-6","Handicap Ramps, Curb And Gutter, And Concrete Sidewalks At Intersections","32.10.00.20","SY",0.0,225.0,0.0,0.0,52.93,170.0,0.0,0.0,1048.0,0.0,4],["CF-10","Root Pruning","32.92.14.00","EACH",0.0,1350.0,0.0,0.0,0.0,850.0,0.0,0.0,100.0,0.0,6],["CF-13","Sidewalk Transition Adjacent To Handicapped Ramps","32.10.00.18","SY",0.0,145.0,0.0,0.0,25.34,120.0,0.0,0.0,248.05,0.0,4],["CF-14","Surface Applied Tactile / Detectable Warning Surface Tiles","32.13.50.03","SF",0.0,40.0,0.0,0.0,12.31,25.0,0.0,0.0,920.0,0.0,6],["CF-301","Vertical Catch Basin Cover","33.49.16.01","EACH",0.0,800.0,0.0,0.0,492.52,0.0,0.0,0.0,1.0,0.0,3],["CF-302","Vertical Catch Basin Frame","33.49.16.02","EACH",0.0,550.0,0.0,0.0,229.84,0.0,0.0,0.0,1.0,0.0,3],["CF-311","Vertical Catch Basin Front Gate No. 1","33.49.16.03","EACH",0.0,800.0,0.0,0.0,519.89,0.0,0.0,0.0,1.0,0.0,3],["CF-315","Single Vertical Catch Basin Repair Or Vertical Adjustment Reusing Existing Metal Castings","33.49.16.31","EACH",12.5,1250.0,499.46,121.62,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-317","Single Vertical Catch Basin Repair Or Vertical Adjustment Brick Work Only","33.49.16.32","EACH",12.5,1250.0,499.46,121.62,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-331","Drop Inlet Catch Basin Grate","33.49.16.10","EACH",0.0,1000.0,0.0,0.0,601.98,0.0,0.0,0.0,1.0,0.0,3],["CF-332","Drop Inlet Catch Basin Frame","33.49.16.11","EACH",0.0,1000.0,0.0,0.0,596.5,0.0,0.0,0.0,4.0,0.0,3],["CF-335","Drop Inlet Catch Basin Repair Or Vertical Adjustment Reusing Existing Metal Castings","33.49.16.12","EACH",10.0,1000.0,399.57,97.3,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-336","Drop Inlet Catch Basin Repair Or Vertical Adjustment Brick Work Only","33.49.16.13","EACH",10.0,1000.0,399.57,97.3,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-351","Mountable Catch Basin Grate","33.49.16.14","EACH",0.0,750.0,0.0,0.0,366.66,0.0,0.0,0.0,1.0,0.0,3],["CF-355","Single Mountable Catch Basin Repair Or Vertical Adjustment Reusing Existing Metal Castings","33.49.16.16","EACH",12.5,1250.0,499.46,121.62,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-357","Single Mountable Catch Basin Repair Or Vertical Adjustment Brick Work Only","33.49.16.18","EACH",16.6667,1550.0,665.95,162.17,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-371","Manhole Cover","33.49.16.20","EACH",0.0,400.0,0.0,0.0,169.65,0.0,0.0,0.0,1.0,0.0,3],["CF-372","Manhole Frame","33.49.16.21","EACH",0.0,600.0,0.0,0.0,377.6,0.0,0.0,0.0,1.0,0.0,3],["CF-375","Manhole Repair Or Vertical Adjustment Up To 6\" Reusing Existing Metal Castings","33.30.29.02","EACH",10.0,1000.0,399.57,97.3,96.02,0.0,0.0,0.0,18.0,0.0,3],["CF-376","Manhole Repair Or Vertical Adjustment Over 6\" Reusing Existing Metal Castings","33.30.29.03","VF",20.0,2000.0,799.14,194.6,201.63,0.0,0.0,0.0,5.0,0.0,3],["CF-377","Manhole Repair Or Vertical Adjustment Up To 6\" Brick Work Only","33.30.29.04","EACH",10.0,1000.0,399.57,97.3,96.02,0.0,0.0,0.0,1.0,0.0,3],["CF-378","Manhole Repair Or Vertical Adjustment Over 6\" Brick Work Only","33.30.29.05","VF",20.0,2000.0,799.14,194.6,201.63,0.0,0.0,0.0,5.0,0.0,3],["C741(51)(A)(1)","PVC Water Main 4 In","33.10.14.04","LF",0.4375,0.0,17.91,7.42,39.68,13.12,9.42,0.0,100.0,0.0,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",20.0,0.0,851.86,418.3,164.18,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(A)(1)","Water Main Tie-In 4 In","33.10.32.04","EACH",42.0,0.0,1794.37,607.95,130.35,630.0,54.0,0.0,10.0,0.0,1],["C741(51)(A)(2)","DI Water Main 4 In","33.10.15.04","LF",0.4375,0.0,17.91,7.42,100.03,13.12,9.42,0.0,220.0,0.0,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",20.0,0.0,851.86,418.3,164.18,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(A)(1)","Water Main Tie-In 4 In","33.10.32.04","EACH",42.0,0.0,1794.37,607.95,130.35,630.0,54.0,0.0,10.0,0.0,1],["C741(51)(B)(1)","PVC Water Main 6 In","33.10.14.06","LF",0.875,0.0,35.82,14.84,57.76,13.12,9.42,0.0,100.0,0.0,1],["C741(51)(B)(1)","Water Main Tie-In 6 In","33.10.32.06","EACH",42.0,0.0,1794.37,607.95,260.69,630.0,108.0,0.0,4.03,0.0,1],["C741(51)(B)(2)","DI Water Main 6 In","33.10.15.06","LF",0.7,0.0,28.66,11.87,50.81,21.0,9.42,0.0,508.5,8.5,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",20.0,0.0,851.86,418.3,164.18,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(B)(1)","Water Main Tie-In 6 In","33.10.32.06","EACH",42.0,0.0,1794.37,607.95,260.69,630.0,108.0,0.0,4.03,0.0,1],["C741(51)(C)(1)","PVC Water Main 8 In","33.10.14.08","LF",0.5833,0.0,23.88,10.89,97.57,17.5,9.42,0.0,1700.0,350.5,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",20.0,0.0,851.86,418.3,82.09,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(C)(1)","Water Main Tie-In 8 In","33.10.32.08","EACH",56.0,0.0,2392.49,810.6,260.69,840.0,108.0,0.0,41.76,4.0,1],["C741(51)(C)(2)","DI Water Main 8 In","33.10.15.08","LF",0.875,0.0,35.82,14.84,190.94,13.12,8.98,0.0,140.0,14.0,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",20.0,0.0,851.86,418.3,82.09,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(C)(1)","Water Main Tie-In 8 In","33.10.32.08","EACH",42.0,0.0,1794.37,607.95,260.69,630.0,108.0,0.0,41.76,4.0,1],["C741(51)(E)(1)","PVC Water Main 12 In","33.10.14.12","LF",0.7,0.0,28.66,13.64,113.09,21.0,10.91,0.0,1475.0,81.0,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",80.0,0.0,3407.43,1673.2,164.18,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(E)(1)","Water Main Tie-In 12 In","33.10.32.12","EACH",70.0,0.0,2865.53,1307.2,260.69,1050.0,108.0,0.0,11.43,5.0,1],["C741(51)(E)(2)","DI Water Main 12 In","33.10.15.12","LF",1.1667,0.0,47.76,22.74,124.93,17.5,10.91,0.0,740.0,146.0,1],["MULTIPLE","Pressure Test & Chlorinate Water Main","33.10.31.00","EACH",80.0,0.0,3407.43,1673.2,164.18,0.0,0.0,0.0,32.31,2.0,1],["C741(51)(E)(1)","Water Main Tie-In 12 In","33.10.32.12","EACH",70.0,0.0,2865.53,1307.2,260.69,1050.0,108.0,0.0,11.43,5.0,1],["C741(51)(F)(1)","PVC Water Main 16 In","33.10.14.16","LF",1.75,0.0,71.64,34.1,612.08,52.5,10.91,0.0,30.0,0.0,1],["C741(51)(F)(1)","Water Main Tie-In 16 In","33.10.32.16","EACH",84.0,0.0,3588.74,1468.8,260.69,1260.0,108.0,0.0,2.0,0.0,1],["C741(51)(F)(2)","16\" DIP New Water Main With Main Line Fittings","33.10.15.16","LF",1.75,1750.0,71.64,34.1,115.74,52.5,10.91,0.0,30.0,0.0,1],["C741(52)(B)","New 6\" Valve","33.10.23.06","EACH",8.75,8000.0,358.19,148.4,4837.25,0.0,0.0,0.0,10.0,1.0,6],["C741(52)(C)","New 8\" Valve","33.10.23.08","EACH",11.6667,10000.0,477.59,197.87,6414.42,0.0,0.0,0.0,21.0,2.0,6],["C741(52)(E)","New 12\" Valve","33.10.23.12","EACH",35.0,15000.0,1432.76,682.1,9907.3,0.0,0.0,0.0,5.0,0.0,6],["C741(54)","New Fire Hydrant","33.14.00.00","EACH",35.0,10500.0,1432.76,593.6,4692.39,262.5,80.09,0.0,8.0,1.0,1],["C741(55)","Adjust Water House Connection","33.30.29.06","EACH",7.0,750.0,286.55,134.96,81.21,0.0,0.0,0.0,9.0,0.0,6],["C741(55)(A)","Replace 5/8 To 1\" Water House Connection (From Main To Meter)","33.10.19.01","EACH",8.75,900.0,358.19,168.7,448.75,131.25,76.5,0.0,175.0,13.0,6],["C741(55)(B)","Replace 1-1/2\" Water House Connection (From Main To Meter)","33.10.19.15","EACH",17.5,3500.0,716.38,337.4,990.52,262.5,106.25,0.0,2.0,0.0,6],["C741(55)(C)","Replace 2\" Water House Connection (From Main To Meter)","33.10.19.02","EACH",17.5,4000.0,716.38,337.4,1197.11,262.5,106.25,0.0,2.0,0.0,6],["C741(55)(D)","Replace 4\" Water House Connection (From Main To Meter)","33.10.19.04","EACH",35.0,4000.0,1432.76,534.05,1348.21,525.0,187.0,0.0,2.0,0.0,6],["C741(55)(E)","Replace 6\" Water House Connection (From Main To Meter)","33.10.19.06","EACH",35.0,4000.0,1432.76,484.05,1935.88,262.5,187.0,0.0,4.0,0.0,6],["C741(55)(F)","Replace 8\" Water House Connection (From Main To Meter)","33.10.19.08","EACH",35.0,5000.0,1432.76,534.05,2482.76,525.0,187.0,0.0,2.0,0.0,6],["C741(55)(G)","Remove And Replace Water House Connection From Meter To Property Line 5/8\" To 1\"","33.10.19.50","EACH",7.0,1000.0,286.55,106.81,106.65,105.0,35.7,0.0,4.0,0.0,6],["C741(70)","Additional Ductile Iron Fittings","33.10.16.23","TON",0.0,1000.0,0.0,0.0,10890.27,0.0,0.0,0.0,4.0,0.05,6],["C741(71)(A-01)","4\" Water Line Offset Up To 24\"","33.10.05.04","EACH",70.0,8500.0,2865.53,1187.2,2178.84,1050.0,188.42,0.0,5.0,0.0,6],["C741(71)(B-01)","6\u201d Water Line Offset Up To 24\u201d","33.10.05.06","EACH",70.0,9250.0,2865.53,1187.2,2673.55,1050.0,188.42,0.0,4.0,0.0,6],["C741(71)(C-01)","8\" Water Line Offset Up To 24\"","33.10.05.08","EACH",70.0,9500.0,2865.53,1187.2,3252.13,1050.0,179.52,0.0,6.0,1.0,6],["C741(71)(E-01)","12\u201d Water Line Offset Up To 24\u201d","33.10.05.12","EACH",87.5,15000.0,3581.91,1705.25,5904.79,1050.0,218.17,0.0,3.0,1.5,6],["C741(71)(I-01)","20\" Water Line Offset Up To 24\"","33.10.05.20","EACH",140.0,32000.0,5731.06,2728.4,16223.3,2100.0,218.17,0.0,1.0,0.0,6],["C741(72)(C-02)","8\" Water Line Offset Over 24\"","33.10.05.09","EACH",81.6667,15000.0,3343.12,1385.07,3252.13,1050.0,179.52,0.0,5.0,2.0,6],["C741(73)","Adjust Water Valve Box","33.49.16.38","EACH",6.25,550.0,249.73,60.81,68.11,0.0,0.0,0.0,1.0,0.0,6],["C741(74)(A)","Water Valve Manhole 8 In","33.10.35.01","EACH",35.0,0.0,1432.76,593.6,1567.8,525.0,111.83,0.0,27.0,3.0,3],["C741(74)(A)","Water Valve Manhole Adjustment","33.49.16.33","EACH",16.6667,0.0,665.95,162.17,173.42,0.0,0.0,0.0,27.0,3.0,3],["C741(75)","Remove Mud And Debris From Inside Of Water Meter Box","33.10.28.01","EACH",1.6667,150.0,66.59,16.22,0.0,0.0,0.0,0.0,93.0,1.0,6],["C741(76)","Adjust Complete Water Meter Box To Grade","33.10.28.02","EACH",3.3333,150.0,133.19,32.43,0.0,0.0,0.0,0.0,48.0,1.0,5],["C741(77)","Replace Broken Water Meter Box (5/8\") To (1\")","33.10.28.03","EACH",4.6667,1000.0,191.04,64.54,454.22,0.0,0.0,0.0,48.0,0.0,6],["C741(78)(A)","Plug Existing Water Main (4\" - 12\") And Fill With Flowable Material (Sand/Cement Mixture)","31.23.23.34","LF",0.05,12.0,2.0,0.49,4.9,2.71,0.0,0.0,930.0,277.0,1],["C741(79)","Adjust Water Manhole","33.30.29.01","EACH",12.5,1200.0,499.46,121.62,183.32,0.0,0.0,0.0,6.0,0.0,3],["C741(80)","Removal Of Existing Water Valve","02.41.16.01","EACH",4.6667,200.0,191.04,79.15,0.0,0.0,0.0,0.0,32.0,0.0,5],["C742(51)(B)(A)","Install Sewer Main (6\", 0.0' - 6.0' Deep)","33.30.19.06","LF",1.25,265.0,51.17,24.36,74.06,36.88,12.92,0.0,96.0,0.0,2],["MULTIPLE","Clean, CCTV, & Mandrel Sewer - 8 In","33.30.01.00","LF",0.0,0.0,0.0,0.0,0.0,8.75,0.0,0.0,686.0,0.0,2],["C742(51)(C)(B)","Install Sewer Main (8\", 6.1' - 8.0' Deep)","33.30.19.42","LF",1.25,265.0,51.17,24.36,76.53,46.25,26.85,0.0,590.0,86.0,2],["MULTIPLE","Clean, CCTV, & Mandrel Sewer - 8 In","33.30.01.00","LF",0.0,0.0,0.0,0.0,0.0,8.75,0.0,0.0,686.0,0.0,2],["MULTIPLE","Install Sewer Manhole","33.30.26.06","VF",2.625,0.0,107.46,65.25,244.53,19.69,9.0,0.0,120.0,0.0,2],["C742(55)","Sewer Manhole Adjustment","33.49.16.34","EACH",25.0,0.0,998.92,243.25,346.85,0.0,0.0,0.0,9.0,0.0,2],["C742(56)","Replace Sewer Manhole Casting","33.49.16.37","EACH",0.0,850.0,0.0,0.0,558.2,0.0,0.0,0.0,1.0,0.0,2],["C742(57)(C)(A)","Sewer Point Repair Up To Ten Feet (8\", 0.0' - 6.0' Deep)","33.30.40.11","EACH",35.0,10000.0,1432.76,682.1,863.82,1900.0,206.73,0.0,1.0,2.0,2],["MULTIPLE","Post Video Sewer Point Repair","33.43.02.09","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,1000.0,0.0,2],["C742(57)(C)(B)","Sewer Point Repair Up To Ten Feet (8\", 6.1' - 8.0' Deep)","33.30.40.12","EACH",46.6667,12500.0,1910.35,1048.08,1351.36,2075.0,429.57,0.0,1.0,1.0,2],["MULTIPLE","Post Video Sewer Point Repair","33.43.02.09","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,1000.0,0.0,2],["C742(57)(C)(C)","Sewer Point Repair Up To Ten Feet (8\", 8.1' - 10.0' Deep)","33.30.40.13","EACH",56.0,17500.0,2292.42,1558.42,2619.75,2215.0,586.66,0.0,1.0,0.0,2],["MULTIPLE","Post Video Sewer Point Repair","33.43.02.09","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,1000.0,0.0,2],["C742(57)(D)(B)","Sewer Point Repair Up To Ten Feet (10\", 6.1' - 8.0' Deep)","33.30.40.17","EACH",46.6667,17500.0,1910.35,1048.08,1531.34,2075.0,429.57,0.0,1.0,0.0,2],["MULTIPLE","Post Video Sewer Point Repair","33.43.02.09","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,1000.0,0.0,2],["C742(59)","New Sewer House Connections From Main To Back Of Curb","33.30.36.02","EACH",35.0,5000.0,1432.76,734.8,486.76,525.0,142.8,0.0,10.0,0.0,2],["C742(60)","Replace Existing Sewer House Connection From Exist/New Main To Back Of Curb","33.30.36.01","EACH",23.3333,2450.0,955.18,489.87,370.74,350.0,142.8,0.0,92.0,4.0,2],["C742(61)","Re-Connect Existing Sewer House Connection To New Main And Extend To Back Of Curb","33.30.36.05","EACH",58.3333,10500.0,2387.94,1275.93,1761.51,875.0,572.37,0.0,4.0,0.0,2],["C742(63)","Replace Existing Sewer House Connection Beyond Back Of Curb","33.30.36.03","LF",1.1667,100.0,47.76,24.49,12.53,8.75,5.95,0.0,880.0,0.0,2],["C742(64)","Adjust Sewer House Connection","33.30.36.04","EACH",23.3333,2000.0,955.18,489.87,322.15,175.0,0.0,0.0,100.0,1.0,2],["C742(65)(C)","Pipe Liner (CIPP, 8\")","33.40.28.08","LF",0.0,200.0,0.0,0.0,0.0,125.0,0.0,0.0,875.0,0.0,0],["C742(66)(B)","Cut Liner To Restore Existing Sewer House Connection (6\", CIPP)","33.30.36.06","EACH",0.0,450.0,0.0,0.0,0.0,300.0,0.0,0.0,10.0,0.0,2],["CSS742(X6)","Sewer Main Line CCTV Inspection (8\")","33.43.02.08","LF",0.0,10.0,0.0,0.0,0.0,6.5,0.0,0.0,875.0,0.0,2],["CSS742(X7)","Sewer Service Lateral Lining, (6\" CIPP)","33.30.05.06","EACH",0.0,12000.0,0.0,0.0,0.0,7750.0,0.0,0.0,10.0,0.0,2],["CSS742(X8)","Manhole Rehabilitation, Cementitious Liner, Partial Depth (2 Feet)","33.30.05.03","EACH",0.0,750.0,0.0,0.0,0.0,500.0,0.0,0.0,5.0,0.0,3],["CSS742(X9)","Manhole Rehabilitation, Cementitious Liner, Full Depth","33.30.05.02","VF",0.0,400.0,0.0,0.0,0.0,257.0,0.0,0.0,7.0,0.0,3],["CSS742(X13)","Sanitary Sewer Service Lateral CCTV Inspection","33.43.02.06","EACH",0.0,1750.0,0.0,0.0,0.0,1150.0,0.0,0.0,10.0,0.0,2],["CSW-01","Repair Water Main With Full Circle Clamp  (Pipe Size 4\" - 8\")","33.10.40.08","EACH",17.5,1500.0,716.38,296.8,431.18,393.75,160.65,0.0,2.0,0.0,1],["CSW-02","Repair Water Main With Full Circle Clamp (Pipe Size 12\" - 16\")","33.10.40.16","EACH",23.3333,1500.0,955.18,395.73,540.63,350.0,160.65,0.0,1.0,0.0,1],["CSW-03","Repair Water Main With Bell Joint Clamp (Pipe Size 4\" - 12\")","33.10.41.08","EACH",17.5,1500.0,716.38,296.8,480.43,262.5,160.65,0.0,2.0,0.0,1],["CSW-04","Repair Water Main With Bell Joint Clamp (Pipe Size 16\" - 24\")","33.10.41.24","EACH",70.0,1500.0,2865.53,1187.2,2980.21,1050.0,321.3,0.0,1.0,0.0,1],["CSW-05","Repair Water Main By Remove And Replace - Minimum Length 4 Ft, Maximum Length 10 Ft (Pipe Size 4\" - 12\")","33.10.45.08","EACH",70.0,5000.0,2865.53,1187.2,3380.94,1050.0,432.0,0.0,2.0,1.0,1],["CSW-06","Repair Water Main By Remove And Replace - Minimum Length 4 Ft, Maximum Length 10 Ft (Pipe Size 16\" - 24\")","33.10.45.24","EACH",70.0,5000.0,2865.53,1364.2,8147.71,1050.0,432.0,0.0,1.0,0.0,1],["CSW-07","Repair Water Main By Remove And Replace - Beyond 10 Ft, Maximum 18 Ft (Pipe Size 4\" - 12\")","33.10.50.08","LF",3.5,450.0,143.28,59.36,65.02,52.5,17.63,0.0,19.0,0.0,1],["CSW-08","Repair Water Main By Remove And Replace - Beyond 10 Ft, Maximum 18 Ft (Pipe Size 16\" - 24\")","33.10.50.24","LF",7.0,900.0,286.55,136.42,198.79,105.0,29.6,0.0,18.0,0.0,1],["CSW-09","Replace 5/8\u201d To 1\u201d Lead Service Line Water House Connection W/ 1\u201d Polyethylene WHC (From Main To Meter)","33.10.19.09","EACH",35.0,4500.0,1432.76,674.8,203.36,525.0,160.65,0.0,3.0,0.0,6],["CSW-10","Replace 1.5\u201d Lead Service Line Water House Connection (From Main To Meter)","33.10.19.10","EACH",35.0,3000.0,1432.76,674.8,253.94,525.0,160.65,0.0,2.0,0.0,6],["CSW-11","Replace 2\u201d Lead Service Line Water House Connection (From Main To Meter)","33.10.19.11","EACH",35.0,3500.0,1432.76,674.8,516.82,525.0,160.65,0.0,2.0,0.0,6],["GI 0200(01.A)","Open Space Excavation For Green Infrastructure Facilities","31.23.16.01","CY",0.0187,19.0,0.8,1.05,0.0,15.0,0.0,0.0,41150.0,20411.8,3],["GI 0200(01.B)","ROW Excavation For Green Infrastructure Facilities","31.23.16.02","CY",0.2333,44.0,9.11,5.39,0.0,15.0,0.0,0.0,4690.0,0.0,3],["GI 0200(02)","Unsuitable Subgrade, Excavation, & Sand Filling","31.23.13.10","CY",0.15,75.0,5.86,4.39,9.48,15.75,13.39,0.0,4310.0,1003.0,5],["GI 0204(06)","Temporary Silt Fencing","31.25.13.10","LF",0.0,3.0,0.0,0.0,0.0,2.99,0.0,0.0,7140.0,1980.0,6],["GI 0204(07)","Temporary Stone Construction Entrance","01.18.50.00","CY",0.3043,300.0,12.14,8.42,98.58,0.0,15.75,0.0,60.0,30.69,5],["GI 0204(08)","Structure Drain Filter (9\" Diam. X 8 Ft. Long)","31.25.00.01","EACH",0.0,375.0,0.0,0.0,234.22,0.0,0.0,0.0,10.0,0.0,3],["GI 0204(09)","Curb Inlet Drain Filter (6\" Diam. X 6 Ft. Long)","31.25.00.02","EACH",0.0,375.0,0.0,0.0,234.22,0.0,0.0,0.0,130.0,13.0,3],["GI 0206(A.1.N)","Geosynthetic (Subsurface Drainage Application, Class 1, Non-Woven)","32.10.00.60","SY",0.0,2.0,0.0,0.0,1.22,0.0,0.0,0.0,53330.0,6028.0,0],["GI 0206(A.1.W)","Geosynthetic (Subsurface Drainage Application, Class 1, Woven)","32.10.00.61","SY",0.0,1.5,0.0,0.0,0.89,0.0,0.0,0.0,34000.0,0.0,0],["GI 0206(C)","Geosynthetic (Pervious Pavement Application)","32.10.00.62","SY",0.0,10.0,0.0,0.0,6.16,0.0,0.0,0.0,1010.0,0.0,4],["GI 0206(D)","Geosynthetic (Impermeable Membrane)","32.10.00.63","SY",0.0,10.0,0.0,0.0,6.65,0.0,0.0,0.0,4070.0,570.0,6],["GI 0206(E)","GI Geogrid","32.10.00.64","SY",0.0,2.5,0.0,0.0,1.64,0.0,0.0,0.0,37010.0,11818.0,5],["GI 0703(01)","Drain Inlets For Green Infrastructure Facilities (Domed Drain Inlet)","33.49.17.10","EACH",14.0,3500.0,573.11,261.44,1445.86,0.0,0.0,0.0,4.0,0.0,3],["GI 0704(02)(B.P)","Underdrain Pipe - Perforated (PVC, 6\")","33.40.15.06","LF",0.5833,125.0,23.88,8.23,36.38,8.75,4.59,0.0,270.0,0.0,0],["GI 0704(03)(B.S)","Underdrain Pipe - Solid (PVC, 6\")","33.40.13.06","LF",0.5833,125.0,23.88,8.23,32.8,14.25,5.25,0.0,290.0,105.0,0],["GI 0704(03)(E.S)","Underdrain Pipe - Solid (PVC, 10\")","33.40.13.10","LF",0.7,115.0,28.66,9.87,51.41,16.0,8.16,0.0,110.0,13.66,0],["GI 0704(03)(F.S)","Underdrain Pipe - Solid (PVC, 12\")","33.40.13.12","LF",0.7,225.0,28.66,9.87,75.89,16.0,6.68,0.0,40.0,0.0,0],["GI 0704(04)(B)","Cleanout (PVC, 6\")","33.49.21.00","EACH",0.0,175.0,0.0,0.0,169.65,0.0,0.0,0.0,9.0,2.0,0],["GI 707(56)","15\" Concrete Barrier Curb Wall","33.16.00.13","LF",0.0,85.0,0.0,0.0,7.38,45.0,0.0,0.0,1290.0,0.0,4],["GI 707(57)","Urban Bioswale - Sidewalk Curb","32.16.00.13","LF",0.1,65.0,3.88,1.1,11.11,50.0,0.0,0.0,340.0,0.0,4],["GI 707(58)","Urban Bioswale - Roadway Curb","32.16.00.14","LF",0.2,180.0,7.77,2.19,27.29,80.0,0.0,0.0,310.0,0.0,4],["GI 0718(01)","GI Tree Protection","32.93.00.53","LF",0.0,8.5,0.0,0.0,7.36,0.0,0.0,0.0,2990.0,524.0,6],["GI 0720(01)","Turf Grass (Bermuda Grass)","32.92.00.00","SF",0.0,0.15,0.0,0.0,0.0,0.15,0.0,0.0,341700.0,0.0,6],["GI 0720(02)(A)","Tree (Creole Queen Elm, 12' Ht.)","32.93.00.54","EACH",0.0,1500.0,0.0,0.0,0.0,1000.0,0.0,0.0,7.0,0.0,6],["GI 0720(02)(B)","Tree (Overcup Oak, 12' Ht.)","32.93.00.50","EACH",0.0,1200.0,0.0,0.0,0.0,750.0,0.0,0.0,3.0,0.0,6],["GI 0720(02)(C)","Trees (Pond Cypress)","32.93.00.39","EACH",0.0,1000.0,0.0,0.0,0.0,650.0,0.0,0.0,9.0,0.0,6],["GI 0720(02)(D)","Trees (Swamp Red Maple)","92.93.00.40","EACH",0.0,900.0,0.0,0.0,0.0,650.0,0.0,0.0,6.0,0.0,6],["GI 0720(03)(A)","Bioretention Plantings (Blue Dart Path Rush (1 Gallon))","32.93.00.55","EACH",0.0,22.5,0.0,0.0,0.0,15.0,0.0,0.0,344.0,0.0,6],["GI 0720(03)(B)","Bioretention Plantings (African Iris (3 Gallon))","32.93.00.56","EACH",0.0,45.0,0.0,0.0,0.0,32.0,0.0,0.0,403.0,0.0,6],["GI 0720(03)(C )","Bioretention Plantings (Spider Lily (3 Gallon))","32.93.00.57","EACH",0.0,50.0,0.0,0.0,0.0,34.0,0.0,0.0,108.0,0.0,6],["GI 0720(03)(D)","Bioretention Plantings (Pink Muhly Grass (3 Gallon))","32.93.00.58","EACH",0.0,50.0,0.0,0.0,0.0,32.0,0.0,0.0,43.0,0.0,6],["GI 0720(03)(E)","Bioretention Plantings (Dwarf Palmetto (3 Gallon))","32.93.00.59","EACH",0.0,60.0,0.0,0.0,0.0,40.0,0.0,0.0,26.0,0.0,6],["GI 0720(04)","Pine Straw Mulch","32.93.00.60","SY",0.0,10.0,0.0,0.0,0.0,7.0,0.0,0.0,510.0,0.0,6],["GI 1003(01)(P)","Bridging Course Aggregate (No. 8 Washed Stone)","32.05.59.01","CY",0.0,192.0,0.0,0.0,110.28,0.0,15.75,0.0,2560.0,694.0,5],["GI 1003(01)(J)","Bridging Course Aggregate (No. 57 Washed Stone)","32.05.59.00","CY",0.0,140.0,0.0,0.0,82.71,0.0,11.81,0.0,15140.0,663.0,5],["GI 1003(03.A)","Splash Pad, Rip Rap (Class A)","33.00.00.37","CY",0.0,160.0,0.0,0.0,92.18,0.0,13.5,0.0,20.0,0.0,6],["GI 1005(01)","Bioretention Media (Soil Mix)","32.92.25.01","CY",0.0,175.0,0.0,0.0,0.0,115.0,0.0,0.0,10820.0,2766.0,6],["CS-01","Removal And Disposal Of Existing Fence","02.45.13.43","LF",0.0333,5.0,1.38,0.79,0.29,0.0,0.4,1.32,380.0,168.0,5],["CS-02","Removal Of Existing Light Pole And Foundation","02.45.00.01","EACH",0.0,6250.0,0.0,0.0,0.0,4385.0,0.0,0.0,2.0,0.0,5],["CS-04","Removal Of Existing Tree","31.10.19.00","EACH",0.0,7000.0,0.0,0.0,0.0,4500.0,0.0,0.0,1.0,0.0,5],["CS-05","Concrete Washout Area","01.14.04.07","EACH",0.0,850.0,0.0,0.0,0.0,0.0,0.0,550.0,17.0,2.0,4],["CS-06","Construction Fence","01.18.01.00","LF",0.0,2.0,0.0,0.0,1.22,0.0,0.0,0.0,2140.0,1496.0,6],["CS-07.A","Catch Basin Modification (Type A)","33.49.16.35","EACH",0.0,1500.0,0.0,0.0,0.0,356.0,0.0,0.0,4.0,0.0,3],["CS-07.B","Catch Basin Modification (Type B)","33.49.16.36","EACH",0.0,7500.0,0.0,0.0,0.0,2025.0,0.0,0.0,1.0,0.0,3],["CS-08.A","Permeable Paver Concrete Header Curb (6\")","32.10.00.65","LF",0.1,88.0,3.88,1.1,7.36,45.0,0.0,0.0,1650.0,0.0,4],["CS-08.B","Permeable Paver Concrete Header Curb (12\")","32.10.00.66","LF",0.1,68.0,3.88,1.1,14.63,50.0,0.0,0.0,610.0,0.0,4],["CS-09","Concrete Runnel And Footbridge","03.30.53.01","EACH",0.0,6200.0,0.0,0.0,2259.49,2500.0,36.0,0.0,3.0,0.0,4],["CS-10","Inlet Pipe Protection (12\" To 15\")","32.25.00.05","EACH",5.0,1400.0,199.78,48.65,633.72,0.0,0.0,0.0,10.0,0.0,3],["CS-11","Inlet Pipe Protection (18\")","32.25.00.06","EACH",6.25,1700.0,249.73,60.81,803.36,0.0,0.0,0.0,2.0,0.0,3],["CS-12","Inlet Pipe Protection (24\")","32.25.00.07","EACH",8.3333,2500.0,332.97,81.08,1203.95,0.0,0.0,0.0,11.0,0.0,3],["CS-13","Inlet Protection (CB No. 1)","32.25.00.03","EACH",0.0,1750.0,0.0,0.0,1173.3,0.0,0.0,0.0,140.0,0.0,3],["CS-14","Inlet Protection (CB No. 2)","32.25.00.04","EACH",0.0,1750.0,0.0,0.0,1173.3,0.0,0.0,0.0,1.0,0.0,3],["CS-15","Inlet Protection (Mountable CB)","32.25.00.02","EACH",0.0,2150.0,0.0,0.0,1422.85,0.0,0.0,0.0,4.0,0.0,3],["CS-16","Inlet Protection (Drop Inlet)","32.25.00.01","EACH",0.0,3250.0,0.0,0.0,2101.44,0.0,0.0,0.0,5.0,0.0,3],["CS-17","Concrete Outlet Box","33.42.01.01","EACH",35.0,7000.0,1432.76,682.1,2111.9,262.5,87.15,0.0,2.0,0.0,4],["CS-18","10' Chain Link Fence","32.31.00.29","LF",0.0,150.0,0.0,0.0,0.0,100.0,0.0,0.0,60.0,0.0,6],["CS-19","Backstop Fencing","32.31.00.30","EACH",0.0,12000.0,0.0,0.0,0.0,8000.0,0.0,0.0,2.0,0.0,3],["CS-20","Box Connection (Washington Ave At S. Claiborne Ave Box)","33.00.01.01","EACH",70.0,12250.0,2865.53,1364.2,285.06,3500.0,0.0,0.0,1.0,0.0,6],["CS-21","Box Connection (A.L. Davis At Third St Box)","33.00.01.02","EACH",70.0,12250.0,2865.53,1364.2,285.06,3375.0,0.0,0.0,2.0,0.0,6],["CS-22","Box Connection (Orange St At Camp St Box)","33.00.01.03","EACH",70.0,12250.0,2865.53,1364.2,285.06,3500.0,0.0,0.0,1.0,0.0,6],["CS-23","Box Connection (Annunciation St At Melpomene St Box)","33.00.01.04","EACH",70.0,12250.0,2865.53,1364.2,285.06,3500.0,0.0,0.0,1.0,0.0,6],["CS-24","High Mast Light Pole","26.56.13.00","EACH",0.0,18000.0,0.0,0.0,0.0,11988.0,0.0,0.0,2.0,0.0,6],["CS-25","Secure Benches/Bleachers To New Concrete Pad","03.15.19.00","EACH",25.0,2000.0,998.92,396.5,87.56,0.0,0.0,0.0,4.0,2.0,4],["CS-26","Pedestrian Gate In Fence (5' Width)","32.31.00.13","EACH",0.0,1250.0,0.0,0.0,0.0,800.0,0.0,0.0,1.0,0.0,6],["CS-27","Excavation Of Contaminated Soils","02.61.00.00","CY",0.0133,170.0,0.57,5.75,0.0,99.58,0.0,12.94,13910.0,14701.33,5],["CS-28","Sewer Bridge","33.30.18.01","EACH",56.0,15500.0,2292.42,1558.42,5110.83,840.0,608.74,0.0,5.0,0.0,2],["CS-29","Subsurface Stormwater Storage - Taylor Playground","33.46.00.19","CF",0.02,13.5,0.81,0.43,7.47,0.0,0.34,0.0,240000.0,0.0,0],["CS-30","Subsurface Stormwater Storage - A. L. Davis Playground","33.46.00.20","CF",0.0203,14.0,0.82,0.43,7.67,0.0,0.32,0.0,229000.0,229131.0,0],["CS-31","Subsurface Stormwater Storage - Clay Square","33.46.00.21","CF",0.0213,15.0,0.86,0.46,8.26,0.0,0.45,0.0,84700.0,0.0,0],["CS-32","Subsurface Stormwater Storage - Annunciation Square","33.46.00.22","CF",0.02,13.5,0.81,0.42,7.54,0.0,0.35,0.0,180000.0,0.0,0],["CS-1046(01)","Test Pits","31.23.00.00","EACH",11.6667,1200.0,477.59,164.52,54.18,175.0,76.5,0.0,48.0,14.0,6],["CS-2140(01)","Dewatering","31.29.19.01","LS",200.0,500000.0,8235.64,103603.43,37238.17,148200.0,52581.0,0.0,1.0,0.2,5],["CS-2495(01)","Pre-Construction Survey","01.18.34.01","LS",0.0,70000.0,0.0,0.0,0.0,13000.0,0.0,0.0,1.0,1.0,6],["CS-2495(02)","Vibration Monitoring","01.19.08.00","DY",0.0,250.0,0.0,0.0,0.0,0.0,0.0,600.0,100.0,1.0,6],["CS-2623(01)(E)","HDPE Pipe (12\")","33.40.20.12","LF",0.5833,145.0,23.88,10.89,23.27,23.0,8.46,0.0,170.0,0.0,0],["CS-2623(01)(F)","HDPE Pipe (15\")","33.40.20.15","LF",0.7,165.0,28.66,13.07,37.01,34.25,19.33,0.0,70.0,0.0,0],["CS-2623(01)(G)","HDPE Pipe (18\")","33.40.20.18","LF",0.7,170.0,28.66,13.07,46.03,34.25,20.22,0.0,130.0,0.0,0],["CS-2623(01)(K)","HDPE Pipe (30\")","33.40.20.30","LF",0.875,325.0,35.82,16.34,147.05,41.25,22.26,0.0,110.0,0.0,0],["CS-2623(01)(M)","HDPE Pipe (36\")","33.40.20.36","LF",0.875,325.0,35.82,17.05,125.52,48.81,24.85,0.0,210.0,0.0,0],["CS-2623(02)(E)","HDPE Flared End Section (12\")","32.40.10.01","EACH",11.6667,1325.0,477.59,217.87,415.77,0.0,31.5,0.0,2.0,0.0,6],["CS-2640(01)(E)","In-Line Elastomeric Check Valve (12\")","33.40.10.12","EACH",0.0,3750.0,0.0,0.0,2544.71,0.0,0.0,0.0,2.0,0.0,6],["CS-2640(01)(K)","In-Line Elastomeric Check Valve (30\")","33.40.10.30","EACH",0.0,16500.0,0.0,0.0,10715.16,0.0,0.0,0.0,4.0,0.0,6],["CS-2640(01)(M)","In-Line Elastomeric Check Valve (36\")","33.40.10.36","EACH",0.0,24000.0,0.0,0.0,15706.08,0.0,0.0,0.0,2.0,0.0,6],["CS-2902","Maintenance Of Landscape And Green Infrastructure","33.46.00.18","YEAR",250.0,250000.0,9989.23,4065.5,0.0,152000.0,0.0,0.0,3.0,0.0,3],["CS-2930","Hydroseeding","32.92.21.00","SF",0.0,0.5,0.0,0.0,0.0,0.15,0.0,0.0,131040.0,112140.99,6],["CS-10441(01)","Stormwater Park Permanent Signage","10.14.00.00","SF",0.0,325.0,0.0,0.0,0.0,180.0,0.0,0.0,30.0,0.0,0],["CS-13218","ROW Modular Tank Storage","33.46.00.23","CF",0.0591,30.0,2.42,1.41,15.83,0.0,0.45,0.0,29590.0,0.0,0],["CS-334400(A.1)","Stormwater Inflow Treatment Unit - Taylor Playground","33.46.00.24","EACH",0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0,2.0,0.0,0],["CS-334400(A.2)","Stormwater Inflow Treatment Unit - A. L. Davis Playground","33.46.00.25","EACH",0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0,1.0,0.0,0],["CS-334400(A.3)","Stormwater Inflow Treatment Unit - Clay Square","33.46.00.26","EACH",0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0,1.0,0.0,0],["CS-334400(A.4)","Stormwater Inflow Treatment Unit - Annunciation Square","33.46.00.27","EACH",0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0,2.0,0.0,0],["CF-701(53)(D)","High-Performance Polypropylene Pipe (HPPP, 10\")","33.40.25.10","LF",0.5833,115.0,23.88,8.23,45.63,23.0,13.15,0.0,10.0,0.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,9026.0,0.0,6],["CF-701(53)(E)","High-Performance Polypropylene Pipe (HPPP, 12\")","33.40.25.12","LF",0.5833,115.0,23.88,8.23,45.63,23.0,13.15,0.0,400.0,4.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,5.5,0.0,0.0,9026.0,0.0,6],["CF-701(53)(F)","High-Performance Polypropylene Pipe (HPPP, 15\")","33-40-25-15","LF",0.7,145.0,28.66,9.87,64.55,29.0,13.62,0.0,790.0,17.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,8.0,0.0,0.0,9026.0,0.0,6],["CF-701(53)(G)","High-Performance Polypropylene Pipe (HPPP, 18\")","33.40.25.18","LF",0.875,165.0,35.82,12.34,65.67,34.25,15.36,0.0,60.0,215.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,8.0,0.0,0.0,9026.0,0.0,6],["CF-701(53)(I)","High-Performance Polypropylene Pipe (HPPP, 24\")","33.40.25.24","LF",0.875,220.0,35.82,12.34,116.61,34.25,15.7,0.0,280.0,0.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,8.0,0.0,0.0,9026.0,0.0,6],["CF-701(53)(K)","High-Performance Polypropylene Pipe (HPPP, 30\")","33.40.25.30","LF",1.1667,295.0,47.76,22.74,147.68,50.0,24.18,0.0,1060.0,22.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,15.0,0.0,0.0,9026.0,0.0,6],["CF-701(53)(M)","High-Performance Polypropylene Pipe (HPPP, 36\")","33.40.25.36","LF",1.1667,310.0,47.76,22.74,166.36,51.0,20.88,0.0,420.0,40.0,0],["MULTIPLE","Post Install CCTV & Clean","33.40.28.15","LF",0.0,0.0,0.0,0.0,0.0,16.0,0.0,0.0,9026.0,0.0,6],["CS-321343","Porous Concrete Panel","32.10.01.01","SY",0.0,440.0,0.0,0.0,0.0,440.0,0.0,0.0,880.0,0.0,4],["CF-502(C )","Structural Fill (Subsurface Stormwater Tank)","32.05.10.00","CY",0.21,42.04,0.0,0.0,0.0,0.0,0.0,0.0,3442.0,0.0,0]];
+
+
+const CI = { PAY:0, TASK:1, CC:2, UM:3, MH:4, BID:5, UL:6, UE:7, UM$:8, US:9, UT:10, UX:11, EST:12, REP:13, CAT:14 };
+const CATS = [
+  { name:"Drainage",  bg:"#f2a7cf", tx:"#3d1029" },
+  { name:"Water",     bg:"#9fc9f5", tx:"#0e2a4a" },
+  { name:"Sewer",     bg:"#c7e96e", tx:"#26330a" },
+  { name:"Structure", bg:"#f6c286", tx:"#3d2408" },
+  { name:"Concrete",  bg:"#f2df76", tx:"#38300a" },
+  { name:"Earthwork", bg:"#d8b98e", tx:"#33240e" },
+  { name:"Site",      bg:"#c3c9d8", tx:"#1e2330" },
+];
+const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+
+const idx = {};
+CATALOG.forEach((r,i)=>{ idx[r[CI.CC]] = i; });
+const find = cc => idx[cc] ?? 0;
+
+/* ---------- seed ---------- */
+const WK0 = "2026-07-06";
+const seedCrews = [
+  { id:"c1", name:"Darren",   type:"crew" },
+  { id:"c2", name:"Juan G",   type:"crew" },
+  { id:"c3", name:"Wimpy",    type:"crew" },
+  { id:"c4", name:"Todd Pea", type:"crew" },
+  { id:"c5", name:"Bork",     type:"crew" },
+  { id:"s1", name:"ACA",      type:"sub" },
+  { id:"s2", name:"BEF",      type:"sub" },
+  { id:"s3", name:"Donahoe",  type:"sub" },
+];
+const seedSite = [ { id:"n1", name:"Notes / Deliveries" } ];
+let _t = 0; const tid = () => "t" + (++_t) + "_" + Math.random().toString(36).slice(2,6);
+const mk = (res, cc, day, qty, sta) => ({ id:tid(), res, ci:find(cc), day, qty, sta:sta||null, wk:WK0 });
+const seedTasks = [
+  mk("c1","32.07.13.00",0,410), mk("c1","32.07.13.00",1,400), mk("c1","32.07.13.00",2,400), mk("c1","32.07.13.00",3,390),
+  mk("c2","33.10.15.08",1,120), mk("c2","33.10.15.08",2,120), mk("c2","33.10.15.08",3,120), mk("c2","33.10.15.08",4,120),
+  mk("c3","33-40-25-15",0,81,[10320,10401]), mk("c3","33-40-25-15",1,80), mk("c3","33-40-25-15",2,80), mk("c3","33-40-25-15",3,79),
+  mk("c4","33.49.14.08",1,1), mk("c4","33.49.14.08",2,1), mk("c4","33.49.14.08",3,1),
+  mk("c5","33.40.19.42",0,35,[11612,11647]), mk("c5","33.40.19.42",1,60), mk("c5","33.40.19.42",2,40),
+  mk("s1","33.49.14.10",2,1), mk("s1","33.49.14.10",3,1),
+  mk("s2","32.16.00.12",0,188), mk("s2","32.16.00.12",1,200), mk("s2","32.16.00.12",2,200),
+];
+const seedLogs = {
+  [seedTasks[0].id]: { qty:410, mh:25,  done:true },
+  [seedTasks[8].id]: { qty:76,  mh:41,  done:true },
+  [seedTasks[15].id]:{ qty:35,  mh:53,  done:true },
+  [seedTasks[20].id]:{ qty:188, mh:24,  done:true },
+  [seedTasks[4].id]: { qty:112, mh:40,  done:true },
+};
+const seedNotes = [
+  { id:"nn1", row:"n1", day:0, text:"PTO — Silas (M–Th)", level:"info" },
+  { id:"nn2", row:"n1", day:1, text:"SWPPP inspection tomorrow — stabilize stockpiles @ Annunciation", level:"warn" },
+  { id:"nn3", row:"n1", day:2, text:'51"×31" sticks @ Orange — need 330 LF on ground by Thu', level:"crit" },
+  { id:"nn4", row:"n1", day:3, text:"One Call expires Fri — renew by Thu", level:"warn" },
+];
+
+/* ---------- helpers ---------- */
+const DAYS = ["M","T","W","TH","F","SA","SU"];
+const fmt$ = (n,d=0) => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
+const fmtN = (n,d=0) => Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d});
+const pct  = n => Math.round(n*100)+"%";
+const parseSTA = s => {
+  if (s===""||s==null) return null;
+  const m = String(s).trim().match(/^(\d+)\s*\+\s*(\d+(\.\d+)?)$/);
+  if (m) return parseInt(m[1],10)*100 + parseFloat(m[2]);
+  const n = parseFloat(String(s).replace(/,/g,""));
+  return isNaN(n) ? null : n;
+};
+const staFmt = n => n==null ? "" : Math.floor(n/100) + "+" + String((n%100).toFixed(n%1?2:0)).padStart(2,"0");
+const addDays = (iso,n) => { const d=new Date(iso+"T12:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+const mondayOf = iso => { const d=new Date(iso+"T12:00:00"); const g=(d.getDay()+6)%7; d.setDate(d.getDate()-g); return d.toISOString().slice(0,10); };
+const dLabel = (wk,i) => { const d=new Date(addDays(wk,i)+"T12:00:00"); return d.getDate(); };
+const longDate = iso => new Date(iso+"T12:00:00").toLocaleDateString(undefined,{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+const wkTitle = wk => {
+  const a=new Date(wk+"T12:00:00"), b=new Date(addDays(wk,6)+"T12:00:00");
+  const mo=d=>d.toLocaleDateString(undefined,{month:"short"});
+  return `Week of ${mo(a)} ${a.getDate()} – ${mo(a)===mo(b)?"":mo(b)+" "}${b.getDate()}`;
+};
+
+/* ---------- field-voice EOS descriptions (Silas cadence) ---------- */
+const stickLen = n => /arch pipe|reinforced concrete pipe|rcp\b/i.test(n)?8 : /hppp|polypropylene|pvc/i.test(n)?20 : /ductile|di water/i.test(n)?18 : 0;
+function autoDesc(name, ts, logs, calc, isSub){
+  if(!ts.length) return "";
+  const t=ts[0], c=calc(t), lg=logs[t.id];
+  const item=c.it[CI.TASK], um=c.it[CI.UM], cat=c.it[CI.CAT];
+  const q = lg? c.actQty : t.qty;
+  const sta = t.sta? ` from station ${staFmt(t.sta[0])} to station ${staFmt(t.sta[1])}` : "";
+  if (isSub) return `${name} continued ${item.toLowerCase()}${q?`, placing ${fmtN(q)} ${um}`:""}${sta}.`;
+  const sl = stickLen(item);
+  let s;
+  if (cat===0 && sl && um==="LF")
+    s = `${name}'s crew continued mainline drainage work, laying ${Math.max(1,Math.round(q/sl))} sticks (${fmtN(q)} LF) of ${item}${sta}.`;
+  else if (cat===0)
+    s = `${name}'s crew continued drainage work, installing ${fmtN(q)} ${um} of ${item}${sta}.`;
+  else if (cat===1)
+    s = `${name}'s crew continued water main work, running ${fmtN(q)} ${um} of ${item}${sta} and backfilling behind the pipe.`;
+  else if (cat===2)
+    s = `${name}'s crew continued sewer work, laying ${fmtN(q)} ${um} of ${item}${sta}.`;
+  else if (cat===3)
+    s = `${name}'s crew set ${fmtN(q)}${um==="EACH"?"":" "+um+" of"} ${item}${sta}, then backfilled around the structure.`;
+  else if (cat===4)
+    s = `${name}'s crew formed and poured ${fmtN(q)} ${um} of ${item}${sta}.`;
+  else if (cat===5 && /fine grad/i.test(item))
+    s = `${name}'s crew fine graded the ${item.toLowerCase()} to the correct elevation.`;
+  else if (cat===5 && /dump and spread|base course/i.test(item))
+    s = `${name}'s crew hauled in, spread, and compacted ${fmtN(q)} ${um} of ${item.toLowerCase()}.`;
+  else if (cat===5)
+    s = `${name}'s crew continued earthwork, placing ${fmtN(q)} ${um} of ${item.toLowerCase()}.`;
+  else
+    s = `${name}'s crew worked ${item.toLowerCase()}, completing ${fmtN(q)} ${um}.`;
+  // production clause
+  if (lg && t.qty){
+    if (c.actQty >= t.qty) s = s.replace(/\.$/, ", meeting the day's planned production.");
+    else s += ` The crew finished short of the planned ${fmtN(t.qty)} ${um}.`;
+  }
+  // extra tasks that day
+  const verbs = {0:"laid",1:"ran",2:"laid",3:"set",4:"poured",5:"placed"};
+  ts.slice(1).forEach(x=>{
+    const cx=calc(x), lx=logs[x.id]; const qx=lx?cx.actQty:x.qty;
+    s += ` They also ${verbs[cx.it[CI.CAT]]||"placed"} ${fmtN(qx)}${cx.it[CI.UM]==="EACH"?"":" "+cx.it[CI.UM]+" of"} ${cx.it[CI.TASK].toLowerCase()}.`;
+  });
+  // trucking clause
+  const loads = ts.reduce((a,x)=>a+calc(x).loads,0);
+  if (loads>=0.5){
+    const trucks=Math.max(1,Math.ceil(loads/6));
+    s += ` The crew ran ${trucks} truck${trucks>1?"s":""}, moving ${Math.round(loads)} load${Math.round(loads)>1?"s":""} of material.`;
+  }
+  return s;
+}
+
+/* ============================================================ */
+function LookAhead(){
+  const [tab, setTab] = useState("board");
+  const [wk, setWk] = useState(WK0);
+  const [crews, setCrews] = useState(seedCrews);
+  const [siteRows, setSiteRows] = useState(seedSite);
+  const [tasks, setTasks] = useState(seedTasks);
+  const [logs, setLogs] = useState(seedLogs);
+  const [notes, setNotes] = useState(seedNotes);
+  const [cfg, setCfg] = useState({ crewSize:6, shiftHrs:8, laborRate:58, truckRate:220 });
+  const [eosMeta, setEosMeta] = useState({ safety:"No safety incidents noted.", quality:"No quality incidents noted.", weather:"Partly sunny, high of 91°F, low of 77°F, 20% chance of rain.", descs:{}, to:"moprea@rngd.com, mmurret@rngd.com" });
+  const [modal, setModal] = useState(null); // {type, ...}
+  const [addingIn, setAddingIn] = useState(null); // 'crew'|'sub'|'site'
+  const [loaded, setLoaded] = useState(false);
+
+  /* persistence */
+  useEffect(()=>{ (async()=>{
+    try{
+      const r = await store.get("lafable-v3");
+      if (r && r.value){
+        const s = JSON.parse(r.value);
+        if (s.crews) setCrews(s.crews); if (s.siteRows) setSiteRows(s.siteRows);
+        if (s.tasks) setTasks(s.tasks); if (s.logs) setLogs(s.logs);
+        if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
+        if (s.eosMeta) setEosMeta(s.eosMeta); if (s.wk) setWk(s.wk);
+      }
+    }catch(e){ /* first run — seeds stand */ }
+    setLoaded(true);
+  })(); },[]);
+  const saveTimer = useRef(null);
+  useEffect(()=>{
+    if(!loaded) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async()=>{
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk})); }catch(e){}
+    }, 600);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,loaded]);
+
+  /* fonts */
+  useEffect(()=>{
+    const l=document.createElement("link"); l.rel="stylesheet";
+    l.href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+    document.head.appendChild(l); return ()=>document.head.removeChild(l);
+  },[]);
+
+  /* derived */
+  const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
+  const installedFor = ci => {
+    const logged = tasks.filter(t=>t.ci===ci).reduce((a,t)=>a+((logs[t.id]&&logs[t.id].qty)||0),0);
+    return CATALOG[ci][CI.REP] + logged;
+  };
+  const actRate = ci => { // actual MH/unit from logged data (all weeks) — CTC live re-derive
+    let q=0, m=0;
+    tasks.forEach(t=>{ if(t.ci===ci && logs[t.id]){ q+=logs[t.id].qty||0; m+=logs[t.id].mh||0; }});
+    return q>0 ? m/q : null;
+  };
+  const fcst = ci => {
+    const it=CATALOG[ci], bud=unitCost(it), ar=actRate(ci);
+    if (ar==null || !it[CI.MH]) return { uc:bud, drift:0 };
+    const scale = ar/it[CI.MH];
+    const uc = (it[CI.UL]+it[CI.UE])*scale + it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+    return { uc, drift: uc-bud };
+  };
+  const taskCalc = t => {
+    const it=CATALOG[t.ci];
+    const planMH = t.qty*it[CI.MH];
+    const lg = logs[t.id]||{};
+    const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
+    return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
+      mat:t.qty*it[CI.UM$], budAmt:t.qty*it[CI.BID], budCost:t.qty*unitCost(it),
+      earnMH:(lg.qty||0)*it[CI.MH] };
+  };
+  const kpi = useMemo(()=>{
+    let p=0,a=0,e=0,cells=0,logged=0;
+    weekTasks.forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; cells++; if(logs[t.id]) logged++; });
+    const ts = notes.filter(n=>n.level!=="info").length;
+    return { p,a,e, pf: a>0? e/a : 0, cells, logged, ts };
+  },[weekTasks,logs,notes,cfg]);
+
+  /* mutations */
+  const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
+  const rmTask = id => { setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
+  const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
+  const addResource = (type,name,extra)=>{
+    const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
+    if(type==="site") setSiteRows(r=>[...r,{id,name}]);
+    else setCrews(c=>[...c,{id,name,type}]);
+    setAddingIn(null);
+  };
+  const rmResource = id => {
+    setCrews(c=>c.filter(x=>x.id!==id)); setSiteRows(r=>r.filter(x=>x.id!==id));
+    setTasks(ts=>ts.filter(t=>t.res!==id)); setNotes(ns=>ns.filter(n=>n.row!==id));
+    setModal(null);
+  };
+
+  const crewsOnly = crews.filter(c=>c.type==="crew");
+  const subsOnly  = crews.filter(c=>c.type==="sub");
+
+  return (
+    <div className="la-root">
+      <style>{CSS}</style>
+
+      {/* ============ TOP BAR ============ */}
+      <header className="top no-print">
+        <div className="brand">
+          <span className="logo">Look-Ahead</span>
+          <span className="proj">DPW547 · <em>Job 2124013</em></span>
+        </div>
+        <nav className="tabs">
+          {[["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"]].map(([k,l])=>
+            <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
+        </nav>
+        <div className="weeknav">
+          <button onClick={()=>setWk(addDays(wk,-7))} aria-label="Previous week">‹</button>
+          <span>{wkTitle(wk)}</span>
+          <button onClick={()=>setWk(addDays(wk,7))} aria-label="Next week">›</button>
+          <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
+        </div>
+        <div className="actions">
+          <button className="cta" onClick={()=>setModal({type:"sched"})}>+ Schedule</button>
+          <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
+          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
+          <button onClick={()=>setModal({type:"data"})}>Data</button>
+        </div>
+      </header>
+
+      {/* ============ KPI STRIP ============ */}
+      {tab==="board" && <>
+      <div className="kpis no-print">
+        <div className="kpi"><label>Planned MH</label><b>{fmtN(kpi.p)}</b></div>
+        <div className="kpi"><label>Actual MH</label><b>{fmtN(kpi.a)}</b></div>
+        <div className="kpi"><label>Earned MH</label><b>{fmtN(kpi.e)}</b></div>
+        <div className="kpi"><label>PF</label><b className={kpi.pf>=1?"good":kpi.pf>0?"bad":""}>{kpi.pf?kpi.pf.toFixed(2):"—"}</b></div>
+        <div className="kpi"><label>Days Logged</label><b>{kpi.logged}/{kpi.cells}</b></div>
+        <div className={"kpi ts"+(kpi.ts?" hot":"")}><label>Time-Sensitive</label><b>{kpi.ts} {kpi.ts>0&&"⚠"}</b></div>
+      </div>
+
+      <div className="legend no-print">
+        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.name}</span>)}
+        <span><i style={{background:"#c4b5fd"}}/>Crew / Foreman</span>
+        <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
+        <span className="hint">click a chip for the crew table · click a card to log · click an empty cell to schedule</span>
+      </div>
+
+      {/* ============ BOARD GRID ============ */}
+      <div className="boardwrap">
+        <table className="board">
+          <thead>
+            <tr>
+              <th className="rescol">Resource</th>
+              {DAYS.map((d,i)=>{
+                const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
+                return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b></th>;
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
+            {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc}}/>)}
+
+            <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
+            {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc}}/>)}
+
+            <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
+            {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
+            {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
+          </tbody>
+        </table>
+      </div>
+      </>}
+
+      {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
+      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} openSched={ci=>setModal({type:"sched",ci})}/>}
+
+      {/* ============ MODALS ============ */}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
+      {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
+      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
+      {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,logs,taskCalc,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
+          save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
+          del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
+    </div>
+  );
+}
+
+/* ============ BOARD PIECES ============ */
+function SectionRow({label,onAdd}){
+  return <tr className="secrow"><td colSpan={8}><span>{label}</span><button className="addbtn no-print" onClick={onAdd}>+ Add</button></td></tr>;
+}
+function AddRow({ph,onAdd,onX}){
+  const [v,setV]=useState("");
+  return <tr className="addrow no-print"><td colSpan={8}>
+    <input autoFocus placeholder={ph} value={v} onChange={e=>setV(e.target.value)}
+      onKeyDown={e=>{ if(e.key==="Enter"&&v.trim()) onAdd(v.trim()); if(e.key==="Escape") onX(); }}/>
+    <button className="cta sm" disabled={!v.trim()} onClick={()=>onAdd(v.trim())}>Add</button>
+    <button className="ghost sm" onClick={onX}>Cancel</button>
+  </td></tr>;
+}
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc}){
+  const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
+  return (
+    <tr>
+      <td className="rescol">
+        <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
+      </td>
+      {DAYS.map((_,d)=>{
+        const list = mine(d);
+        return <td key={d} className={"cell"+(d>4?" wknd":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+        </td>;
+      })}
+    </tr>
+  );
+}
+function Card({t,c,prev,onOpen}){
+  const cat = CATS[c.it[CI.CAT]];
+  return (
+    <button className="card" style={{background:cat.bg,color:cat.tx}} onClick={onOpen}>
+      <div className="cardtop">
+        <span className="ct">{c.it[CI.TASK].length>30 ? c.it[CI.TASK].slice(0,29)+"…" : c.it[CI.TASK]}</span>
+        {c.done && <span className="ck">✓</span>}
+      </div>
+      <div className="csub">{prev ? "→ cont." : (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC])}</div>
+      <div className="cnums"><b>{fmtN(t.qty,t.qty%1?1:0)} {c.it[CI.UM]}</b><span>{fmtN(c.planMH,c.planMH%1?1:0)} MH</span></div>
+    </button>
+  );
+}
+function SiteRow({row,notes,setNotes,setModal}){
+  const mine = d => notes.filter(n=>n.row===row.id && n.day===d);
+  return (
+    <tr>
+      <td className="rescol"><span className="chip site">{row.name}</span></td>
+      {DAYS.map((_,d)=>
+        <td key={d} className={"cell"+(d>4?" wknd":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:d}); }}>
+          {mine(d).map(n=>
+            <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:d})}>
+              {n.level==="crit"?"⚠ ":n.level==="warn"?"⚠ ":""}{n.text}
+            </button>)}
+        </td>)}
+    </tr>
+  );
+}
+
+/* ============ TASK MODAL — tables, no loads field ============ */
+function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
+  const it = CATALOG[t.ci];
+  const lg = logs[t.id]||{};
+  const [qty,setQty]=useState(lg.qty??"");
+  const [mh,setMh]=useState(lg.mh??"");
+  const cat=CATS[it[CI.CAT]];
+  const budUC=unitCost(it), f=fcst(t.ci);
+  const inst=installedFor(t.ci), est=it[CI.EST]||0;
+  const dayRate = it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : t.qty;
+  const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
+  const fac=f.uc*est, budTot=budUC*est, cvar=budTot-fac;
+  const margin=(it[CI.BID]-f.uc)*est;
+  return (
+    <Modal close={close} w={560}>
+      <h3>{it[CI.TASK]}</h3>
+      <div className="chiprow">
+        <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.name}</span>
+        <span className="pill dim">Cost {it[CI.CC]}</span>
+        <span className="pill dim">Pay {it[CI.PAY]}</span>
+      </div>
+
+      <table className="dt">
+        <tbody>
+          <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
+          <tr><th>Crew</th><td>{cfg.crewSize} @ {fmt$(cfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
+          <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
+        </tbody>
+      </table>
+
+      <table className="dt fcst">
+        <tbody>
+          <tr><th>Budget UC</th><td>{fmt$(budUC,2)}</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
+          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>FAC</th><td>{fmt$(fac)}</td></tr>
+          <tr><th>Cost var</th><td className={cvar<0?"neg":"pos"}>{fmt$(cvar)}</td><th>Pay / {it[CI.UM]}</th><td>{fmt$(it[CI.BID],2)}</td></tr>
+          <tr><th>Proj. margin</th><td className={margin<0?"neg":"pos"} colSpan={3}>{fmt$(margin)}</td></tr>
+        </tbody>
+      </table>
+
+      <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
+      <div className="logrow">
+        <label>Qty ({it[CI.UM]})<input type="number" value={qty} onChange={e=>setQty(e.target.value)}/></label>
+        <label>Manhours<input type="number" value={mh} onChange={e=>setMh(e.target.value)}/></label>
+      </div>
+      <div className="btnrow">
+        <button className="cta" onClick={()=>{saveLog(t.id,qty,mh,true); close();}}>Save</button>
+        <button className="ghost" onClick={()=>{saveLog(t.id,qty,mh,false); close();}}>Save as in-progress</button>
+        <span className="sp"/>
+        <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============ CREW MODAL — description as TABLE ============ */
+function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
+  const [name,setName]=useState(res.name);
+  const mine = weekTasks.filter(t=>t.res===res.id).sort((a,b)=>a.day-b.day);
+  let tp=0,ta=0,tpm=0,tam=0,tem=0;
+  const rows = mine.map(t=>{
+    const c=taskCalc(t);
+    tp+=t.qty; ta+=c.actQty; tpm+=c.planMH; tam+=c.actMH; tem+=c.earnMH;
+    return { t,c };
+  });
+  const pf = tam>0? tem/tam : 0;
+  return (
+    <Modal close={close} w={680}>
+      <div className="crewhead">
+        <input className="namein" value={name} onChange={e=>setName(e.target.value)}
+          onBlur={()=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,name}:c))}/>
+        <span className={"pill "+(pf>=1?"pgood":pf>0?"pbad":"dim")}>PF {pf?pf.toFixed(2):"—"}</span>
+      </div>
+      <table className="dt list">
+        <thead><tr><th>Day</th><th>Item</th><th>CC</th><th className="r">Plan</th><th className="r">Actual</th><th className="r">PPC</th><th className="r">Plan MH</th><th className="r">Act MH</th></tr></thead>
+        <tbody>
+          {rows.length===0 && <tr><td colSpan={8} className="empty">Nothing scheduled this week — click an empty cell on the board.</td></tr>}
+          {rows.map(({t,c})=>
+            <tr key={t.id}>
+              <td>{DAYS[t.day]}</td>
+              <td>{c.it[CI.TASK].slice(0,34)}{c.it[CI.TASK].length>34?"…":""}</td>
+              <td className="mono">{c.it[CI.CC]}</td>
+              <td className="r">{fmtN(t.qty)} {c.it[CI.UM]}</td>
+              <td className="r">{logs[t.id]?fmtN(c.actQty):"—"}</td>
+              <td className={"r "+(logs[t.id]?(c.actQty>=t.qty?"pos":"neg"):"")}>{logs[t.id]&&t.qty?pct(c.actQty/t.qty):"—"}</td>
+              <td className="r">{fmtN(c.planMH)}</td>
+              <td className="r">{logs[t.id]?fmtN(c.actMH):"—"}</td>
+            </tr>)}
+        </tbody>
+        {rows.length>0 && <tfoot><tr><th colSpan={3}>Week totals</th><th className="r">{fmtN(tp)}</th><th className="r">{fmtN(ta)}</th><th className="r">{tp?pct(ta/tp):"—"}</th><th className="r">{fmtN(tpm)}</th><th className="r">{fmtN(tam)}</th></tr></tfoot>}
+      </table>
+      <div className="btnrow"><span className="sp"/><button className="danger" onClick={()=>rmResource(res.id)}>Remove {res.type==="sub"?"subcontractor":"crew"}</button></div>
+    </Modal>
+  );
+}
+
+/* ============ SCHEDULE MODAL — search + station→qty (PPC logic) ============ */
+function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
+  const [q,setQ]=useState("");
+  const [ci,setCi]=useState(preset.ci ?? null);
+  const [res,setRes]=useState(preset.res ?? crews[0]?.id);
+  const [day,setDay]=useState(preset.day ?? 0);
+  const [mode,setMode]=useState("qty");
+  const [qty,setQty]=useState("");
+  const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
+  const [daysOv,setDaysOv]=useState("");
+
+  const results = useMemo(()=>{
+    const s=q.trim().toLowerCase(); if(!s) return [];
+    return CATALOG.map((r,i)=>({r,i}))
+      .filter(({r})=>r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s))
+      .slice(0,30);
+  },[q]);
+
+  const it = ci!=null ? CATALOG[ci] : null;
+  const a=parseSTA(s0), b=parseSTA(s1);
+  const staQty = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ assume 1
+  const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
+  const dayRate = it && it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : useQty||1;
+  const nDays = daysOv? Math.max(1,+daysOv) : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
+  const perDay = useQty/nDays;
+  const inst = it? installedFor(ci):0, est=it? it[CI.EST]:0;
+  const remaining = Math.max(0, est-inst);
+  const loadsDay = it&&cfg.truckRate>0 ? (perDay*it[CI.UT])/cfg.truckRate : 0;
+
+  return (
+    <Modal close={close} w={620}>
+      <h3>Schedule work</h3>
+      {!it && <>
+        <input autoFocus className="search" placeholder="Search item, cost code, or pay item — e.g. 51x31, HPPP, 33.40" value={q} onChange={e=>setQ(e.target.value)}/>
+        <div className="results">
+          {results.map(({r,i})=>
+            <button key={i} onClick={()=>setCi(i)}>
+              <i style={{background:CATS[r[CI.CAT]].bg}}/>
+              <span>{r[CI.TASK]}</span>
+              <em>{r[CI.CC]} · {r[CI.PAY]} · {r[CI.UM]}</em>
+            </button>)}
+          {q && results.length===0 && <div className="empty">No catalog match — try part of the cost code or pay item.</div>}
+          {!q && <div className="empty">319 items loaded from QPC (MHs + tracking account).</div>}
+        </div>
+      </>}
+
+      {it && <>
+        <div className="selitem">
+          <div><b>{it[CI.TASK]}</b><em>{it[CI.CC]} · Pay {it[CI.PAY]} · {fmtN(it[CI.MH],3)} MH/{it[CI.UM]}</em></div>
+          <button className="ghost sm" onClick={()=>setCi(null)}>Change</button>
+        </div>
+
+        <div className="budbar">
+          <label>Budget {fmtN(est)} {it[CI.UM]} · Installed {fmtN(inst)} ({est?pct(inst/est):"—"}) · Remaining {fmtN(remaining)}</label>
+          <div className="bar"><i style={{width:Math.min(100,est?inst/est*100:0)+"%"}}/>
+            {useQty>0 && <u style={{left:Math.min(100,est?inst/est*100:0)+"%", width:Math.min(100-(est?inst/est*100:0), est?useQty/est*100:0)+"%"}}/>}
+          </div>
+          {useQty>remaining&&remaining>0 && <div className="warnline">⚠ Plan exceeds remaining budget qty by {fmtN(useQty-remaining)} {it[CI.UM]}</div>}
+        </div>
+
+        <div className="qmode">
+          <button className={mode==="qty"?"on":""} onClick={()=>setMode("qty")}>Direct qty</button>
+          <button className={mode==="sta"?"on":""} onClick={()=>setMode("sta")}>Station numbers</button>
+        </div>
+        {mode==="qty" ?
+          <div className="logrow"><label>Quantity ({it[CI.UM]})<input type="number" autoFocus value={qty} onChange={e=>setQty(e.target.value)}/></label></div> :
+          <div className="logrow">
+            <label>Start STA<input placeholder="115+15.66" value={s0} onChange={e=>setS0(e.target.value)}/></label>
+            <label>End STA<input placeholder="118+40 (blank ⇒ qty 1)" value={s1} onChange={e=>setS1(e.target.value)}/></label>
+            <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>
+          </div>}
+
+        <div className="logrow">
+          <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
+          <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
+          <label>Days ({fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/d)<input type="number" placeholder={String(nDays)} value={daysOv} onChange={e=>setDaysOv(e.target.value)}/></label>
+        </div>
+
+        {useQty>0 && <table className="dt">
+          <tbody>
+            <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
+            <tr><th>Material (plan)</th><td>{fmt$(useQty*it[CI.UM$])}</td></tr>
+            <tr><th>Budget amount</th><td>{fmt$(useQty*it[CI.BID])} <em className="dim2">@ {fmt$(it[CI.BID],2)}/{it[CI.UM]}</em></td></tr>
+            <tr><th>Budget cost</th><td>{fmt$(useQty*unitCost(it))} <em className="dim2">@ {fmt$(unitCost(it),2)}/{it[CI.UM]}</em></td></tr>
+          </tbody>
+        </table>}
+
+        <div className="btnrow">
+          <button className="cta" disabled={!useQty} onClick={()=>{
+            const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?Math.min(a,b):null;
+            for(let i=0;i<nDays;i++){
+              const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
+              const sta = cursor!=null? [cursor, cursor+dq] : null; if(cursor!=null) cursor+=dq;
+              list.push({ id:tid(), res, ci, day:Math.min(6,day+i), qty:dq, sta, wk });
+            }
+            add(list);
+          }}>Add {nDays>1?nDays+" days":"to board"}</button>
+          <button className="ghost" onClick={close}>Cancel</button>
+        </div>
+      </>}
+    </Modal>
+  );
+}
+
+/* ============ EOS — follows EOS.pdf format exactly ============ */
+function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close}){
+  const [day,setDay]=useState(d0);
+  const [copied,setCopied]=useState(false);
+  const dayTasks = res => weekTasks.filter(t=>t.res===res && t.day===day);
+  const crewDesc = (id,fallback)=> eosMeta.descs[id+"_"+day] ?? fallback;
+
+  const truckLine = useMemo(()=>{
+    const per = crews.map(c=>{
+      const loads = dayTasks(c.id).reduce((a,t)=>a+taskCalc(t).loads,0);
+      return {name:c.name, trucks:Math.ceil(loads/6)}; // ~6 loads per truck-day
+    }).filter(x=>x.trucks>0);
+    const total = per.reduce((a,x)=>a+x.trucks,0);
+    return total? `${total} trucks requested for today's operation (${per.map(x=>`${x.name} - ${x.trucks}`).join(", ")}).` : "No trucking requested for today's operation.";
+  },[weekTasks,day,crews,cfg]);
+
+  const text = useMemo(()=>{
+    const L=[];
+    L.push(longDate(addDays(wk,day)));
+    L.push("");
+    L.push("Project: 2124013 - DPS 01 Watershed");
+    L.push("Superintendent: Brett Leonhard");
+    L.push("");
+    L.push("Safety:"); L.push(eosMeta.safety); L.push("");
+    L.push("Quality:"); L.push(eosMeta.quality); L.push("");
+    L.push("Weather:"); L.push(eosMeta.weather); L.push("");
+    L.push("Trucking:"); L.push(truckLine); L.push("");
+    L.push("Production - Self Perform Crews:"); L.push("");
+    crews.filter(c=>c.type==="crew").forEach(c=>{
+      const ts=dayTasks(c.id); if(!ts.length) return;
+      L.push(c.name);
+      ts.forEach(t=>{
+        const cc=taskCalc(t);
+        const lg=logs[t.id];
+        L.push(`Planned - ${cc.it[CI.CC]} ${cc.it[CI.TASK]}`);
+        L.push(`Planned Production: ${fmtN(t.qty)} ${cc.it[CI.UM]}`);
+        L.push(`Actual Production: ${lg?fmtN(cc.actQty):"0"} ${cc.it[CI.UM]}`);
+        L.push(`PPC: ${lg&&t.qty?Math.round(cc.actQty/t.qty*100):0}%`);
+      });
+      L.push("Description:");
+      L.push(crewDesc(c.id, autoDesc(c.name, ts, logs, taskCalc, false)));
+      L.push("");
+    });
+    L.push("Production - Subcontractor Crews:"); L.push("");
+    crews.filter(c=>c.type==="sub").forEach(c=>{
+      const ts=dayTasks(c.id); if(!ts.length && !eosMeta.descs[c.id+"_"+day]) return;
+      L.push(c.name);
+      L.push("Description:");
+      L.push(crewDesc(c.id, autoDesc(c.name, ts, logs, taskCalc, true)));
+      L.push("");
+    });
+    L.push("—");
+    L.push("Preliminary end-of-shift figures based on field counts at time of send; quantities subject to survey verification and final reconciliation.");
+    return L.join("\n");
+  },[wk,day,crews,weekTasks,logs,eosMeta,truckLine]);
+
+  const active = crews.filter(c=>dayTasks(c.id).length>0);
+  return (
+    <Modal close={close} w={720}>
+      <div className="crewhead">
+        <h3 style={{margin:0}}>End of Shift — {longDate(addDays(wk,day))}</h3>
+        <select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((x,i)=><option key={x} value={i}>{x} {dLabel(wk,i)}</option>)}</select>
+      </div>
+      <div className="eosgrid">
+        <label>Safety<input value={eosMeta.safety} onChange={e=>setEosMeta(m=>({...m,safety:e.target.value}))}/></label>
+        <label>Quality<input value={eosMeta.quality} onChange={e=>setEosMeta(m=>({...m,quality:e.target.value}))}/></label>
+        <label className="full">Weather<input value={eosMeta.weather} onChange={e=>setEosMeta(m=>({...m,weather:e.target.value}))}/></label>
+        {active.map(c=>
+          <label key={c.id} className="full">{c.name} — description
+            <textarea rows={2} placeholder="Auto-generated from the board — type to override"
+              value={eosMeta.descs[c.id+"_"+day]??""}
+              onChange={e=>setEosMeta(m=>({...m,descs:{...m.descs,[c.id+"_"+day]:e.target.value}}))}/>
+          </label>)}
+        <label className="full">Send to<input value={eosMeta.to} onChange={e=>setEosMeta(m=>({...m,to:e.target.value}))}/></label>
+      </div>
+      <pre className="eosprev">{text}</pre>
+      <div className="btnrow">
+        <button className="cta" onClick={()=>{navigator.clipboard?.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy summary"}</button>
+        <a className="btn ghost" href={`mailto:${encodeURIComponent(eosMeta.to)}?subject=${encodeURIComponent(`2124013 DPS 01 Watershed - EOS - ${addDays(wk,day).slice(5).replace("-",".")}.${addDays(wk,day).slice(0,4)}`)}&body=${encodeURIComponent(text)}`}>Open in email</a>
+        <span className="sp"/><em className="dim2">Cost data is deliberately excluded.</em>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============ TRENDS ============ */
+function Trends({crews,tasks,logs,taskCalc,wk}){
+  const weeks = useMemo(()=>{
+    const set=[...new Set(tasks.map(t=>t.wk))].sort();
+    return set.map(w=>{
+      const rows = crews.map(c=>{
+        let p=0,a=0,e=0;
+        tasks.filter(t=>t.wk===w&&t.res===c.id).forEach(t=>{const x=taskCalc(t); p+=x.planMH; a+=x.actMH; e+=x.earnMH;});
+        return {c,p,a,e,pf:a>0?e/a:0};
+      }).filter(r=>r.p>0||r.a>0);
+      return {w,rows};
+    });
+  },[crews,tasks,logs]);
+  return (
+    <div className="page">
+      <h2>Productivity trends</h2>
+      {weeks.map(({w,rows})=>
+        <div key={w} className="panel">
+          <div className="ph">{wkTitle(w)}{w===wk?" · current":""}</div>
+          <table className="dt list">
+            <thead><tr><th>Crew</th><th className="r">Plan MH</th><th className="r">Actual MH</th><th className="r">Earned MH</th><th className="r">PF</th><th style={{width:"34%"}}>Earned vs actual</th></tr></thead>
+            <tbody>{rows.map(r=>
+              <tr key={r.c.id}>
+                <td>{r.c.name}{r.c.type==="sub"?" (sub)":""}</td>
+                <td className="r">{fmtN(r.p)}</td><td className="r">{fmtN(r.a)}</td><td className="r">{fmtN(r.e)}</td>
+                <td className={"r "+(r.pf>=1?"pos":r.pf>0?"neg":"")}>{r.pf?r.pf.toFixed(2):"—"}</td>
+                <td><div className="tbar"><i style={{width:Math.min(100,(r.a? r.e/Math.max(r.a,r.e):0)*100)+"%"}}/><u style={{width:Math.min(100,(r.e? r.a/Math.max(r.a,r.e):0)*100)+"%"}}/></div></td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>)}
+      <p className="dim2">Weeks accumulate as you schedule and log — use ‹ › on the board to plan ahead; history stays here.</p>
+    </div>
+  );
+}
+
+/* ============ CATALOG / CTC ============ */
+function CatalogView({installedFor,fcst,openSched}){
+  const [q,setQ]=useState("");
+  const rows = useMemo(()=>{
+    const s=q.trim().toLowerCase();
+    return CATALOG.map((r,i)=>({r,i}))
+      .filter(({r})=>!s||r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s))
+      .slice(0,80);
+  },[q]);
+  return (
+    <div className="page">
+      <h2>Catalog / CTC <em className="dim2">— {CATALOG.length} items from QPC unit-cost detail + tracking account</em></h2>
+      <input className="search" placeholder="Search description, cost code, or pay item…" value={q} onChange={e=>setQ(e.target.value)}/>
+      <table className="dt list">
+        <thead><tr><th>CC</th><th>Pay item</th><th>Description</th><th>UM</th><th className="r">MH/U</th><th className="r">Bid</th><th className="r">Budget UC → Fcst</th><th className="r">Budget qty</th><th className="r">Installed</th><th style={{width:110}}>%</th><th/></tr></thead>
+        <tbody>{rows.map(({r,i})=>{
+          const inst=installedFor(i), est=r[CI.EST]||0, f=fcst(i);
+          return <tr key={i}>
+            <td className="mono">{r[CI.CC]}</td><td className="mono">{r[CI.PAY]}</td>
+            <td><i className="dot" style={{background:CATS[r[CI.CAT]].bg}}/>{r[CI.TASK].slice(0,44)}{r[CI.TASK].length>44?"…":""}</td>
+            <td>{r[CI.UM]}</td><td className="r">{r[CI.MH]?fmtN(r[CI.MH],3):"—"}</td>
+            <td className="r">{r[CI.BID]?fmt$(r[CI.BID],2):"—"}</td>
+            <td className={"r "+(f.drift>0.005?"neg":"")}>{fmt$(unitCost(r),2)}{f.drift?` → ${fmt$(f.uc,2)}`:""}</td>
+            <td className="r">{est?fmtN(est):"—"}</td><td className="r">{fmtN(inst)}</td>
+            <td><div className="tbar"><i style={{width:Math.min(100,est?inst/est*100:0)+"%"}}/></div></td>
+            <td><button className="ghost sm" onClick={()=>openSched(i)}>Schedule</button></td>
+          </tr>;})}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ============ PRINT ============ */
+function PrintModal({crews,weekTasks,logs,taskCalc,wk,close}){
+  const [preset,setPreset]=useState("brett");
+  const P={
+    brett:{label:"Brett — field quantities", cols:["Day","Crew","Item","Plan qty","Installed","Δ"]},
+    mike:{label:"Mike — planned vs actual", cols:["Day","Crew","Item","Plan qty","Actual","PPC","Plan MH","Act MH"]},
+    fredy:{label:"Fredy — budget vs actual cost", cols:["Day","Crew","Item","Plan qty","Budget cost","Earned $","Actual MH $","Var"]},
+  };
+  const rows = weekTasks.slice().sort((a,b)=>a.day-b.day).map(t=>({t,c:taskCalc(t), crew:crews.find(x=>x.id===t.res)?.name||"?"}));
+  return (
+    <Modal close={close} w={760}>
+      <div className="crewhead"><h3 style={{margin:0}}>Print / PDF — {wkTitle(wk)}</h3>
+        <select value={preset} onChange={e=>setPreset(e.target.value)}>{Object.entries(P).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select>
+        <button className="cta" onClick={()=>window.print()}>Print</button>
+      </div>
+      <div className="printarea">
+        <div className="ptitle">DPW547 · Job 2124013 — Look-Ahead · {wkTitle(wk)} · {P[preset].label}</div>
+        <table className="dt list">
+          <thead><tr>{P[preset].cols.map(c=><th key={c} className={c.includes("qty")||c.includes("MH")||c.includes("$")||c==="Actual"||c==="PPC"||c==="Δ"||c==="Var"||c.includes("cost")||c.includes("Installed")?"r":""}>{c}</th>)}</tr></thead>
+          <tbody>{rows.map(({t,c,crew})=>{
+            const lg=logs[t.id];
+            const base=[DAYS[t.day],crew,c.it[CI.TASK].slice(0,36)];
+            let cells;
+            if(preset==="brett") cells=[...base, fmtN(t.qty)+" "+c.it[CI.UM], lg?fmtN(c.actQty):"—", lg?fmtN(c.actQty-t.qty):"—"];
+            else if(preset==="mike") cells=[...base, fmtN(t.qty), lg?fmtN(c.actQty):"—", lg&&t.qty?pct(c.actQty/t.qty):"—", fmtN(c.planMH), lg?fmtN(c.actMH):"—"];
+            else { const earned=c.actQty*unitCost(c.it), spent=c.actMH*58 + c.actQty*(c.it[CI.UM$]+c.it[CI.UT]);
+              cells=[...base, fmtN(t.qty), fmt$(c.budCost), lg?fmt$(earned):"—", lg?fmt$(spent):"—", lg?fmt$(earned-spent):"—"]; }
+            return <tr key={t.id}>{cells.map((x,i)=><td key={i} className={i>2?"r":""}>{x}</td>)}</tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============ NOTE + DATA ============ */
+function NoteModal({note,rowId,day,save,del,close}){
+  const [text,setText]=useState(note?.text||"");
+  const [level,setLevel]=useState(note?.level||"info");
+  return (
+    <Modal close={close} w={460}>
+      <h3>{note?"Edit note":"New note"} — {DAYS[day]}</h3>
+      <textarea rows={3} autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Delivery, PTO, inspection, reminder…"/>
+      <div className="qmode">
+        {[["info","Note"],["warn","Time-sensitive"],["crit","Critical"]].map(([k,l])=>
+          <button key={k} className={level===k?"on":""} onClick={()=>setLevel(k)}>{l}</button>)}
+      </div>
+      <div className="btnrow">
+        <button className="cta" disabled={!text.trim()} onClick={()=>save({...(note||{row:rowId,day}),text:text.trim(),level})}>Save</button>
+        {note&&<button className="danger" onClick={()=>del(note.id)}>Delete</button>}
+      </div>
+    </Modal>
+  );
+}
+function DataModal({cfg,setCfg,close}){
+  const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
+  return (
+    <Modal close={close} w={460}>
+      <h3>Data & assumptions</h3>
+      <div className="logrow">{F("crewSize","Crew size")}{F("shiftHrs","Shift hours")}</div>
+      <div className="logrow">{F("laborRate","Labor $/MH")}{F("truckRate","Trucking $/load")}</div>
+      <p className="dim2">Loads are derived from budgeted trucking $ per unit (QPC cost detail) ÷ $/load. Re-upload Truck_Rates.xlsx in chat any time to tune per-truck-type cycle rates. Catalog quantities come from PayItemTrackingAccount (budget vs reported through 6/30).</p>
+      <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
+    </Modal>
+  );
+}
+function Modal({children,close,w=520}){
+  return (
+    <div className="ovl" onMouseDown={e=>{if(e.target===e.currentTarget) close();}}>
+      <div className="modal" style={{maxWidth:w}} role="dialog">
+        <button className="x" onClick={close} aria-label="Close">✕</button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ============ CSS ============ */
+const CSS = `
+.la-root{--bg:#0e1014;--pn:#161923;--pn2:#1d212c;--ln:#2a2f3c;--tx:#e9ebf2;--dm:#8f97a8;--dm2:#626a7c;--acc:#f97316;--good:#4ade80;--bad:#f87171;--warn:#fbbf24;
+ background:var(--bg);color:var(--tx);min-height:100vh;font:14px/1.45 "IBM Plex Mono",ui-monospace,monospace;padding-bottom:60px}
+.la-root *{box-sizing:border-box}
+.la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Barlow Condensed",sans-serif;letter-spacing:.04em}
+.la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--ln);background:var(--pn);position:sticky;top:0;z-index:40}
+.logo{font-size:22px;font-weight:700}
+.proj{color:var(--acc);font-size:13px;margin-left:8px}.proj em{color:var(--dm);font-style:normal}
+.tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
+.tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
+.tabs button.on{background:#2a3040;color:var(--tx)}
+.weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
+.weeknav span{font-family:"Barlow Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
+.weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
+.actions{display:flex;gap:8px}
+.actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
+.cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#1a0d02!important}
+.cta:disabled{opacity:.4;cursor:default}
+.ghost{background:transparent}
+.danger{background:transparent;border:1px solid #7f2f2f;color:var(--bad);border-radius:8px;padding:7px 13px;font-weight:600;cursor:pointer}
+.sm{padding:4px 10px!important;font-size:13px!important}
+.kpis{display:flex;gap:10px;padding:12px 18px 4px;flex-wrap:wrap}
+.kpi{background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:8px 16px;display:flex;gap:10px;align-items:baseline}
+.kpi label{color:var(--dm);font-size:12px;text-transform:uppercase;font-weight:600}
+.kpi b{font-size:17px;font-family:"IBM Plex Mono"}
+.kpi b.good{color:var(--good)}.kpi b.bad{color:var(--bad)}
+.kpi.ts.hot{border-color:#7f2f2f}.kpi.ts.hot b{color:var(--bad)}
+.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.legend .hint{margin-left:auto;color:var(--dm2)}
+.boardwrap{overflow:auto;padding:0 18px 30px}
+.board{border-collapse:separate;border-spacing:0;width:100%;min-width:1080px}
+.board thead th{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:2px solid var(--ln);padding:8px 6px 10px;text-align:center;font-size:13px;color:var(--dm)}
+.board thead th b{display:block;font-size:17px;color:var(--tx);font-family:"IBM Plex Mono"}
+.board thead th.today{color:var(--acc)}.board thead th.today b{color:var(--acc)}
+.board thead th.wknd,.cell.wknd{opacity:.55}
+.rescol{width:118px;min-width:118px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5}
+thead .rescol{z-index:12}
+.secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Barlow Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:1px solid var(--ln)}
+.secrow .addbtn{margin-left:10px;background:none;border:1px dashed var(--ln);color:var(--dm);border-radius:6px;padding:1px 8px;font-size:12px;cursor:pointer}
+.secrow .addbtn:hover{color:var(--acc);border-color:var(--acc)}
+.addrow td{padding:8px 4px}
+.addrow input{background:var(--pn2);border:1px solid var(--acc);color:var(--tx);border-radius:8px;padding:6px 10px;width:280px;margin-right:8px;font:inherit}
+.cell{border-bottom:1px solid #1b1f29;border-left:1px solid #1b1f29;vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
+.cell:hover{background:#141824}
+.chip{display:inline-block;border:0;border-radius:8px;padding:5px 11px;font-weight:700;font-size:14px;cursor:pointer}
+.chip.crew{background:#c4b5fd;color:#231a4a}
+.chip.sub{background:#fbe08a;color:#3d3005}
+.chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
+.card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono"}
+.cardtop{display:flex;justify-content:space-between;gap:4px}
+.ct{font-family:"Barlow Condensed";font-weight:600;font-size:13.5px;line-height:1.15}
+.ck{font-weight:700}
+.csub{font-size:10.5px;opacity:.75;margin:1px 0 2px}
+.cnums{display:flex;justify-content:space-between;font-size:12px}
+.cnums b{font-weight:600}.cnums span{opacity:.7;font-size:10.5px}
+.note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
+.note.warn{background:#3d2f12;border-color:#7a5a1c;color:#fcd77f}
+.note.crit{background:#43181a;border-color:#8a3237;color:#ffb0b4}
+.note.info{background:#3a3620;border-color:#6b6236;color:#efe3a8}
+.ovl{position:fixed;inset:0;background:rgba(5,7,12,.72);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;z-index:60;overflow:auto}
+.modal{background:var(--pn);border:1px solid #333a4a;border-radius:14px;padding:20px 22px;width:100%;position:relative;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+.modal .x{position:absolute;top:10px;right:12px;background:none;border:0;color:var(--dm);font-size:15px;cursor:pointer}
+.chiprow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.pill{border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
+.pill.dim{background:var(--pn2);color:var(--dm);border:1px solid var(--ln)}
+.pill.pgood{background:#153524;color:var(--good)}.pill.pbad{background:#3a1717;color:var(--bad)}
+.dt{width:100%;border-collapse:collapse;margin:10px 0;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;overflow:hidden}
+.dt th,.dt td{padding:7px 10px;border-bottom:1px solid var(--ln);text-align:left;font-size:13px}
+.dt th{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:600;white-space:nowrap}
+.dt tr:last-child td,.dt tr:last-child th{border-bottom:0}
+.dt .r{text-align:right;font-family:"IBM Plex Mono"}
+.dt.fcst{border-color:#3a4152}
+.dt td.neg,.neg{color:var(--bad)}.dt td.pos,.pos{color:var(--good)}
+.dt.list thead th{background:var(--pn)}
+.dt.list tfoot th{border-top:2px solid var(--ln);color:var(--tx)}
+.dt .empty{color:var(--dm2);text-align:center;padding:16px}
+.mono{font-family:"IBM Plex Mono";font-size:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+.loghdr{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;font-family:"Barlow Condensed";font-weight:700}
+.logrow{display:flex;gap:10px;margin:8px 0;flex-wrap:wrap}
+.logrow label,.eosgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:600;flex:1;min-width:130px}
+.logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 10px;font:13px "IBM Plex Mono";width:100%}
+.logrow input:focus,.search:focus,.eosgrid input:focus{outline:none;border-color:var(--acc)}
+.btnrow{display:flex;gap:10px;margin-top:14px;align-items:center}
+.btnrow .sp{flex:1}
+.search{width:100%;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:9px;padding:10px 12px;font:14px "IBM Plex Mono";margin-bottom:8px}
+.results{max-height:300px;overflow:auto;border:1px solid var(--ln);border-radius:10px}
+.results button{display:flex;width:100%;gap:8px;align-items:center;background:none;border:0;border-bottom:1px solid #1b1f29;color:var(--tx);padding:8px 10px;cursor:pointer;text-align:left;font:13px "IBM Plex Mono"}
+.results button:hover{background:var(--pn2)}
+.results i{width:9px;height:9px;border-radius:2px;flex:none}
+.results em{margin-left:auto;color:var(--dm2);font-style:normal;font-size:11px;flex:none}
+.results .empty{color:var(--dm2);padding:14px;text-align:center;font-size:13px}
+.selitem{display:flex;align-items:center;gap:10px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.selitem b{display:block;font-family:"Barlow Condensed";font-size:16px}
+.selitem em{color:var(--dm);font-style:normal;font-size:12px}
+.selitem button{margin-left:auto}
+.budbar label{color:var(--dm);font-size:12px}
+.bar{position:relative;height:10px;background:var(--bg);border:1px solid var(--ln);border-radius:6px;margin:5px 0 2px;overflow:hidden}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:#3f77c9}
+.bar u{position:absolute;top:0;bottom:0;background:var(--acc);opacity:.85}
+.warnline{color:var(--warn);font-size:12px;margin-top:4px}
+.qmode{display:flex;gap:6px;margin:12px 0 4px}
+.qmode button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:5px 12px;font-weight:600;cursor:pointer}
+.qmode button.on{border-color:var(--acc);color:var(--acc)}
+.gen{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;font-weight:600;justify-content:flex-end}
+.gen b{font:600 16px "IBM Plex Mono";color:var(--good);text-transform:none}
+.dim2{color:var(--dm2);font-style:normal}
+.crewhead{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.crewhead select{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 10px;font:13px "Barlow Condensed"}
+.namein{background:none;border:0;border-bottom:1px dashed var(--ln);color:var(--tx);font:700 22px "Barlow Condensed";width:220px;padding:2px}
+.eosgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.eosgrid .full{grid-column:1/-1}
+.eosprev{background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;white-space:pre-wrap;font:12.5px/1.55 "IBM Plex Mono";max-height:320px;overflow:auto;color:#cfd4e0}
+.page{padding:16px 22px}
+.page h2{font-size:24px;margin:6px 0 14px}
+.panel{background:var(--pn);border:1px solid var(--ln);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.ph{font-family:"Barlow Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:13px;margin-bottom:4px}
+.tbar{position:relative;height:8px;background:var(--bg);border-radius:5px;overflow:hidden}
+.tbar i{position:absolute;left:0;top:0;bottom:0;background:var(--good)}
+.tbar u{position:absolute;left:0;top:4px;bottom:0;background:var(--acc);opacity:.9}
+.printarea{background:#fff;color:#111;border-radius:8px;padding:14px;max-height:380px;overflow:auto}
+.printarea .dt{background:#fff;border-color:#ccc}
+.printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
+.printarea .dt th{color:#555}
+.ptitle{font:700 15px "Barlow Condensed";margin-bottom:6px}
+@media print{
+ body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
+ .ovl{position:absolute;inset:0;background:#fff;padding:0}
+ .modal{box-shadow:none;border:0;max-width:100%!important;background:#fff;color:#111}
+ .modal .x,.btnrow,.crewhead select,.crewhead .cta{display:none}
+ .printarea{max-height:none;overflow:visible}
+}
+`;
+
+const b = document.getElementById('boot'); if(b) b.remove();
+ReactDOM.createRoot(document.getElementById('root')).render(<LookAhead/>);
+</script>
+</body>
+</html>
