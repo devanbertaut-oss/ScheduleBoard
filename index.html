@@ -69,6 +69,9 @@ const CATS = [
   { name:"Site",      bg:"#c3c9d8", tx:"#1e2330" },
 ];
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+/* Billed-to-date & forecast quantity per Spectrum phase code — Jul 2026 CTC by Cost Code export.
+   u=unit cq=contract qty bq=current billed qty rq=adjusted remaining (forecast) qty. */
+const CTC_DATA = {"02.45.01.00":{"u":"SY","cq":14441.47,"bq":5788.28,"rq":-3541.47,"up":null,"bd":null,"cd":51114.06,"gp":null},"02.45.13.13":{"u":"SY","cq":14441.47,"bq":6897.22,"rq":-3541.47,"up":null,"bd":null,"cd":136093.25,"gp":null},"02.45.02.00":{"u":"SY","cq":8450.0,"bq":3066.26,"rq":0.0,"up":null,"bd":null,"cd":60703.82,"gp":null},"02.45.13.14":{"u":"SY","cq":8450.0,"bq":3066.26,"rq":0.0,"up":null,"bd":null,"cd":51006.41,"gp":null},"32.07.13.00":{"u":"TON","cq":10145.48,"bq":4097.48,"rq":-1602.98,"up":null,"bd":null,"cd":356727.48,"gp":null},"32.07.23.00":{"u":"SY","cq":22760.55,"bq":4097.48,"rq":-3047.19,"up":null,"bd":null,"cd":221985.85,"gp":null},"33.40.18.24":{"u":"LF","cq":193.0,"bq":164.0,"rq":124.0,"up":null,"bd":null,"cd":67627.26,"gp":null},"33.40.28.15":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.40.19.24":{"u":"LF","cq":25.0,"bq":12.0,"rq":5.0,"up":null,"bd":null,"cd":2035.3,"gp":null},"33.40.19.30":{"u":"LF","cq":224.0,"bq":242.0,"rq":18.0,"up":null,"bd":null,"cd":80993.51,"gp":null},"33.40.19.36":{"u":"LF","cq":3074.0,"bq":994.78,"rq":-1978.0,"up":null,"bd":null,"cd":148699.19,"gp":null},"33.40.19.37":{"u":"LF","cq":688.5,"bq":1140.0,"rq":237.0,"up":null,"bd":null,"cd":441652.56,"gp":null},"33.40.19.42":{"u":"LF","cq":1367.0,"bq":1009.0,"rq":908.0,"up":null,"bd":null,"cd":899951.36,"gp":null},"33.49.14.01":{"u":"VF","cq":62.0,"bq":53.83,"rq":0.0,"up":null,"bd":null,"cd":53932.83,"gp":null},"33.49.16.27":{"u":"EACH","cq":3.0,"bq":0.37,"rq":8.63,"up":null,"bd":null,"cd":330.87,"gp":null},"33.49.14.02":{"u":"VF","cq":69.0,"bq":31.11,"rq":0.0,"up":null,"bd":null,"cd":73699.07,"gp":null},"33.49.14.03":{"u":"VF","cq":31.0,"bq":52.7,"rq":-9.36,"up":null,"bd":null,"cd":88598.97,"gp":null},"33.49.14.10":{"u":"EACH","cq":8.0,"bq":5.0,"rq":0.0,"up":null,"bd":null,"cd":60923.82,"gp":null},"33.49.14.04":{"u":"EACH","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1014.3,"gp":null},"33.49.14.07":{"u":"EACH","cq":39.0,"bq":8.0,"rq":-27.0,"up":null,"bd":null,"cd":96751.98,"gp":null},"33.49.14.08":{"u":"EACH","cq":20.0,"bq":11.0,"rq":-5.0,"up":null,"bd":null,"cd":180181.33,"gp":null},"33.49.14.09":{"u":"EACH","cq":3.0,"bq":2.0,"rq":0.0,"up":null,"bd":null,"cd":33768.55,"gp":null},"33.49.20.00":{"u":"EACH","cq":3.0,"bq":4.0,"rq":6.0,"up":null,"bd":null,"cd":77553.73,"gp":null},"33.49.16.28":{"u":"EACH","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":720.73,"gp":null},"33.49.17.02":{"u":"EACH","cq":14.0,"bq":2.0,"rq":-10.0,"up":null,"bd":null,"cd":65198.69,"gp":null},"33.49.17.09":{"u":"EACH","cq":43.0,"bq":19.0,"rq":-1.0,"up":null,"bd":null,"cd":218451.41,"gp":null},"33.49.16.29":{"u":"EACH","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1705.0,"gp":null},"33.49.17.08":{"u":"EACH","cq":4.0,"bq":3.0,"rq":0.0,"up":null,"bd":null,"cd":11507.92,"gp":null},"33.49.17.03":{"u":"EACH","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.14.04":{"u":"LF","cq":0.0,"bq":5.0,"rq":5.0,"up":null,"bd":null,"cd":4570.11,"gp":null},"33.10.31.00":{"u":"EACH","cq":1.57,"bq":1.62,"rq":0.05,"up":null,"bd":null,"cd":3859.55,"gp":null},"33.10.32.04":{"u":"EACH","cq":0.98,"bq":0.93,"rq":-0.05,"up":null,"bd":null,"cd":3698.19,"gp":null},"33.10.15.04":{"u":"LF","cq":27.0,"bq":27.0,"rq":0.0,"up":null,"bd":null,"cd":7211.59,"gp":null},"33.10.14.06":{"u":"LF","cq":104.0,"bq":27.0,"rq":-77.0,"up":null,"bd":null,"cd":24782.35,"gp":null},"33.10.32.06":{"u":"EACH","cq":0.08,"bq":0.06,"rq":-0.02,"up":null,"bd":null,"cd":300.24,"gp":null},"33.10.15.06":{"u":"LF","cq":20.0,"bq":16.5,"rq":-11.5,"up":null,"bd":null,"cd":8330.59,"gp":null},"33.10.14.08":{"u":"LF","cq":2068.0,"bq":1272.75,"rq":0.0,"up":null,"bd":null,"cd":362405.55,"gp":null},"33.10.32.08":{"u":"EACH","cq":0.8,"bq":0.55,"rq":-0.25,"up":null,"bd":null,"cd":1735.69,"gp":null},"33.10.15.08":{"u":"LF","cq":14.0,"bq":19.0,"rq":16.0,"up":null,"bd":null,"cd":35467.98,"gp":null},"33.10.14.12":{"u":"LF","cq":1742.0,"bq":1118.0,"rq":-554.0,"up":null,"bd":null,"cd":287436.24,"gp":null},"33.10.32.12":{"u":"EACH","cq":4.19,"bq":2.98,"rq":-1.21,"up":null,"bd":null,"cd":11224.95,"gp":null},"33.10.15.12":{"u":"LF","cq":775.0,"bq":701.0,"rq":-17.5,"up":null,"bd":null,"cd":236609.56,"gp":null},"33.10.14.16":{"u":"LF","cq":25.0,"bq":0.0,"rq":5.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.32.16":{"u":"EACH","cq":1.67,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.35.01":{"u":"EACH","cq":28.0,"bq":18.0,"rq":0.0,"up":null,"bd":null,"cd":73888.31,"gp":null},"33.49.16.33":{"u":"EACH","cq":28.0,"bq":8.0,"rq":0.0,"up":null,"bd":null,"cd":5021.8,"gp":null},"33.30.01.00":{"u":"LF","cq":800.0,"bq":0.0,"rq":25.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.19.06":{"u":"LF","cq":303.0,"bq":0.0,"rq":-303.0,"up":null,"bd":null,"cd":6599.05,"gp":null},"33.30.19.42":{"u":"LF","cq":800.0,"bq":798.0,"rq":108.0,"up":null,"bd":null,"cd":210828.59,"gp":null},"33.30.26.06":{"u":"VF","cq":80.0,"bq":50.63,"rq":-37.23,"up":null,"bd":null,"cd":60619.9,"gp":null},"33.49.16.34":{"u":"EACH","cq":6.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3444.15,"gp":null},"33.30.40.11":{"u":"EACH","cq":5.0,"bq":3.0,"rq":-2.0,"up":null,"bd":null,"cd":4149.07,"gp":null},"33.43.02.09":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.40.12":{"u":"EACH","cq":1.0,"bq":1.0,"rq":0.0,"up":null,"bd":null,"cd":14703.97,"gp":null},"33.30.40.13":{"u":"EACH","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.40.17":{"u":"EACH","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1481.02,"gp":null},"33.40.25.10":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":12.06,"gp":null},"33.40.25.12":{"u":"LF","cq":512.0,"bq":311.25,"rq":0.0,"up":null,"bd":null,"cd":33649.81,"gp":null},"33.40.25.15":{"u":"LF","cq":790.0,"bq":617.02,"rq":-137.38,"up":null,"bd":null,"cd":190673.16,"gp":null},"33.40.25.18":{"u":"LF","cq":376.0,"bq":284.0,"rq":-79.0,"up":null,"bd":null,"cd":73825.28,"gp":null},"33.40.25.24":{"u":"LF","cq":254.0,"bq":92.0,"rq":-110.0,"up":null,"bd":null,"cd":33222.88,"gp":null},"33.40.25.30":{"u":"LF","cq":778.0,"bq":685.75,"rq":15.0,"up":null,"bd":null,"cd":271825.62,"gp":null},"33.40.25.36":{"u":"LF","cq":572.0,"bq":487.0,"rq":-49.0,"up":null,"bd":null,"cd":159349.11,"gp":null},"33.40.20.12":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":24.89,"gp":null},"33.40.20.15":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":2614.89,"gp":null},"33.40.20.18":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":2271.04,"gp":null},"33.40.20.30":{"u":"LF","cq":11.0,"bq":0.0,"rq":-11.0,"up":null,"bd":null,"cd":2263.99,"gp":null},"33.40.20.36":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":665.71,"gp":null},"01.11.21.00":{"u":"HR","cq":0.0,"bq":1086.5,"rq":1008.5,"up":null,"bd":null,"cd":29245.37,"gp":null},"01.15.17.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1618.61,"gp":null},"31.22.16.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":4557.26,"gp":null},"50.50.00.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":109533.22,"gp":null},"50.50.10.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":32903.0,"gp":null},"50.50.20.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":90327.5,"gp":null},"50.50.30.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3264.0,"gp":null},"50.50.40.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":21645.01,"gp":null},"50.50.60.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1544.0,"gp":null},"99.01.00.00":{"u":"VF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":43183.78,"gp":null},"99.02.00.00":{"u":"LS","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":111350.07,"gp":null},"99.03.00.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":453.67,"gp":null},"99.07.00.00":{"u":"CY","cq":0.0,"bq":-0.0,"rq":0.0,"up":null,"bd":null,"cd":445.52,"gp":null},"99.13.00.00":{"u":"LF","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3515.22,"gp":null},"99.14.00.00":{"u":"LS","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":5156.55,"gp":null},"99.17.00.00":{"u":"LS","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1841.78,"gp":null},"99.18.00.00":{"u":"LS","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":517.5,"gp":null},"99.99.99.99":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":19455.34,"gp":null},"50.50.70.00":{"u":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":600.0,"gp":null},"01.00.00.00":{"u":"LS","cq":1.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":250695.68,"gp":null},"01.14.04.00":{"u":"EACH","cq":20.0,"bq":8.0,"rq":0.0,"up":null,"bd":null,"cd":60463.51,"gp":null},"01.56.41.00":{"u":"LS","cq":1.0,"bq":0.1,"rq":0.0,"up":null,"bd":null,"cd":6167.0,"gp":null},"02.32.19.00":{"u":"EACH","cq":6.0,"bq":2.0,"rq":0.0,"up":null,"bd":null,"cd":2018.58,"gp":null}};
 
 const idx = {};
 CATALOG.forEach((r,i)=>{ idx[r[CI.CC]] = i; });
@@ -215,6 +218,7 @@ function LookAhead(){
   const [addingIn, setAddingIn] = useState(null); // 'crew'|'sub'|'site'
   const [loaded, setLoaded] = useState(false);
   const [umOverrides, setUmOverrides] = useState({}); // catalog idx -> edited UM
+  const [ctc, setCtc] = useState(CTC_DATA); // phase-code -> billed/forecast qty (importable)
   const [equipment, setEquipment] = useState(seedEquip); // {id,res,name,kind:'owned'|'rental'}
   const [eqHours, setEqHours] = useState({});            // `${id}_${wk}` -> reported hrs
   const [showOwned, setShowOwned] = useState(true);      // board: show owned equipment rows
@@ -250,6 +254,7 @@ function LookAhead(){
         if (s.eosMeta) setEosMeta(s.eosMeta); if (s.wk) setWk(s.wk);
         if (s.umOverrides) setUmOverrides(s.umOverrides);
         if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
+        if (s.ctc) setCtc(s.ctc);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
         if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
@@ -261,9 +266,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,loaded]);
 
   /* fonts */
   useEffect(()=>{
@@ -274,10 +279,12 @@ function LookAhead(){
 
   /* derived */
   const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
-  const installedFor = ci => {
-    const logged = tasks.filter(t=>t.ci===ci).reduce((a,t)=>a+((logs[t.id]&&logs[t.id].qty)||0),0);
-    return CATALOG[ci][CI.REP] + logged;
-  };
+  const ctcOf = ci => ctc[(CATALOG[ci][CI.CC]||"").replace(/-/g,".")] || null;
+  const loggedFor = ci => tasks.filter(t=>t.ci===ci).reduce((a,t)=>a+((logs[t.id]&&logs[t.id].qty)||0),0);
+  // Installed baseline = CTC billed-to-date where the code is in the CTC export, else field/estimate baseline; session logging adds on top.
+  const installedFor = ci => { const c=ctcOf(ci); const base = c ? (c.bq||0) : CATALOG[ci][CI.REP]; return base + loggedFor(ci); };
+  const contractQtyFor = ci => { const c=ctcOf(ci); return (c && c.cq!=null) ? c.cq : (CATALOG[ci][CI.EST]||0); };
+  const remainingFor = ci => { const c=ctcOf(ci); const logged=loggedFor(ci); if(c && c.rq!=null) return c.rq - logged; return (CATALOG[ci][CI.EST]||0) - installedFor(ci); };
   const actRate = ci => { // actual MH/unit from logged data (all weeks) — CTC live re-derive
     let q=0, m=0;
     tasks.forEach(t=>{ if(t.ci===ci && logs[t.id]){ q+=logs[t.id].qty||0; m+=logs[t.id].mh||0; }});
@@ -418,7 +425,7 @@ function LookAhead(){
 
       {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>}
+      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>}
 
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
@@ -426,7 +433,7 @@ function LookAhead(){
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
-      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
           del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
@@ -1070,37 +1077,45 @@ function Trends({crews,tasks,logs,taskCalc,wk}){
 }
 
 /* ============ CATALOG / CTC ============ */
-function CatalogView({installedFor,fcst,umOverrides,setUmOverrides,openSched}){
+function CatalogView({installedFor,fcst,ctcOf,remainingFor,contractQtyFor,umOverrides,setUmOverrides,openSched}){
   const setUM = (i,v)=> setUmOverrides(o=>{
     const c={...o}; const t=v.trim();
     if(!t || t.toUpperCase()===CATALOG[i][CI.UM].toUpperCase()) delete c[i]; else c[i]=t.toUpperCase();
     return c;
   });
   const [q,setQ]=useState("");
+  const [ctcOnly,setCtcOnly]=useState(false);
   const rows = useMemo(()=>{
     const s=q.trim().toLowerCase();
     return CATALOG.map((r,i)=>({r,i}))
-      .filter(({r})=>!s||r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s))
-      .slice(0,80);
-  },[q]);
+      .filter(({r,i})=>(!s||r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s)) && (!ctcOnly || ctcOf(i)))
+      .slice(0,120);
+  },[q,ctcOnly]);
+  const nCtc = useMemo(()=>CATALOG.reduce((a,_,i)=>a+(ctcOf(i)?1:0),0),[]);
   return (
     <div className="page">
-      <h2>Catalog / CTC <em className="dim2">— {CATALOG.length} items from QPC unit-cost detail + tracking account</em></h2>
-      <input className="search" placeholder="Search description, cost code, or pay item…" value={q} onChange={e=>setQ(e.target.value)}/>
+      <h2>Catalog / CTC <em className="dim2">— {CATALOG.length} items · {nCtc} tied to the Jul 2026 CTC (billed-to-date vs forecast)</em></h2>
+      <div className="ctcbar">
+        <input className="search" placeholder="Search description, cost code, or pay item…" value={q} onChange={e=>setQ(e.target.value)}/>
+        <label className="switch"><input type="checkbox" checked={ctcOnly} onChange={e=>setCtcOnly(e.target.checked)}/><i/><span>CTC only</span></label>
+      </div>
       <table className="dt list">
-        <thead><tr><th>CC</th><th>Pay item</th><th>Description</th><th>UM</th><th className="r">MH/U</th><th className="r">Bid</th><th className="r">Budget UC → Fcst</th><th className="r">Budget qty</th><th className="r">Installed</th><th style={{width:110}}>%</th><th/></tr></thead>
+        <thead><tr><th>CC</th><th>Pay item</th><th>Description</th><th>UM</th><th className="r">MH/U</th><th className="r">Budget UC → Fcst</th><th className="r">Contract</th><th className="r">Billed → date</th><th className="r">Forecast rem</th><th style={{width:120}}>% billed</th><th/></tr></thead>
         <tbody>{rows.map(({r,i})=>{
-          const inst=installedFor(i), est=r[CI.EST]||0, f=fcst(i);
-          return <tr key={i}>
+          const c=ctcOf(i), contract=contractQtyFor(i), billed=installedFor(i), rem=remainingFor(i), f=fcst(i);
+          const pctB = contract? billed/contract : 0;
+          const over = c && c.rq!=null && c.rq<0;
+          return <tr key={i} className={c?"":"nctc"}>
             <td className="mono">{r[CI.CC]}</td><td className="mono">{r[CI.PAY]}</td>
-            <td><i className="dot" style={{background:CATS[r[CI.CAT]].bg}}/>{r[CI.TASK].slice(0,44)}{r[CI.TASK].length>44?"…":""}</td>
+            <td><i className="dot" style={{background:CATS[r[CI.CAT]].bg}}/>{r[CI.TASK].slice(0,42)}{r[CI.TASK].length>42?"…":""}</td>
             <td><input className="umin" value={umOverrides[i] ?? r[CI.UM]} title="Unit of measure (editable)"
               onChange={e=>setUM(i,e.target.value)} maxLength={8}/></td>
             <td className="r">{r[CI.MH]?fmtN(r[CI.MH],3):"—"}</td>
-            <td className="r">{r[CI.BID]?fmt$(r[CI.BID],2):"—"}</td>
             <td className={"r "+(f.drift>0.005?"neg":"")}>{fmt$(unitCost(r),2)}{f.drift?` → ${fmt$(f.uc,2)}`:""}</td>
-            <td className="r">{est?fmtN(est):"—"}</td><td className="r">{fmtN(inst)}</td>
-            <td><div className="tbar"><i style={{width:Math.min(100,est?inst/est*100:0)+"%"}}/></div></td>
+            <td className="r">{contract?fmtN(contract):"—"}</td>
+            <td className="r">{fmtN(billed)}{c?"":<em className="dim2" title="No CTC row — field/estimate baseline"> est</em>}</td>
+            <td className={"r "+(over?"neg":"")}>{fmtN(rem)}</td>
+            <td><div className="tbar"><i style={{width:Math.min(100,Math.max(0,pctB*100))+"%"}}/></div><span className="pctlbl">{contract?pct(pctB):"—"}</span></td>
             <td><button className="ghost sm" onClick={()=>openSched(i)}>Schedule</button></td>
           </tr>;})}
         </tbody>
@@ -1241,14 +1256,49 @@ function NoteModal({note,rowId,day,save,del,close}){
     </Modal>
   );
 }
-function DataModal({cfg,setCfg,close}){
+function DataModal({cfg,setCfg,ctc,setCtc,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
+  const [msg,setMsg]=useState("");
+  const nCtc=Object.keys(ctc||{}).length;
+  const num=x=>{const n=parseFloat(x); return isFinite(n)?Math.round(n*100)/100:null;};
+  const doExport=()=>{
+    const blob=new Blob([JSON.stringify({version:"ctc-v1",exportedAt:new Date().toISOString(),cfg,ctc},null,2)],{type:"application/json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="watershed_board_data.json";
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+  };
+  const ensureXLSX=()=>new Promise((res,rej)=>{ if(window.XLSX) return res(window.XLSX);
+    const el=document.createElement("script"); el.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    el.onload=()=>res(window.XLSX); el.onerror=()=>rej(new Error("could not load the spreadsheet reader (offline?) — import a .json instead")); document.head.appendChild(el); });
+  const parseWB=(XLSX,buf)=>{ const wb=XLSX.read(buf,{type:"array"}); const ws=wb.Sheets["CTC by Cost Code"]||wb.Sheets[wb.SheetNames[0]];
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1}); const out={};
+    for(let i=4;i<rows.length;i++){ const r=rows[i]||[]; const code=(r[0]==null?"":(""+r[0])).trim(); if(!/^\d/.test(code)) continue;
+      out[code.replace(/-/g,".")]={u:(r[2]==null?"":(""+r[2]).trim()),cq:num(r[4]),bq:num(r[7]),rq:num(r[13]),up:num(r[3]),bd:num(r[8]),cd:num(r[9]),gp:num(r[11])}; }
+    return out; };
+  const onFile=async(e)=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return; setMsg("Reading "+f.name+"…");
+    try{
+      if(/\.json$/i.test(f.name)){ const j=JSON.parse(await f.text()); const map=j.ctc||j;
+        if(typeof map!=="object"||Array.isArray(map)) throw new Error("unrecognized JSON shape");
+        setCtc(map); if(j.cfg) setCfg(c=>({...c,...j.cfg})); setMsg("Imported "+Object.keys(map).length+" CTC codes from JSON."); }
+      else if(/\.xlsx$/i.test(f.name)){ const XLSX=await ensureXLSX(); const map=parseWB(XLSX,await f.arrayBuffer());
+        if(!Object.keys(map).length) throw new Error("no phase-code rows on 'CTC by Cost Code'"); setCtc(map);
+        setMsg("Imported "+Object.keys(map).length+" CTC codes from "+f.name+"."); }
+      else setMsg("Unsupported file — use the CTC .xlsx export or a .json.");
+    }catch(err){ setMsg("Import failed: "+err.message); }
+    e.target.value="";
+  };
   return (
-    <Modal close={close} w={460}>
+    <Modal close={close} w={480}>
       <h3>Data & assumptions</h3>
       <div className="logrow">{F("crewSize","Crew size")}{F("shiftHrs","Shift hours")}</div>
       <div className="logrow">{F("laborRate","Labor $/MH")}{F("truckRate","Trucking $/load")}</div>
-      <p className="dim2">Loads are derived from budgeted trucking $ per unit (QPC cost detail) ÷ $/load. Re-upload Truck_Rates.xlsx in chat any time to tune per-truck-type cycle rates. Catalog quantities come from PayItemTrackingAccount (budget vs reported through 6/30).</p>
+      <div className="loghdr">CTC dataset — {nCtc} cost codes (billed vs forecast)</div>
+      <p className="dim2">Import next month's <b>CTC by Cost Code</b> export (.xlsx) to refresh billed-to-date &amp; forecast quantities across the whole board, or a previously exported .json. Export saves the current dataset + assumptions.</p>
+      <div className="btnrow">
+        <label className="btn cta" style={{cursor:"pointer"}}>Import CTC / JSON<input type="file" accept=".xlsx,.json" onChange={onFile} style={{display:"none"}}/></label>
+        <button className="btn" onClick={doExport}>Export data</button>
+      </div>
+      {msg && <p className="dim2" style={{marginTop:8}}>{msg}</p>}
       <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
     </Modal>
   );
@@ -1311,6 +1361,10 @@ const CSS = `
 .themebtn{min-width:74px}
 .umin{width:60px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 6px;font:12px "IBM Plex Mono";text-transform:uppercase}
 .umin:focus{outline:none;border-color:var(--acc)}
+.ctcbar{display:flex;gap:14px;align-items:center;margin-bottom:8px}
+.ctcbar .search{margin-bottom:0}
+.nctc{opacity:.66}
+.pctlbl{font:11px "IBM Plex Mono";color:var(--dm2);margin-left:6px}
 .danger{background:transparent;border:1px solid #7f2f2f;color:var(--bad);border-radius:8px;padding:7px 13px;font-weight:600;cursor:pointer}
 .sm{padding:4px 10px!important;font-size:13px!important}
 .kpis{display:flex;gap:10px;padding:12px 18px 4px;flex-wrap:wrap}
