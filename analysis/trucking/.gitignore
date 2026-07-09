@@ -1,0 +1,6 @@
+# Invoice data and generated reports never go in the repo — the repo root is a
+# publicly-served Netlify site. Deliverables are shared out-of-band.
+data/
+output/
+*.xlsx
+__pycache__/
