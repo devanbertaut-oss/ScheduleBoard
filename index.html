@@ -2,17 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>DPW547 Look-Ahead</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>RNGD Look-Ahead — DPW547</title>
+<meta name="description" content="RNGD Look-Ahead — daily production tracking &amp; earned-value command center for DPW547."/>
+<meta name="theme-color" content="#00833e"/>
+<link rel="manifest" href="manifest.webmanifest"/>
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png"/>
+<link rel="icon" href="assets/icon-192.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="RNGD"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <style>
   html{color-scheme:dark}
-  html,body{margin:0;background:#0e1014}
+  html,body{margin:0;background:#000000}
   html[data-boot="light"]{color-scheme:light}
-  html[data-boot="light"],html[data-boot="light"] body{background:#f4f5f7}
+  html[data-boot="light"],html[data-boot="light"] body{background:#f4f5f6}
   #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-    color:#8f97a8;font:600 15px "Barlow Condensed",system-ui,sans-serif;letter-spacing:.05em}
-  html[data-boot="light"] #boot{color:#5b6270}
+    color:#dce442;font:700 14px "Saira Condensed",system-ui,sans-serif;letter-spacing:.22em;text-transform:uppercase}
+  html[data-boot="light"] #boot{color:#00833e}
 </style>
 <script>
   /* Resolve the saved theme before first paint so the boot screen and page
@@ -78,6 +87,13 @@ const seedCrews = [
   { id:"s3", name:"Donahoe",  type:"sub" },
 ];
 const seedSite = [ { id:"n1", name:"Notes / Deliveries" } ];
+const seedEquip = [
+  { id:"e1", res:"c1", name:"CAT 336 Excavator", kind:"owned" },
+  { id:"e2", res:"c1", name:"CAT D6 Dozer",      kind:"owned" },
+  { id:"e3", res:"c2", name:"Vac Truck",         kind:"owned" },
+  { id:"e4", res:"c3", name:"CAT 315 Excavator", kind:"owned" },
+  { id:"e5", res:"c5", name:"Crane 40T",         kind:"rental" },
+];
 let _t = 0; const tid = () => "t" + (++_t) + "_" + Math.random().toString(36).slice(2,6);
 const mk = (res, cc, day, qty, sta) => ({ id:tid(), res, ci:find(cc), day, qty, sta:sta||null, wk:WK0 });
 const seedTasks = [
@@ -179,7 +195,7 @@ function autoDesc(name, ts, logs, calc, isSub){
 
 /* ============================================================ */
 function LookAhead(){
-  const [tab, setTab] = useState("board");
+  const [tab, setTab] = useState("dash");
   const [wk, setWk] = useState(WK0);
   const [crews, setCrews] = useState(seedCrews);
   const [siteRows, setSiteRows] = useState(seedSite);
@@ -192,6 +208,10 @@ function LookAhead(){
   const [addingIn, setAddingIn] = useState(null); // 'crew'|'sub'|'site'
   const [loaded, setLoaded] = useState(false);
   const [umOverrides, setUmOverrides] = useState({}); // catalog idx -> edited UM
+  const [equipment, setEquipment] = useState(seedEquip); // {id,res,name,kind:'owned'|'rental'}
+  const [eqHours, setEqHours] = useState({});            // `${id}_${wk}` -> reported hrs
+  const [showOwned, setShowOwned] = useState(true);      // board: show owned equipment rows
+  const [showRental, setShowRental] = useState(false);   // board: show rental equipment rows
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -205,7 +225,7 @@ function LookAhead(){
       const light = theme==="light" || (theme==="system" && mq && mq.matches);
       document.documentElement.setAttribute("data-boot", light? "light":"dark");
       document.documentElement.style.colorScheme = light? "light":"dark";
-      document.body.style.background = light? "#f4f5f7":"#0e1014";
+      document.body.style.background = light? "#f4f5f6":"#000000";
     };
     apply();
     if(theme==="system" && mq){ mq.addEventListener?.("change", apply); return ()=>mq.removeEventListener?.("change", apply); }
@@ -222,6 +242,9 @@ function LookAhead(){
         if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
         if (s.eosMeta) setEosMeta(s.eosMeta); if (s.wk) setWk(s.wk);
         if (s.umOverrides) setUmOverrides(s.umOverrides);
+        if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
+        if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
+        if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
     }catch(e){ /* first run — seeds stand */ }
     setLoaded(true);
@@ -231,14 +254,14 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,loaded]);
 
   /* fonts */
   useEffect(()=>{
     const l=document.createElement("link"); l.rel="stylesheet";
-    l.href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+    l.href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700;800&family=Oswald:wght@500;600;700&family=Montserrat:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
     document.head.appendChild(l); return ()=>document.head.removeChild(l);
   },[]);
 
@@ -289,8 +312,15 @@ function LookAhead(){
   const rmResource = id => {
     setCrews(c=>c.filter(x=>x.id!==id)); setSiteRows(r=>r.filter(x=>x.id!==id));
     setTasks(ts=>ts.filter(t=>t.res!==id)); setNotes(ns=>ns.filter(n=>n.row!==id));
+    setEquipment(e=>e.filter(x=>x.res!==id));
     setModal(null);
   };
+  /* equipment mutations */
+  const addEquip = (res,kind)=> setEquipment(e=>[...e,{id:"e"+Math.random().toString(36).slice(2,7),res,kind,name:kind==="rental"?"Rental unit":"Equipment"}]);
+  const rmEquip = id => { setEquipment(e=>e.filter(x=>x.id!==id)); setEqHours(h=>{const c={...h}; Object.keys(c).forEach(k=>{ if(k.startsWith(id+"_")) delete c[k]; }); return c;}); };
+  const renameEquip = (id,name)=> setEquipment(e=>e.map(x=>x.id===id?{...x,name}:x));
+  const setEqHrs = (id,val)=> setEqHours(h=>({...h,[id+"_"+wk]:val}));
+  const eqProps = { equipment, eqHours, wk, showOwned, showRental, addEquip, rmEquip, renameEquip, setEqHrs };
 
   const crewsOnly = crews.filter(c=>c.type==="crew");
   const subsOnly  = crews.filter(c=>c.type==="sub");
@@ -302,11 +332,13 @@ function LookAhead(){
       {/* ============ TOP BAR ============ */}
       <header className="top no-print">
         <div className="brand">
-          <span className="logo">Look-Ahead</span>
-          <span className="proj">DPW547 · <em>Job 2124013</em></span>
+          <img className="brandlogo dk" src="assets/rngd-white.png" alt="RNGD" draggable="false"/>
+          <img className="brandlogo lt" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
+          <span className="brandbar"/>
+          <span className="proj">Look-Ahead<em>DPW547 · Job 2124013</em></span>
         </div>
         <nav className="tabs">
-          {[["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"]].map(([k,l])=>
+          {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="weeknav">
@@ -342,7 +374,9 @@ function LookAhead(){
         {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.name}</span>)}
         <span><i style={{background:"#c4b5fd"}}/>Crew / Foreman</span>
         <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
-        <span className="hint">click a chip for the crew table · click a card to log · click an empty cell to schedule</span>
+        <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
+        <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
+        <span className="hint">click a chip for the crew table · click a card to log · report equipment hours inline</span>
       </div>
 
       {/* ============ BOARD GRID ============ */}
@@ -360,11 +394,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -374,6 +408,7 @@ function LookAhead(){
       </div>
       </>}
 
+      {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
       {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>}
 
@@ -404,9 +439,11 @@ function AddRow({ph,onAdd,onX}){
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
+  const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   return (
+    <>
     <tr>
       <td className="rescol">
         <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
@@ -417,6 +454,30 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc}){
           {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
+    </tr>
+    {showEq && <EquipRow res={res} {...eqProps}/>}
+    </>
+  );
+}
+function EquipRow({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmEquip,renameEquip,setEqHrs}){
+  const items = equipment.filter(e=>e.res===res.id && ((e.kind==="owned"&&showOwned)||(e.kind==="rental"&&showRental)));
+  return (
+    <tr className="eqrow no-print">
+      <td className="rescol eqlabel">Equipment</td>
+      <td colSpan={7}>
+        <div className="eqwrap">
+          {items.map(e=>
+            <span key={e.id} className={"eqchip "+e.kind}>
+              <i className="eqdot"/>
+              <input className="eqname" value={e.name} onChange={ev=>renameEquip(e.id,ev.target.value)} aria-label="Equipment name"/>
+              <input className="eqhrs" type="number" min="0" step="0.5" placeholder="0" value={eqHours[e.id+"_"+wk]??""} onChange={ev=>setEqHrs(e.id,ev.target.value)} aria-label="Reported hours"/>
+              <span className="equ">hrs</span>
+              <button className="eqx" onClick={()=>rmEquip(e.id)} aria-label="Remove equipment">✕</button>
+            </span>)}
+          {showOwned && <button className="eqadd" onClick={()=>addEquip(res.id,"owned")}>+ Equipment</button>}
+          {showRental && <button className="eqadd rental" onClick={()=>addEquip(res.id,"rental")}>+ Rental</button>}
+        </div>
+      </td>
     </tr>
   );
 }
@@ -733,6 +794,168 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cf
   );
 }
 
+/* ============ COMMAND CENTER (Earned-Value) ============ */
+function evTone(v){ return v>=1 ? "good" : v>=0.9 ? "warn" : "bad"; }
+function Tile({label,value,sub,tone,big}){
+  return <div className={"evtile"+(big?" big":"")+(tone?" "+tone:"")}>
+    <label>{label}</label><b>{value}</b>{sub!=null&&<span>{sub}</span>}
+  </div>;
+}
+function SCurve({data}){
+  const [hi,setHi]=useState(null);
+  const n=data.length;
+  if(n===0) return <div className="empty">No production logged yet — the burn-up curve builds as crews report quantities.</div>;
+  const W=820,H=300,padL=52,padR=16,padT=16,padB=34;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const maxY=Math.max(1,...data.map(d=>Math.max(d.pv,d.ev,d.ac)));
+  const X=i=> n===1? padL+iw/2 : padL+i*iw/(n-1);
+  const Y=v=> padT+(1-v/maxY)*ih;
+  const path=key=>data.map((d,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(d[key]).toFixed(1)).join(" ");
+  const area=key=>path(key)+` L ${X(n-1).toFixed(1)} ${Y(0).toFixed(1)} L ${X(0).toFixed(1)} ${Y(0).toFixed(1)} Z`;
+  const ticks=[0,.25,.5,.75,1].map(f=>Math.round(maxY*f));
+  const H0=hi==null?null:data[hi];
+  return (
+    <div className="scurve">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
+        onMouseLeave={()=>setHi(null)}
+        onMouseMove={e=>{ const r=e.currentTarget.getBoundingClientRect(); const x=(e.clientX-r.left)/r.width*W;
+          let best=0,bd=1e9; for(let i=0;i<n;i++){const d=Math.abs(X(i)-x); if(d<bd){bd=d;best=i;}} setHi(best); }}>
+        {ticks.map((t,i)=><g key={i}>
+          <line x1={padL} x2={W-padR} y1={Y(t)} y2={Y(t)} className="grid"/>
+          <text x={padL-8} y={Y(t)+4} className="axt" textAnchor="end">{fmtN(t)}</text>
+        </g>)}
+        <path d={area("ev")} className="ar ev"/>
+        <path d={path("pv")} className="ln pv"/>
+        <path d={path("ac")} className="ln ac"/>
+        <path d={path("ev")} className="ln ev"/>
+        {["pv","ac","ev"].map(k=>data.map((d,i)=><circle key={k+i} cx={X(i)} cy={Y(d[k])} r={n===1?4.5:3} className={"pt "+k}/>))}
+        {data.map((d,i)=>(i%Math.ceil(n/8||1)===0||i===n-1)&&<text key={i} x={X(i)} y={H-12} className="axt" textAnchor="middle">{d.label}</text>)}
+        {hi!=null&&<g>
+          <line x1={X(hi)} x2={X(hi)} y1={padT} y2={padT+ih} className="guide"/>
+          <circle cx={X(hi)} cy={Y(H0.pv)} r="3.5" className="dot pv"/>
+          <circle cx={X(hi)} cy={Y(H0.ev)} r="3.5" className="dot ev"/>
+          <circle cx={X(hi)} cy={Y(H0.ac)} r="3.5" className="dot ac"/>
+        </g>}
+      </svg>
+      <div className="sclegend">
+        <span><i className="pv"/>Planned {H0&&"· "+fmtN(H0.pv)}</span>
+        <span><i className="ev"/>Earned {H0&&"· "+fmtN(H0.ev)}</span>
+        <span><i className="ac"/>Actual {H0&&"· "+fmtN(H0.ac)}</span>
+        <span className="scwk">{H0? H0.label : "cumulative man-hours"}</span>
+      </div>
+    </div>
+  );
+}
+function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}){
+  const [scope,setScope]=useState("week"); // leaderboard scope: week | season
+
+  const ev = useMemo(()=>{
+    let PV=0,EV=0,AC=0;
+    tasks.forEach(t=>{ const c=taskCalc(t); PV+=c.planMH; EV+=c.earnMH; AC+=c.actMH; });
+    let BACmh=0,BAC$=0;
+    CATALOG.forEach(r=>{ const est=r[CI.EST]||0; BACmh+=est*r[CI.MH]; BAC$+=est*unitCost(r); });
+    const CPI=AC>0?EV/AC:0, SPI=PV>0?EV/PV:0;
+    const EACmh=CPI>0?BACmh/CPI:BACmh, EAC$=CPI>0?BAC$/CPI:BAC$;
+    return { PV,EV,AC, CPI,SPI, CV:EV-AC, SV:EV-PV, BACmh,BAC$, EACmh, VACmh:BACmh-EACmh, VAC$:BAC$-EAC$, pctC:BACmh>0?EV/BACmh:0 };
+  },[tasks,logs]);
+
+  const curve = useMemo(()=>{
+    const set=[...new Set(tasks.map(t=>t.wk))].sort();
+    let pv=0,ev=0,ac=0;
+    return set.map(w=>{
+      tasks.filter(t=>t.wk===w).forEach(t=>{const c=taskCalc(t); pv+=c.planMH; ev+=c.earnMH; ac+=c.actMH;});
+      return { label:w.slice(5).replace("-","/"), pv,ev,ac };
+    });
+  },[tasks,logs]);
+
+  const board = useMemo(()=>{
+    const src = scope==="week" ? tasks.filter(t=>t.wk===wk) : tasks;
+    return crews.map(c=>{
+      let p=0,a=0,e=0;
+      src.filter(t=>t.res===c.id).forEach(t=>{const x=taskCalc(t); p+=x.planMH; a+=x.actMH; e+=x.earnMH;});
+      return {c,p,a,e,pf:a>0?e/a:0};
+    }).filter(r=>r.p>0||r.a>0).sort((x,y)=>y.pf-x.pf);
+  },[crews,tasks,logs,scope,wk]);
+
+  const alerts = useMemo(()=>{
+    const out=[];
+    const cis=[...new Set(tasks.map(t=>t.ci))];
+    cis.forEach(ci=>{
+      const it=CATALOG[ci], f=fcst(ci), est=it[CI.EST]||0, inst=installedFor(ci);
+      if(f.drift>0.03*Math.max(1,unitCost(it)) && f.drift>0.5)
+        out.push({sev:2,tag:"COST",text:`${it[CI.TASK].slice(0,42)} forecasting ${fmt$(f.uc,2)}/${it[CI.UM]} — ${fmt$(f.drift,2)} over budget UC.`,go:()=>setTab("catalog")});
+      if(est>0 && inst>est)
+        out.push({sev:1,tag:"QTY",text:`${it[CI.TASK].slice(0,42)} installed ${fmtN(inst)} of ${fmtN(est)} ${it[CI.UM]} — over budget qty.`,go:()=>setTab("catalog")});
+    });
+    tasks.filter(t=>t.wk===wk&&logs[t.id]).forEach(t=>{
+      const c=taskCalc(t); if(t.qty>0 && c.actQty/t.qty<0.9)
+        out.push({sev:1,tag:"PROD",text:`${(crews.find(x=>x.id===t.res)?.name||"?")}: ${c.it[CI.TASK].slice(0,34)} at ${pct(c.actQty/t.qty)} of plan.`,go:()=>setTab("board")});
+    });
+    board.forEach(r=>{ if(r.a>0 && r.pf<0.9) out.push({sev:1,tag:"PF",text:`${r.c.name} PF ${r.pf.toFixed(2)} — below target.`,go:()=>setTab("board")}); });
+    notes.filter(n=>n.level!=="info").forEach(n=>
+      out.push({sev:n.level==="crit"?2:1,tag:n.level==="crit"?"CRIT":"NOTE",text:n.text,go:()=>setTab("board")}));
+    return out.sort((a,b)=>b.sev-a.sev).slice(0,14);
+  },[tasks,logs,notes,wk,board]);
+
+  const cpiTxt=ev.CPI?ev.CPI.toFixed(2):"—", spiTxt=ev.SPI?ev.SPI.toFixed(2):"—";
+  return (
+    <div className="page cc">
+      <div className="cchead">
+        <div><h2>Command Center</h2><p className="dim2">Earned-value performance across the job — live from field-reported quantities.</p></div>
+        <div className="ccpct"><b>{pct(ev.pctC)}</b><label>Job earned</label></div>
+      </div>
+
+      <div className="evgrid">
+        <Tile big label="CPI · Cost performance" value={cpiTxt} tone={ev.CPI?evTone(ev.CPI):""} sub={ev.CPI?(ev.CPI>=1?"Under budget on labor":"Over budget on labor"):"awaiting data"}/>
+        <Tile big label="SPI · Schedule performance" value={spiTxt} tone={ev.SPI?evTone(ev.SPI):""} sub={ev.SPI?(ev.SPI>=1?"Ahead of plan":"Behind plan"):"awaiting data"}/>
+        <Tile label="Earned MH (EV)" value={fmtN(ev.EV)} sub={"of "+fmtN(ev.BACmh)+" budget"}/>
+        <Tile label="Actual MH (AC)" value={fmtN(ev.AC)} sub={"planned "+fmtN(ev.PV)}/>
+        <Tile label="Cost var (CV)" value={fmtN(ev.CV)+" MH"} tone={ev.CV>=0?"good":"bad"} sub={ev.CV>=0?"earned ≥ spent":"spent > earned"}/>
+        <Tile label="Schedule var (SV)" value={fmtN(ev.SV)+" MH"} tone={ev.SV>=0?"good":"bad"} sub={ev.SV>=0?"ahead":"behind"}/>
+        <Tile label="EAC · Forecast MH" value={fmtN(ev.EACmh)} tone={ev.EACmh<=ev.BACmh?"good":"bad"} sub={"budget "+fmtN(ev.BACmh)}/>
+        <Tile label="VAC · Forecast $" value={fmt$(ev.VAC$)} tone={ev.VAC$>=0?"good":"bad"} sub={ev.VAC$>=0?"projected savings":"projected overrun"}/>
+      </div>
+
+      <div className="ccrow">
+        <div className="panel cc-curve">
+          <div className="ph">Burn-up — planned vs earned vs actual (MH)</div>
+          <SCurve data={curve}/>
+        </div>
+        <div className="panel cc-alerts">
+          <div className="ph">Attention feed <em className="dim2">— {alerts.length}</em></div>
+          <div className="alerts">
+            {alerts.length? alerts.map((a,i)=>
+              <button key={i} className={"alert sev"+a.sev} onClick={a.go}>
+                <span className="atag">{a.tag}</span><span className="atx">{a.text}</span>
+              </button>)
+              : <div className="empty">All clear — no items need attention.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph lbhead">Crew leaderboard — performance factor
+          <div className="qmode sm">
+            {[["week","This week"],["season","Season"]].map(([k,l])=>
+              <button key={k} className={scope===k?"on":""} onClick={()=>setScope(k)}>{l}</button>)}
+          </div>
+        </div>
+        <div className="lboard">
+          {board.length? board.map((r,i)=>{
+            const tone=r.pf>=1?"good":r.pf>=0.9?"warn":"bad";
+            return <div key={r.c.id} className={"lbcard "+tone}>
+              <span className="rank">{i+1}</span>
+              <div className="lbmain"><b>{r.c.name}</b><span className="dim2">{r.c.type==="sub"?"Subcontractor":"Crew"}</span></div>
+              <div className="lbbar"><i style={{width:Math.min(100,r.pf*100/1.5)+"%"}}/></div>
+              <div className="lbpf"><b>{r.pf?r.pf.toFixed(2):"—"}</b><span>{fmtN(r.e)}/{fmtN(r.a)} MH</span></div>
+            </div>;
+          }) : <div className="empty">No logged production for this scope yet.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============ TRENDS ============ */
 function Trends({crews,tasks,logs,taskCalc,wk}){
   const weeks = useMemo(()=>{
@@ -966,36 +1189,46 @@ function Modal({children,close,w=520}){
 
 /* ============ CSS ============ */
 const CSS = `
-.la-root{--bg:#0e1014;--pn:#161923;--pn2:#1d212c;--ln:#2a2f3c;--tx:#e9ebf2;--dm:#8f97a8;--dm2:#626a7c;--acc:#f97316;--good:#4ade80;--bad:#f87171;--warn:#fbbf24;
- --tabon:#2a3040;--cellln:#1b1f29;--cellhov:#141824;--mdln:#333a4a;--ovl:rgba(5,7,12,.72);--barfill:#3f77c9;--pillGoodBg:#153524;--pillBadBg:#3a1717;
- --noteWbg:#3d2f12;--noteWln:#7a5a1c;--noteWtx:#fcd77f;--noteCbg:#43181a;--noteCln:#8a3237;--noteCtx:#ffb0b4;--noteIbg:#3a3620;--noteIln:#6b6236;--noteItx:#efe3a8;
+.la-root{--bg:#000000;--pn:#111314;--pn2:#181b1c;--ln:#2a2e30;--tx:#f4f5f5;--dm:#a8adb0;--dm2:#6c7178;--brand:#00833e;--lime:#dce442;--acc:#00a34d;--good:#2fbf6b;--bad:#e5484d;--warn:#dce442;
+ --tabon:#00833e;--cellln:#1b1e1f;--cellhov:#121615;--mdln:#2e3335;--ovl:rgba(0,0,0,.74);--barfill:#00833e;--pillGoodBg:#0e2f1c;--pillBadBg:#3a1717;
+ --noteWbg:#2c2f14;--noteWln:#5f6a1e;--noteWtx:#dce442;--noteCbg:#3a1717;--noteCln:#8a3237;--noteCtx:#ffb0b4;--noteIbg:#101d15;--noteIln:#2a4a37;--noteItx:#9fe0b6;
  color-scheme:dark;
- background:var(--bg);color:var(--tx);min-height:100vh;font:14px/1.45 "IBM Plex Mono",ui-monospace,monospace;padding-bottom:60px}
+ background:var(--bg);color:var(--tx);min-height:100vh;font:14px/1.45 "Montserrat",system-ui,sans-serif;padding-bottom:60px}
 .la-root[data-theme="dark"]{color-scheme:dark}
-.la-root[data-theme="light"]{--bg:#f4f5f7;--pn:#ffffff;--pn2:#eef0f4;--ln:#d5d9e0;--tx:#1a1d24;--dm:#5b6270;--dm2:#8a91a0;--acc:#e2600f;--good:#15803d;--bad:#dc2626;--warn:#b45309;
- --tabon:#dfe4ec;--cellln:#e4e7ee;--cellhov:#eef1f6;--mdln:#cdd3dd;--ovl:rgba(30,36,48,.42);--barfill:#3f77c9;--pillGoodBg:#dcfce7;--pillBadBg:#fee2e2;
- --noteWbg:#fdf3d6;--noteWln:#e6c876;--noteWtx:#8a6410;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#f6f2d6;--noteIln:#e0d79a;--noteItx:#6e6417;
+.la-root[data-theme="light"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
+ --tabon:#00833e;--cellln:#e4e7ea;--cellhov:#eef1f4;--mdln:#cdd3d8;--ovl:rgba(17,19,20,.44);--barfill:#00833e;--pillGoodBg:#dcf3e6;--pillBadBg:#fde4e4;
+ --noteWbg:#f6f7d6;--noteWln:#d7db8a;--noteWtx:#6a6a10;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#e2f3e9;--noteIln:#b6ddc6;--noteItx:#1c5f37;
  color-scheme:light}
 @media (prefers-color-scheme: light){
-.la-root[data-theme="system"]{--bg:#f4f5f7;--pn:#ffffff;--pn2:#eef0f4;--ln:#d5d9e0;--tx:#1a1d24;--dm:#5b6270;--dm2:#8a91a0;--acc:#e2600f;--good:#15803d;--bad:#dc2626;--warn:#b45309;
- --tabon:#dfe4ec;--cellln:#e4e7ee;--cellhov:#eef1f6;--mdln:#cdd3dd;--ovl:rgba(30,36,48,.42);--barfill:#3f77c9;--pillGoodBg:#dcfce7;--pillBadBg:#fee2e2;
- --noteWbg:#fdf3d6;--noteWln:#e6c876;--noteWtx:#8a6410;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#f6f2d6;--noteIln:#e0d79a;--noteItx:#6e6417;
+.la-root[data-theme="system"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
+ --tabon:#00833e;--cellln:#e4e7ea;--cellhov:#eef1f4;--mdln:#cdd3d8;--ovl:rgba(17,19,20,.44);--barfill:#00833e;--pillGoodBg:#dcf3e6;--pillBadBg:#fde4e4;
+ --noteWbg:#f6f7d6;--noteWln:#d7db8a;--noteWtx:#6a6a10;--noteCbg:#fde4e4;--noteCln:#f0a9ab;--noteCtx:#a11d22;--noteIbg:#e2f3e9;--noteIln:#b6ddc6;--noteItx:#1c5f37;
  color-scheme:light}}
 .la-root *{box-sizing:border-box}
-.la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Barlow Condensed",sans-serif;letter-spacing:.04em}
+.la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Saira Condensed","Oswald",sans-serif;letter-spacing:.04em}
 .la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
 .top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--ln);background:var(--pn);position:sticky;top:0;z-index:40}
+.brand{display:flex;align-items:center;gap:12px}
+.brandlogo{height:26px;width:auto;display:block;user-select:none}
+.la-root[data-theme="light"] .brandlogo.dk{display:none}
+.la-root[data-theme="dark"] .brandlogo.lt{display:none}
+.la-root[data-theme="system"] .brandlogo.lt{display:none}
+@media (prefers-color-scheme: light){ .la-root[data-theme="system"] .brandlogo.dk{display:none} .la-root[data-theme="system"] .brandlogo.lt{display:block} }
+.brandbar{width:2px;height:26px;background:var(--lime);border-radius:2px}
 .logo{font-size:22px;font-weight:700}
-.proj{color:var(--acc);font-size:13px;margin-left:8px}.proj em{color:var(--dm);font-style:normal}
+.proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.proj em{color:var(--dm);font-style:normal;font-size:11px;font-weight:600;letter-spacing:.04em}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
 .tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
-.tabs button.on{background:var(--tabon);color:var(--tx)}
+.tabs button.on{background:var(--tabon);color:#fff}
+.tabs button:hover:not(.on){color:var(--tx)}
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
-.weeknav span{font-family:"Barlow Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
+.weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
 .actions{display:flex;gap:8px}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
-.cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#1a0d02!important}
+.cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important}
+.cta.hot{background:var(--lime)!important;border-color:var(--lime)!important;color:#111314!important}
 .cta:disabled{opacity:.4;cursor:default}
 .ghost{background:transparent}
 .themebtn{min-width:74px}
@@ -1020,7 +1253,7 @@ const CSS = `
 .board thead th.wknd,.cell.wknd{opacity:.55}
 .rescol{width:118px;min-width:118px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5}
 thead .rescol{z-index:12}
-.secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Barlow Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:1px solid var(--ln)}
+.secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Saira Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:1px solid var(--ln)}
 .secrow .addbtn{margin-left:10px;background:none;border:1px dashed var(--ln);color:var(--dm);border-radius:6px;padding:1px 8px;font-size:12px;cursor:pointer}
 .secrow .addbtn:hover{color:var(--acc);border-color:var(--acc)}
 .addrow td{padding:8px 4px}
@@ -1033,7 +1266,7 @@ thead .rescol{z-index:12}
 .chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
 .card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono"}
 .cardtop{display:flex;justify-content:space-between;gap:4px}
-.ct{font-family:"Barlow Condensed";font-weight:600;font-size:13.5px;line-height:1.15}
+.ct{font-family:"Saira Condensed";font-weight:600;font-size:13.5px;line-height:1.15}
 .ck{font-weight:700}
 .csub{font-size:10.5px;opacity:.75;margin:1px 0 2px}
 .cnums{display:flex;justify-content:space-between;font-size:12px}
@@ -1061,7 +1294,7 @@ thead .rescol{z-index:12}
 .dt .empty{color:var(--dm2);text-align:center;padding:16px}
 .mono{font-family:"IBM Plex Mono";font-size:12px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
-.loghdr{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;font-family:"Barlow Condensed";font-weight:700}
+.loghdr{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;font-family:"Saira Condensed";font-weight:700}
 .logrow{display:flex;gap:10px;margin:8px 0;flex-wrap:wrap}
 .logrow label,.eosgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:600;flex:1;min-width:130px}
 .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 10px;font:13px "IBM Plex Mono";width:100%}
@@ -1076,7 +1309,7 @@ thead .rescol{z-index:12}
 .results em{margin-left:auto;color:var(--dm2);font-style:normal;font-size:11px;flex:none}
 .results .empty{color:var(--dm2);padding:14px;text-align:center;font-size:13px}
 .selitem{display:flex;align-items:center;gap:10px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;margin-bottom:10px}
-.selitem b{display:block;font-family:"Barlow Condensed";font-size:16px}
+.selitem b{display:block;font-family:"Saira Condensed";font-size:16px}
 .selitem em{color:var(--dm);font-style:normal;font-size:12px}
 .selitem button{margin-left:auto}
 .budbar label{color:var(--dm);font-size:12px}
@@ -1091,15 +1324,15 @@ thead .rescol{z-index:12}
 .gen b{font:600 16px "IBM Plex Mono";color:var(--good);text-transform:none}
 .dim2{color:var(--dm2);font-style:normal}
 .crewhead{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-.crewhead select{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 10px;font:13px "Barlow Condensed"}
-.namein{background:none;border:0;border-bottom:1px dashed var(--ln);color:var(--tx);font:700 22px "Barlow Condensed";width:220px;padding:2px}
+.crewhead select{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 10px;font:13px "Saira Condensed"}
+.namein{background:none;border:0;border-bottom:1px dashed var(--ln);color:var(--tx);font:700 22px "Saira Condensed";width:220px;padding:2px}
 .eosgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
 .eosgrid .full{grid-column:1/-1}
 .eosprev{background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;white-space:pre-wrap;font:12.5px/1.55 "IBM Plex Mono";max-height:320px;overflow:auto;color:#cfd4e0}
 .page{padding:16px 22px}
 .page h2{font-size:24px;margin:6px 0 14px}
 .panel{background:var(--pn);border:1px solid var(--ln);border-radius:12px;padding:12px 14px;margin-bottom:14px}
-.ph{font-family:"Barlow Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:13px;margin-bottom:4px}
+.ph{font-family:"Saira Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:13px;margin-bottom:4px}
 .tbar{position:relative;height:8px;background:var(--bg);border-radius:5px;overflow:hidden}
 .tbar i{position:absolute;left:0;top:0;bottom:0;background:var(--good)}
 .tbar u{position:absolute;left:0;top:4px;bottom:0;background:var(--acc);opacity:.9}
@@ -1107,16 +1340,107 @@ thead .rescol{z-index:12}
 .printarea .dt{background:#fff;border-color:#ccc}
 .printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
 .printarea .dt th{color:#555}
-.ptitle{font:700 15px "Barlow Condensed";margin-bottom:6px}
+.ptitle{font:700 15px "Saira Condensed";margin-bottom:6px}
 .repbtns{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
-.repbtns button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:9px;padding:8px 14px;font:600 14px "Barlow Condensed";letter-spacing:.03em;cursor:pointer}
+.repbtns button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:9px;padding:8px 14px;font:600 14px "Saira Condensed";letter-spacing:.03em;cursor:pointer}
 .repbtns button.on{border-color:var(--acc);color:var(--acc)}
-.colhdr{font-family:"Barlow Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:12px;margin:2px 0 6px}
+.colhdr{font-family:"Saira Condensed";font-weight:700;color:var(--dm);text-transform:uppercase;letter-spacing:.1em;font-size:12px;margin:2px 0 6px}
 .colgrid{columns:2;column-gap:28px;margin-bottom:8px}
-.colgrid label{display:flex;gap:9px;align-items:center;break-inside:avoid;padding:4px 0;font:15px "Barlow Condensed";color:var(--tx);text-transform:none;letter-spacing:0;cursor:pointer}
+.colgrid label{display:flex;gap:9px;align-items:center;break-inside:avoid;padding:4px 0;font:15px "Saira Condensed";color:var(--tx);text-transform:none;letter-spacing:0;cursor:pointer}
 .colgrid input,.rowtoggles input{width:16px;height:16px;accent-color:var(--acc);cursor:pointer;flex:none}
 .rowtoggles{display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--ln);padding-top:12px;margin-top:6px}
-.rowtoggles label{display:flex;gap:8px;align-items:center;font:15px "Barlow Condensed";color:var(--tx);cursor:pointer}
+.rowtoggles label{display:flex;gap:8px;align-items:center;font:15px "Saira Condensed";color:var(--tx);cursor:pointer}
+
+/* ===== Command Center ===== */
+.cc{max-width:1280px}
+.cchead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+.cchead h2{margin:0;font-size:30px;text-transform:uppercase;letter-spacing:.04em}
+.cchead p{margin:2px 0 0}
+.ccpct{text-align:right;line-height:1}
+.ccpct b{font:800 40px "Saira Condensed";color:var(--lime);display:block}
+.la-root[data-theme="light"] .ccpct b{color:var(--brand)}
+@media (prefers-color-scheme: light){.la-root[data-theme="system"] .ccpct b{color:var(--brand)}}
+.ccpct label{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.1em;font-weight:700}
+.evgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.evtile{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
+.evtile:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--dm2)}
+.evtile.good:before{background:var(--good)} .evtile.warn:before{background:var(--lime)} .evtile.bad:before{background:var(--bad)}
+.evtile label{display:block;color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+.evtile b{display:block;font:600 26px "IBM Plex Mono";margin-top:4px;color:var(--tx)}
+.evtile.big b{font-size:40px;line-height:1}
+.evtile.good b{color:var(--good)} .evtile.warn b{color:var(--lime)} .evtile.bad b{color:var(--bad)}
+.la-root[data-theme="light"] .evtile.warn b{color:var(--warn)}
+@media (prefers-color-scheme: light){.la-root[data-theme="system"] .evtile.warn b{color:var(--warn)}}
+.evtile span{display:block;color:var(--dm2);font-size:11.5px;margin-top:3px;font-family:"Montserrat"}
+.evtile.big{grid-column:span 2}
+.ccrow{display:grid;grid-template-columns:1.7fr 1fr;gap:12px;margin-bottom:14px}
+.cc-curve,.cc-alerts{margin-bottom:0}
+.scurve svg{width:100%;height:auto;display:block}
+.scurve .grid{stroke:var(--ln);stroke-width:1;opacity:.55}
+.scurve .axt{fill:var(--dm2);font:11px "IBM Plex Mono"}
+.scurve .guide{stroke:var(--dm);stroke-width:1;stroke-dasharray:3 3;opacity:.6}
+.scurve .ln{fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.scurve .ln.pv{stroke:var(--dm2);stroke-dasharray:5 4;stroke-width:2}
+.scurve .ln.ev{stroke:var(--brand)}
+.scurve .ln.ac{stroke:var(--lime)}
+.la-root[data-theme="light"] .scurve .ln.ac{stroke:#a08a00}
+.scurve .ar.ev{fill:var(--brand);opacity:.10;stroke:none}
+.scurve .dot{stroke:var(--pn);stroke-width:2}
+.scurve .dot.pv{fill:var(--dm2)} .scurve .dot.ev{fill:var(--brand)} .scurve .dot.ac{fill:var(--lime)}
+.scurve .pt.pv{fill:var(--dm2)} .scurve .pt.ev{fill:var(--brand)} .scurve .pt.ac{fill:var(--lime)}
+.la-root[data-theme="light"] .scurve .pt.ac{fill:#a08a00}
+.sclegend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;color:var(--dm);font-size:12px;font-weight:600}
+.sclegend i{display:inline-block;width:14px;height:4px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.sclegend i.pv{background:var(--dm2)} .sclegend i.ev{background:var(--brand)} .sclegend i.ac{background:var(--lime)}
+.sclegend .scwk{margin-left:auto;color:var(--dm2);text-transform:uppercase;letter-spacing:.08em}
+.alerts{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto}
+.alert{display:flex;gap:9px;align-items:flex-start;text-align:left;background:var(--pn2);border:1px solid var(--ln);border-left-width:3px;border-radius:9px;padding:8px 10px;color:var(--tx);cursor:pointer;font-family:"Montserrat"}
+.alert:hover{border-color:var(--dm2)}
+.alert.sev2{border-left-color:var(--bad)} .alert.sev1{border-left-color:var(--lime)} .alert.sev0{border-left-color:var(--brand)}
+.atag{font:700 10px "Saira Condensed";letter-spacing:.08em;padding:2px 6px;border-radius:5px;background:var(--pn);color:var(--dm);flex:none;margin-top:1px}
+.alert.sev2 .atag{background:var(--bad);color:#fff} .alert.sev1 .atag{background:var(--lime);color:#111314}
+.atx{font-size:12.5px;line-height:1.35}
+.lbhead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.qmode.sm button{padding:3px 10px;font-size:12px}
+.lboard{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}
+.lbcard{display:flex;align-items:center;gap:12px;background:var(--pn2);border:1px solid var(--ln);border-radius:12px;padding:10px 12px}
+.lbcard .rank{font:800 22px "Saira Condensed";width:30px;text-align:center;color:var(--dm2)}
+.lbcard.good .rank{color:var(--good)} .lbcard.warn .rank{color:var(--lime)} .lbcard.bad .rank{color:var(--bad)}
+.lbmain{flex:1;min-width:0}
+.lbmain b{display:block;font-size:17px}
+.lbbar{flex:1.2;height:8px;background:var(--bg);border:1px solid var(--ln);border-radius:5px;overflow:hidden;min-width:60px}
+.lbbar i{display:block;height:100%;background:var(--dm2)}
+.lbcard.good .lbbar i{background:var(--good)} .lbcard.warn .lbbar i{background:var(--lime)} .lbcard.bad .lbbar i{background:var(--bad)}
+.lbpf{text-align:right;min-width:78px}
+.lbpf b{font:600 18px "IBM Plex Mono"}
+.lbpf span{display:block;color:var(--dm2);font-size:10.5px;font-family:"IBM Plex Mono"}
+@media(max-width:900px){.evgrid{grid-template-columns:repeat(2,1fr)}.evtile.big{grid-column:span 2}.ccrow{grid-template-columns:1fr}.lboard{grid-template-columns:1fr}}
+
+/* ===== switch toggle + equipment rows ===== */
+.switch{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--tx);font-size:12.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch i{width:34px;height:19px;border-radius:20px;background:var(--pn2);border:1px solid var(--ln);position:relative;transition:background .15s,border-color .15s}
+.switch i:after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--dm);transition:transform .15s,background .15s}
+.switch input:checked + i{background:var(--brand);border-color:var(--brand)}
+.switch input:checked + i:after{transform:translateX(15px);background:#fff}
+.switch input:focus-visible + i{outline:2px solid var(--lime);outline-offset:2px}
+.eqrow td{border-bottom:1px solid var(--cellln);background:color-mix(in srgb,var(--pn) 55%,transparent)}
+.eqlabel{font:700 10px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);vertical-align:middle}
+.eqwrap{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px 4px}
+.eqchip{display:inline-flex;align-items:center;gap:6px;background:var(--pn2);border:1px solid var(--ln);border-radius:8px;padding:3px 6px 3px 8px}
+.eqchip .eqdot{width:8px;height:8px;border-radius:2px;background:var(--brand);flex:none}
+.eqchip.rental .eqdot{background:var(--lime)}
+.eqname{background:none;border:0;color:var(--tx);font:600 12.5px "Montserrat";width:120px;padding:2px}
+.eqname:focus{outline:none;border-bottom:1px solid var(--acc)}
+.eqhrs{width:48px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 5px;font:12px "IBM Plex Mono";text-align:right}
+.eqhrs:focus{outline:none;border-color:var(--acc)}
+.eqchip .equ{color:var(--dm2);font-size:10.5px;font-family:"IBM Plex Mono"}
+.eqx{background:none;border:0;color:var(--dm2);cursor:pointer;font-size:11px;padding:2px 3px}
+.eqx:hover{color:var(--bad)}
+.eqadd{background:transparent;border:1px dashed var(--ln);color:var(--dm);border-radius:8px;padding:3px 10px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.eqadd:hover{color:var(--brand);border-color:var(--brand)}
+.eqadd.rental:hover{color:var(--lime);border-color:var(--lime)}
+
 @media print{
  body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
  .ovl{position:absolute;inset:0;background:#fff;padding:0}
@@ -1129,6 +1453,13 @@ thead .rescol{z-index:12}
 
 const b = document.getElementById('boot'); if(b) b.remove();
 ReactDOM.createRoot(document.getElementById('root')).render(<LookAhead/>);
+
+/* Offline PWA — register the service worker over https/localhost (skip file://). */
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(()=>{});
+  });
+}
 </script>
 </body>
 </html>
