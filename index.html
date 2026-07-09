@@ -323,6 +323,7 @@ function LookAhead(){
 
   /* mutations */
   const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
+  const moveTask = (id,res,day)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,res,day}:t)); // drag / nudge to another day or crew
   const rmTask = id => { setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
   const addResource = (type,name,extra)=>{
@@ -399,11 +400,11 @@ function LookAhead(){
         <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
-        <span className="hint">click a chip for the crew table · click a card to log · report equipment hours inline</span>
+        <span className="hint">drag a card to move it day-to-day or crew-to-crew · click a card to log · click an empty cell to schedule</span>
       </div>
 
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask}}/> :
       <div className="boardwrap">
         <table className="board">
           <thead>
@@ -418,11 +419,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -464,9 +465,12 @@ function AddRow({ph,onAdd,onX}){
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
+  const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
+  const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
+  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id && moveTask) moveTask(id,res.id,d); };
   return (
     <>
     <tr>
@@ -475,8 +479,10 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps}){
       </td>
       {DAYS.map((_,d)=>{
         const list = mine(d);
-        return <td key={d} className={"cell"+(d>4?" wknd":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+        return <td key={d} className={"cell"+(d>4?" wknd":"")}
+          onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
+          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -524,7 +530,7 @@ function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmE
     </div>
   );
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask}){
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
   const showEq = eqProps && (eqProps.showOwned||eqProps.showRental);
@@ -536,7 +542,15 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
           <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
           <button className="mlog" onClick={()=>setModal({type:"sched",res:res.id,day})}>＋ Schedule</button>
         </div>
-        {tks.length ? tks.map(t=><Card key={t.id} t={t} c={taskCalc(t)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>)
+        {tks.length ? tks.map(t=>
+          <div className="mcard" key={t.id}>
+            <Card t={t} c={taskCalc(t)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <div className="mmove">
+              <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
+              <span>move day</span>
+              <button disabled={t.day===6} onClick={()=>moveTask(t.id,res.id,t.day+1)} aria-label="Move to next day">{t.day<6?DAYS[t.day+1]:""} ›</button>
+            </div>
+          </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
         {showEq && <MobileEquip res={res} {...eqProps}/>}
       </div>
@@ -575,10 +589,13 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen}){
+function Card({t,c,prev,onOpen,canDrag}){
   const cat = CATS[c.it[CI.CAT]];
   return (
-    <button className="card" style={{background:cat.bg,color:cat.tx}} onClick={onOpen}>
+    <button className="card" draggable={!!canDrag}
+      onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
+      onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
+      style={{background:cat.bg,color:cat.tx}} onClick={onOpen}>
       <div className="cardtop">
         <span className="ct">{c.it[CI.TASK].length>30 ? c.it[CI.TASK].slice(0,29)+"…" : c.it[CI.TASK]}</span>
         {c.done && <span className="ck">✓</span>}
@@ -1461,6 +1478,15 @@ thead .rescol{z-index:12}
 .addrow input{background:var(--pn2);border:1px solid var(--acc);color:var(--tx);border-radius:8px;padding:6px 10px;width:280px;margin-right:8px;font:inherit}
 .cell{border-bottom:1px solid var(--cellln);border-left:1px solid var(--cellln);vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
 .cell:hover{background:var(--cellhov)}
+.card[draggable="true"]{cursor:grab}
+.card.dragging{opacity:.38}
+.cell.drop{outline:2px dashed var(--brand);outline-offset:-3px;background:var(--cellhov)}
+.mcard{position:relative;margin-bottom:8px}
+.mcard .card{margin-bottom:0}
+.mmove{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:4px}
+.mmove button{flex:1;height:36px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.mmove button:disabled{opacity:.3}
+.mmove span{font:700 10px "Saira Condensed";letter-spacing:.12em;color:var(--dm2);text-transform:uppercase;flex:none}
 .chip{display:inline-block;border:0;border-radius:8px;padding:5px 11px;font-weight:700;font-size:14px;cursor:pointer}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
