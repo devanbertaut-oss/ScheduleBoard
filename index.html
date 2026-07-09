@@ -77,6 +77,15 @@ const CTC_DATA = {"02.45.01.00":{"u":"SY","d":"Concrete Roadway Breaking","cq":1
    per pay item, parsed from the Watershed Cost Detail (hauling operations). Used
    by the weekly foreman cheat sheet to size trucking & aggregate to stage. */
 const CD_CYT = {"C202(52)(C)":{"cytU":0.45,"um":"SY","trucks":5.0},"C202(52)(E)":{"cytU":0.001,"um":"LF","trucks":1.0},"C202(52)(F)":{"cytU":0.15,"um":"LF","trucks":3.0},"C202(52)(I)":{"cytU":0.45,"um":"SY","trucks":5.0},"C203(58)":{"cytU":0.023,"um":"SY","trucks":4.0},"C701(54)(I.3S)":{"cytU":0.019,"um":"LF","trucks":2.0},"C701(54)(M.4S)":{"cytU":2.416,"um":"LF","trucks":2.0},"C701(65)(G)":{"cytU":15.0,"um":"EACH","trucks":1.0},"C702(52)(J)":{"cytU":2.333,"um":"EACH","trucks":1.0},"C702(52)(M.4)":{"cytU":0.818,"um":"EACH","trucks":1.0},"C702(52)(M.9)":{"cytU":36.0,"um":"EACH","trucks":1.0},"C702(52)(M.10)":{"cytU":7.2,"um":"EACH","trucks":1.0},"C702(53)(N)":{"cytU":7.5,"um":"EACH","trucks":1.0},"C702(53)(S)":{"cytU":1.25,"um":"EACH","trucks":0.5},"C724(51)(A)":{"cytU":0.45,"um":"SY","trucks":5.0},"C741(51)(C)(2)":{"cytU":9.238,"um":"EACH","trucks":1.0},"C741(54)":{"cytU":6.667,"um":"EACH","trucks":0.5},"C741(55)(A)":{"cytU":9.0,"um":"EACH","trucks":1.0},"C741(55)(C)":{"cytU":12.5,"um":"EACH","trucks":1.0},"C741(55)(E)":{"cytU":22.0,"um":"EACH","trucks":0.5},"C741(55)(G)":{"cytU":1.905,"um":"EACH","trucks":1.0},"C741(74)(A)":{"cytU":1.875,"um":"EACH","trucks":1.0},"C742(51)(C)(B)":{"cytU":2.82,"um":"LF","trucks":2.0},"C742(57)(C)(A)":{"cytU":11.85,"um":"EACH","trucks":1.0},"C742(57)(C)(B)":{"cytU":23.1,"um":"EACH","trucks":1.0},"C742(57)(D)(B)":{"cytU":4.62,"um":"EACH","trucks":1.0},"C742(60)":{"cytU":8.0,"um":"EACH","trucks":1.0},"C742(63)":{"cytU":0.651,"um":"LF","trucks":0.5},"GI 0200(01.B)":{"cytU":1.754,"um":"CY","trucks":4.0},"GI 0704(03)(B.S)":{"cytU":0.582,"um":"LF","trucks":1.0},"GI 0704(03)(F.S)":{"cytU":0.74,"um":"LF","trucks":1.0}};
+/* Trucking baselines from the DPW547 timesheet + invoice history (analysis/trucking):
+   clean overall cycle ~26 min/load (median 2.31 loads/hr). Per-pit round trips are
+   field estimates (the history data conflates hourly days with incidental loads) —
+   editable in the optimizer. Rates = authoritative Three C's rate sheet. */
+const TRUCK_BASE = {
+  minLoad:26, loadsHr:2.31, minLoadLo:18, minLoadHi:45,
+  pits:{"Wood EB (sand)":32,"PMC (limestone)":26,"Vulcan (limestone)":40,"Five-S":36,"Haul-out / dump":24},
+  rates:{triHr:105, quadHr:120, Sand:{r:8.5,u:"CY"}, Dirt:{r:10,u:"CY"}, "57 Limestone":{r:7.5,u:"TN"}, "610 Limestone":{r:7.5,u:"TN"}, "Crushed Concrete":{r:10,u:"TN"}, "#8 Washed":{r:7.5,u:"TN"}}
+};
 const idx = {};
 CATALOG.forEach((r,i)=>{ idx[r[CI.CC]] = i; });
 /* Align each catalog item's display description & unit to the official CTC by
@@ -236,6 +245,7 @@ function LookAhead(){
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
+  const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -271,6 +281,7 @@ function LookAhead(){
         if (s.baseline) setBaseline(s.baseline);
         if (s.milestones) setMilestones(s.milestones);
         if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
+        if (s.truckDay) setTruckDay(s.truckDay);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
         if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
@@ -282,9 +293,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,loaded]);
 
   /* fonts */
   useEffect(()=>{
@@ -385,7 +396,7 @@ function LookAhead(){
           <span className="proj">Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em></span>
         </div>
         <nav className="tabs">
-          {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"]].map(([k,l])=>
+          {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="weeknav">
@@ -433,6 +444,7 @@ function LookAhead(){
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       {/* ============ BOARD GRID ============ */}
       {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}}/> :
+      <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
           <thead>
@@ -460,11 +472,14 @@ function LookAhead(){
             {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
           </tbody>
         </table>
+      </div>
+      <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}}/>
       </div>}
       </>}
 
       {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
+      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay}}/>}
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
@@ -497,6 +512,27 @@ function AddRow({ph,onAdd,onX}){
     <button className="cta sm" disabled={!v.trim()} onClick={()=>onAdd(v.trim())}>Add</button>
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
+}
+function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}){
+  const recap = res => { let p=0,a=0,e=0,q=0,pq=0,cells=0,logged=0;
+    weekTasks.filter(t=>t.res===res.id).forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; pq+=t.qty; q+=c.actQty; cells++; if(c.actMH||c.actQty)logged++; });
+    return {p,a,e,q,pq,cells,logged,pf:a>0?e/a:0}; };
+  const card = (res,kind)=>{ const r=recap(res); if(!r.cells) return null;
+    const st = reflowOn ? reflow.byCrew[res.id] : null;
+    const tone = r.pf>=1?"good":r.pf>=0.9?"warn":r.pf>0?"bad":"";
+    return <button key={res.id} className="rlcard" onClick={()=>setModal({type:"crew",id:res.id})}>
+      <div className="rltop"><b>{res.name}</b><span className={"pill "+(r.pf>=1?"pgood":r.pf>0?"pbad":"dim")}>{r.pf?r.pf.toFixed(2):"—"}</span></div>
+      <div className="rlbar"><i className={tone} style={{width:Math.min(100,r.p?r.a/r.p*100:0)+"%"}}/></div>
+      <div className="rlnums"><span>{fmtN(r.a)}/{fmtN(r.p)} MH</span><span>{r.pq?pct(r.q/r.pq):"—"}</span></div>
+      {st && <span className={"cstat "+st.status}>{st.status==="behind"?("Behind +"+st.extraDays+"d"):st.status==="over"?"Over cap":"On plan"}</span>}
+    </button>; };
+  const crewCards = crewsOnly.map(c=>card(c,"crew")).filter(Boolean);
+  const subCards = subsOnly.map(c=>card(c,"sub")).filter(Boolean);
+  return <aside className="crewrail no-print">
+    <div className="rlhead">This week — crew recap</div>
+    {crewCards.length? crewCards : <div className="rlempty">No crew production this week.</div>}
+    {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
+  </aside>;
 }
 function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
@@ -1495,6 +1531,164 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
+function TruckingView({truckDay,setTruckDay}){
+  const today = new Date().toISOString().slice(0,10);
+  const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
+  const upDay = fn => setTruckDay(d=>fn(d.date===today?{...d}:{date:today,trucks:[],loads:[]}));
+  const pitKeys = Object.keys(TRUCK_BASE.pits);
+
+  // ===== Fleet balancer =====
+  const [cyc,setCyc]=useState(TRUCK_BASE.minLoad);
+  const [loadT,setLoadT]=useState(6);
+  const [have,setHave]=useState(3);
+  const [tRate,setTRate]=useState(105);
+  const [idle,setIdle]=useState(240);
+  const need = Math.max(1, Math.ceil((+cyc + +loadT)/Math.max(1,+loadT)));
+  const scen = n => { const C=+cyc,L=+loadT,R=+tRate,I=+idle;
+    const arriv=(C+L)/n, exUtil=Math.min(1,L/arriv);
+    const lph=Math.min(n*60/(C+L), 60/L);
+    const truckCost=n*R, crewIdle=I*(1-exUtil);
+    const truckUtil=Math.min(1,need/n), truckIdle=R*n*(1-truckUtil);
+    const total=truckCost+crewIdle;
+    return {n,lph,exUtil,truckCost,crewIdle,truckIdle,total,perLoad:lph>0?total/lph:1e9}; };
+  const scens=[]; for(let n=Math.max(1,need-2);n<=need+2;n++) scens.push(scen(n));
+  const best=scens.reduce((a,b)=>b.perLoad<a.perLoad?b:a,scens[0]);
+  const haveN=Math.max(1,+have||1), haveS=scen(haveN);
+  const tgt=best.n;
+  const gap = haveN<tgt ? ("Under-trucked — excavator idles ~"+fmt$(haveS.crewIdle)+"/hr. Add "+(tgt-haveN)+" truck"+(tgt-haveN>1?"s":"")+" (cost-optimal "+tgt+").")
+            : haveN>tgt ? ("Over-trucked — ~"+fmt$(haveS.truckIdle)+"/hr of trucks waiting. Drop "+(haveN-tgt)+" (cost-optimal "+tgt+").")
+            : "Balanced at "+tgt+" trucks — lowest $/load.";
+
+  // ===== Sign-out / staging optimizer =====
+  const matKeys=Object.keys(TRUCK_BASE.rates).filter(k=>typeof TRUCK_BASE.rates[k]==="object");
+  const [mat,setMat]=useState("Sand");
+  const [pit,setPit]=useState(pitKeys[0]);
+  const [bed,setBed]=useState(18);
+  const [loads,setLoads]=useState(1);
+  const [rt,setRt]=useState(TRUCK_BASE.pits[pitKeys[0]]);
+  const [hRate,setHRate]=useState(105);
+  const mr=TRUCK_BASE.rates[mat]||{r:8.5,u:"CY"};
+  const hold=(+rt/60)*(+hRate)*(+loads);
+  const byload = mr.u==="CY" ? (+loads)*(+bed)*mr.r : (+loads)*(+bed)*1.4*mr.r;
+  const cheaper = hold<=byload ? "hold" : "byload";
+  const save=Math.abs(hold-byload);
+
+  // ===== Live tracker =====
+  const addTruck=()=>upDay(d=>({...d,trucks:[...d.trucks,{id:"3C",mode:"hourly",inT:new Date().toTimeString().slice(0,5)}]}));
+  const upTruck=(i,k,v)=>upDay(d=>({...d,trucks:d.trucks.map((t,j)=>j===i?{...t,[k]:v}:t)}));
+  const rmTruck=i=>upDay(d=>({...d,trucks:d.trucks.filter((_,j)=>j!==i)}));
+  const addLoad=()=>upDay(d=>({...d,loads:[...d.loads,{truck:(d.trucks[0]&&d.trucks[0].id)||"",material:"Sand",pit:pitKeys[0],qty:1,time:new Date().toTimeString().slice(0,5)}]}));
+  const upLoad=(i,k,v)=>upDay(d=>({...d,loads:d.loads.map((t,j)=>j===i?{...t,[k]:v}:t)}));
+  const rmLoad=i=>upDay(d=>({...d,loads:d.loads.filter((_,j)=>j!==i)}));
+  const nowMin=new Date().getHours()*60+new Date().getMinutes();
+  const inMins=day.trucks.map(t=>{const p=(t.inT||"").split(":");return p.length===2?(+p[0]*60+ +p[1]):NaN;}).filter(x=>!isNaN(x));
+  const firstIn=inMins.length?Math.min(...inMins):null;
+  const elapsedHr=firstIn!=null?Math.max(0.1,(nowMin-firstIn)/60):0;
+  const totLoads=day.loads.reduce((a,l)=>a+(+l.qty||0),0);
+  const lphNow=elapsedHr>0?totLoads/elapsedHr:0;
+  const hourlyN=day.trucks.filter(t=>t.mode==="hourly").length;
+  const runCost=hourlyN*elapsedHr*105;
+  const lphTone = !lphNow?"":lphNow>=TRUCK_BASE.loadsHr?"good":lphNow>=TRUCK_BASE.loadsHr*0.8?"warn":"bad";
+
+  const num=(v,set,w=64,step=1)=><input type="number" step={step} value={v} onChange={e=>set(e.target.value)} style={{width:w}}/>;
+
+  return (
+    <div className="page trk">
+      <div className="cchead"><div><h2>Trucking</h2><p className="dim2">Cycle-time baselines, live load tracking, and the fleet-balance / sign-out optimizer — keep the excavator fed without paying trucks to sit.</p></div></div>
+
+      {/* Fleet balancer */}
+      <div className="panel">
+        <div className="ph">Fleet balancer — trucks to keep one excavator working</div>
+        <div className="trkrow">
+          <label>Round-trip cycle (min){num(cyc,setCyc)}</label>
+          <label>Load + spot (min){num(loadT,setLoadT)}</label>
+          <label>Truck $/hr{num(tRate,setTRate)}</label>
+          <label>Crew idle $/hr{num(idle,setIdle)}</label>
+          <label>Trucks you have{num(have,setHave)}</label>
+        </div>
+        <table className="dt list">
+          <thead><tr><th>Trucks</th><th className="r">Loads/hr</th><th className="r">Excavator util</th><th className="r">Truck $/hr</th><th className="r">Crew-idle $/hr</th><th className="r">$/load</th><th/></tr></thead>
+          <tbody>{scens.map(x=>{
+            const isBest=x.n===best.n, isNeed=x.n===need, isHave=x.n===haveN;
+            return <tr key={x.n} className={isBest?"trkbest":""}>
+              <td><b>{x.n}</b>{isNeed?" ◄ match":""}{isHave?" (you)":""}</td>
+              <td className="r">{fmtN(x.lph,1)}</td>
+              <td className={"r "+(x.exUtil>=.98?"pos":x.exUtil<.85?"neg":"")}>{pct(x.exUtil)}</td>
+              <td className="r">{fmt$(x.truckCost)}</td>
+              <td className={"r "+(x.crewIdle>1?"neg":"")}>{x.crewIdle>1?fmt$(x.crewIdle):"—"}</td>
+              <td className="r"><b>{fmt$(x.perLoad)}</b></td>
+              <td>{isBest?<span className="cstat on">optimal</span>:""}</td>
+            </tr>;})}
+          </tbody>
+        </table>
+        <p className={"trkcall "+(haveN===tgt?"ok":"warn")}>{gap} <em className="dim2">Optimal ≈ {best.n} trucks at {fmt$(best.perLoad)}/load.</em></p>
+      </div>
+
+      {/* Sign-out / staging optimizer */}
+      <div className="panel">
+        <div className="ph">Sign-out &amp; staging — hourly hold vs by-load delivery</div>
+        <div className="trkrow">
+          <label>Material<select value={mat} onChange={e=>setMat(e.target.value)}>{matKeys.map(k=><option key={k}>{k}</option>)}</select></label>
+          <label>Source pit<select value={pit} onChange={e=>{setPit(e.target.value); setRt(TRUCK_BASE.pits[e.target.value]);}}>{pitKeys.map(k=><option key={k}>{k}</option>)}</select></label>
+          <label>Bed (CY){num(bed,setBed)}</label>
+          <label>Loads{num(loads,setLoads)}</label>
+          <label>Round-trip (min){num(rt,setRt)}</label>
+          <label>Hourly $/hr{num(hRate,setHRate)}</label>
+        </div>
+        <div className="trkcards">
+          <div className={"trkopt"+(cheaper==="hold"?" win":"")}>
+            <label>Hold hourly truck</label><b>{fmt$(hold)}</b>
+            <span>keep an on-clock truck to grab it now ({fmtN(+rt)} min × {fmt$(+hRate)}/hr × {loads})</span>
+          </div>
+          <div className={"trkopt"+(cheaper==="byload"?" win":"")}>
+            <label>By-load delivery</label><b>{fmt$(byload)}</b>
+            <span>order a 6:30 delivery ({loads} × {bed} {mr.u} × {fmt$(mr.r,2)}{mr.u==="TN"?" @1.4 t/CY":""})</span>
+          </div>
+        </div>
+        <p className="trkcall ok"><b>{cheaper==="hold"?"Hold the hourly truck":"Order the by-load delivery"}</b> — saves {fmt$(save)} in trucking. Staging aggregate by-load for later days also frees your hourly trucks for haul-out (no excavator wait). Material cost is the same either way.</p>
+      </div>
+
+      {/* Live daily tracker */}
+      <div className="panel">
+        <div className="ph lbhead">Today&rsquo;s trucks &amp; loads <em className="dim2">— {day.date}</em>
+          <div className="kpis" style={{padding:0,gap:8}}>
+            <div className="kpi"><label>Loads</label><b>{fmtN(totLoads)}</b></div>
+            <div className="kpi"><label>Loads/hr</label><b className={lphTone}>{lphNow?fmtN(lphNow,1):"—"}</b></div>
+            <div className="kpi"><label>Hourly $</label><b>{fmt$(runCost)}</b></div>
+          </div>
+        </div>
+        <div className="trksub">Trucks on site <button className="ghost sm" onClick={addTruck}>+ truck</button></div>
+        {day.trucks.map((t,i)=><div className="trkline" key={i}>
+          <input value={t.id} onChange={e=>upTruck(i,"id",e.target.value)} style={{width:70}}/>
+          <select value={t.mode} onChange={e=>upTruck(i,"mode",e.target.value)}><option value="hourly">Hourly</option><option value="load">By-load</option></select>
+          <input type="time" value={t.inT} onChange={e=>upTruck(i,"inT",e.target.value)}/>
+          <span className="dim2">in</span><button className="eqx" onClick={()=>rmTruck(i)}>✕</button>
+        </div>)}
+        <div className="trksub">Loads delivered <button className="ghost sm" onClick={addLoad} disabled={!day.trucks.length}>+ load</button></div>
+        {day.loads.map((l,i)=><div className="trkline" key={i}>
+          <select value={l.truck} onChange={e=>upLoad(i,"truck",e.target.value)}>{day.trucks.map((t,j)=><option key={j} value={t.id}>{t.id}</option>)}</select>
+          <select value={l.material} onChange={e=>upLoad(i,"material",e.target.value)}>{matKeys.map(k=><option key={k}>{k}</option>)}</select>
+          <select value={l.pit} onChange={e=>upLoad(i,"pit",e.target.value)}>{pitKeys.map(k=><option key={k}>{k}</option>)}</select>
+          <input type="number" value={l.qty} onChange={e=>upLoad(i,"qty",e.target.value)} style={{width:56}}/>
+          <input type="time" value={l.time} onChange={e=>upLoad(i,"time",e.target.value)}/>
+          <button className="eqx" onClick={()=>rmLoad(i)}>✕</button>
+        </div>)}
+        {!day.loads.length && <div className="rlempty">No loads logged yet.</div>}
+      </div>
+
+      {/* Baselines reference */}
+      <div className="panel">
+        <div className="ph">Cycle-time baselines <em className="dim2">— from DPW547 timesheet history</em></div>
+        <div className="trkrow">
+          <div className="kpi"><label>Overall cycle</label><b>{TRUCK_BASE.minLoad} min/load</b></div>
+          <div className="kpi"><label>Loads/hr</label><b>{TRUCK_BASE.loadsHr}</b></div>
+          <div className="kpi"><label>Range</label><b>{TRUCK_BASE.minLoadLo}–{TRUCK_BASE.minLoadHi} min</b></div>
+        </div>
+        <p className="dim2" style={{fontSize:12}}>Per-pit round-trips (field estimates — edit in the optimizer): {pitKeys.map(k=>k+" "+TRUCK_BASE.pits[k]+"m").join(" · ")}. Rates: triaxle {fmt$(105)}/hr, quad {fmt$(120)}/hr; sand {fmt$(8.5,2)}/CY, dirt {fmt$(10,2)}/CY, limestone {fmt$(7.5,2)}/TN.</p>
+      </div>
+    </div>
+  );
+}
 function Modal({children,close,w=520}){
   return (
     <div className="ovl" onMouseDown={e=>{if(e.target===e.currentTarget) close();}}>
@@ -1568,7 +1762,41 @@ const CSS = `
 .legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:wrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .hint{margin-left:auto;color:var(--dm2)}
-.boardwrap{overflow:auto;padding:0 18px 30px}
+.boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0}
+.boardmain{display:flex;gap:14px;align-items:flex-start}
+.crewrail{width:236px;flex:none;padding:0 16px 30px 0;display:flex;flex-direction:column;gap:8px}
+.rlhead{font:700 11px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);margin:2px 0 2px}
+.rldiv{font:700 10px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);margin-top:8px;border-top:1px solid var(--ln);padding-top:8px}
+.rlempty{color:var(--dm2);font-size:12px}
+.rlcard{display:block;width:100%;text-align:left;background:var(--pn);border:1px solid var(--ln);border-radius:11px;padding:9px 11px;cursor:pointer}
+.rlcard:hover{border-color:var(--dm2)}
+.rltop{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rltop b{font:700 15px "Saira Condensed";color:var(--tx)}
+.rlbar{height:7px;background:var(--bg);border:1px solid var(--ln);border-radius:5px;overflow:hidden;margin:6px 0 5px}
+.rlbar i{display:block;height:100%;background:var(--dm2)}
+.rlbar i.good{background:var(--good)} .rlbar i.warn{background:var(--lime)} .rlbar i.bad{background:var(--bad)}
+.rlnums{display:flex;justify-content:space-between;font:11px "IBM Plex Mono";color:var(--dm)}
+.rlcard .cstat{margin-top:6px}
+.trk .panel{margin-bottom:14px}
+.trkrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px}
+.trkrow label{display:flex;flex-direction:column;gap:4px;font:600 11px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;color:var(--dm)}
+.trkrow input,.trkrow select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 9px;font:13px "IBM Plex Mono"}
+.trkbest{background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.trkbest b{color:var(--good)}
+.trkcall{margin:8px 0 0;font-size:13px;padding:9px 12px;border-radius:9px;border:1px solid var(--ln);background:var(--pn2)}
+.trkcall.ok{border-color:var(--brand)} .trkcall.warn{border-color:var(--lime)}
+.trkcards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:4px 0 8px}
+.trkopt{background:var(--pn2);border:1px solid var(--ln);border-radius:12px;padding:14px 16px}
+.trkopt.win{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand) inset}
+.trkopt label{display:block;font:700 12px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;color:var(--dm)}
+.trkopt b{display:block;font:600 30px "IBM Plex Mono";margin:2px 0}
+.trkopt.win b{color:var(--good)}
+.trkopt span{font-size:11.5px;color:var(--dm2)}
+.trksub{display:flex;align-items:center;gap:10px;font:700 11px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:var(--dm2);margin:12px 0 6px}
+.trkline{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+.trkline input,.trkline select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:12.5px "IBM Plex Mono"}
+@media(max-width:760px){.trkcards{grid-template-columns:1fr}}
+@media(max-width:980px){.crewrail{width:186px}}
 .board{border-collapse:separate;border-spacing:0;width:100%;min-width:1080px}
 .board thead th{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:2px solid var(--ln);padding:8px 6px 10px;text-align:center;font-size:13px;color:var(--dm)}
 .board thead th b{display:block;font-size:17px;color:var(--tx);font-family:"IBM Plex Mono"}
