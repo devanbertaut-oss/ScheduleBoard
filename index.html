@@ -227,6 +227,7 @@ function LookAhead(){
   const [loaded, setLoaded] = useState(false);
   const [umOverrides, setUmOverrides] = useState({}); // catalog idx -> edited UM
   const [ctc, setCtc] = useState(CTC_DATA); // phase-code -> billed/forecast qty (importable)
+  const [sel, setSel] = useState(()=>new Set()); // multi-selected task ids for group move
   const [equipment, setEquipment] = useState(seedEquip); // {id,res,name,kind:'owned'|'rental'}
   const [eqHours, setEqHours] = useState({});            // `${id}_${wk}` -> reported hrs
   const [showOwned, setShowOwned] = useState(true);      // board: show owned equipment rows
@@ -324,6 +325,20 @@ function LookAhead(){
   /* mutations */
   const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
   const moveTask = (id,res,day)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,res,day}:t)); // drag / nudge to another day or crew
+  const toggleSel = id => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
+  // Drop handler: a single card moves to the target day (+crew if given); a multi-
+  // selection shifts every selected task by the same day delta, keeping each crew.
+  const rescheduleDrop = (draggedId,targetRes,targetDay)=>{
+    const clamp=v=>Math.max(0,Math.min(6,v));
+    const multi = sel.has(draggedId) && sel.size>1;
+    setTasks(ts=>{ const drag=ts.find(t=>t.id===draggedId); if(!drag) return ts;
+      const group = multi ? sel : new Set([draggedId]); const delta = targetDay - drag.day;
+      return ts.map(t=>{ if(!group.has(t.id)) return t;
+        if(multi) return {...t, day:clamp(t.day+delta)};
+        return {...t, day:targetDay, ...(targetRes!=null?{res:targetRes}:{})}; });
+    });
+    if(multi) setSel(new Set());
+  };
   const rmTask = id => { setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
   const addResource = (type,name,extra)=>{
@@ -400,11 +415,12 @@ function LookAhead(){
         <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
-        <span className="hint">drag a card to move it day-to-day or crew-to-crew · click a card to log · click an empty cell to schedule</span>
+        <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select &amp; move together · click a card to log</span>
       </div>
 
+      {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop}}/> :
       <div className="boardwrap">
         <table className="board">
           <thead>
@@ -419,11 +435,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -465,12 +481,12 @@ function AddRow({ph,onAdd,onX}){
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
-  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id && moveTask) moveTask(id,res.id,d); };
+  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d); };
   return (
     <>
     <tr>
@@ -482,7 +498,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,moveTask}
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -530,7 +546,7 @@ function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmE
     </div>
   );
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop}){
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
   const showEq = eqProps && (eqProps.showOwned||eqProps.showRental);
@@ -544,7 +560,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
@@ -563,7 +579,11 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         <div className="mdays">
           {DAYS.map((d,i)=>{
             const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
-            return <button key={d} className={"mday"+(i===day?" on":"")+(today?" today":"")+(i>4?" wknd":"")} onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b></button>;
+            return <button key={d} className={"mday"+(i===day?" on":"")+(today?" today":"")+(i>4?" wknd":"")}
+              onDragOver={e=>{e.preventDefault(); e.currentTarget.classList.add("dropday");}}
+              onDragLeave={e=>e.currentTarget.classList.remove("dropday")}
+              onDrop={e=>{e.preventDefault(); e.currentTarget.classList.remove("dropday"); const id=e.dataTransfer.getData("text/plain"); if(id){ rescheduleDrop(id,null,i); setDay(i); }}}
+              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b></button>;
           })}
         </div>
         <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
@@ -589,13 +609,14 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect}){
   const cat = CATS[c.it[CI.CAT]];
   return (
-    <button className="card" draggable={!!canDrag}
+    <button className={"card"+(selected?" sel":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
-      style={{background:cat.bg,color:cat.tx}} onClick={onOpen}>
+      style={{background:cat.bg,color:cat.tx}}
+      onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
       <div className="cardtop">
         <span className="ct">{c.it[CI.TASK].length>30 ? c.it[CI.TASK].slice(0,29)+"…" : c.it[CI.TASK]}</span>
         {c.done && <span className="ck">✓</span>}
@@ -1481,6 +1502,11 @@ thead .rescol{z-index:12}
 .card[draggable="true"]{cursor:grab}
 .card.dragging{opacity:.38}
 .cell.drop{outline:2px dashed var(--brand);outline-offset:-3px;background:var(--cellhov)}
+.card.sel{outline:3px solid var(--lime);outline-offset:-1px}
+.selbar{display:flex;align-items:center;gap:10px;margin:0 18px 8px;padding:8px 12px;background:var(--pn);border:1px solid var(--lime);border-radius:10px;color:var(--tx);font-size:13px}
+.selbar b{font-family:"IBM Plex Mono";color:var(--lime)}
+.selbar button{margin-left:auto;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font:600 12px "Saira Condensed"}
+.mday.dropday{outline:2px dashed var(--lime);outline-offset:-2px}
 .mcard{position:relative;margin-bottom:8px}
 .mcard .card{margin-bottom:0}
 .mmove{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:4px}
