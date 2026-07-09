@@ -232,6 +232,10 @@ function LookAhead(){
   const [eqHours, setEqHours] = useState({});            // `${id}_${wk}` -> reported hrs
   const [showOwned, setShowOwned] = useState(true);      // board: show owned equipment rows
   const [showRental, setShowRental] = useState(false);   // board: show rental equipment rows
+  const [baseline, setBaseline] = useState(null);        // {takenAt, byTask:{id:{qty,day,wk}}}
+  const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
+  const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
+  const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -264,6 +268,9 @@ function LookAhead(){
         if (s.umOverrides) setUmOverrides(s.umOverrides);
         if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
         if (s.ctc) setCtc(s.ctc);
+        if (s.baseline) setBaseline(s.baseline);
+        if (s.milestones) setMilestones(s.milestones);
+        if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
         if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
@@ -275,9 +282,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,loaded]);
 
   /* fonts */
   useEffect(()=>{
@@ -362,6 +369,8 @@ function LookAhead(){
 
   const crewsOnly = crews.filter(c=>c.type==="crew");
   const subsOnly  = crews.filter(c=>c.type==="sub");
+  const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
+  const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews]);
 
   return (
     <div className="la-root" data-theme={theme}>
@@ -391,6 +400,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
+          <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
           <button className="themebtn" title={"Theme: "+theme+" — click to change"}
             onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
             {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
@@ -415,31 +425,35 @@ function LookAhead(){
         <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
-        <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select &amp; move together · click a card to log</span>
+        <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
+        <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
+        <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
 
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}}/> :
       <div className="boardwrap">
         <table className="board">
           <thead>
             <tr>
               <th className="rescol">Resource</th>
               {DAYS.map((d,i)=>{
-                const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
-                return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b></th>;
+                const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
+                const ms = milestones.filter(m=>m.date===date);
+                return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                  {ms.map(m=><span key={m.id} className="msflag" title={m.label}>◆ {m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
             </tr>
           </thead>
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -451,7 +465,9 @@ function LookAhead(){
 
       {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="catalog" && <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>}
+      {tab==="catalog" && (catalogOK
+        ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
+        : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
@@ -461,6 +477,7 @@ function LookAhead(){
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
+      {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
           del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
@@ -481,7 +498,7 @@ function AddRow({ph,onAdd,onX}){
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -492,13 +509,17 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
     <tr>
       <td className="rescol">
         <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
+        {reflowOn && (()=>{ const st=reflow.byCrew[res.id]; if(!st) return null;
+          const lbl = st.status==="behind" ? ("Behind +"+st.extraDays+"d") : st.status==="over" ? "Over cap" : "On plan";
+          return <span key="st" className={"cstat "+st.status} title={st.behindMH>0.5?(fmtN(st.behindMH)+" MH short of plan at cap"):"within daily capacity"}>{lbl}</span>;
+        })()}
       </td>
       {DAYS.map((_,d)=>{
         const list = mine(d);
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -546,7 +567,43 @@ function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmE
     </div>
   );
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop}){
+function computeReflow(tasks, logs, baseline, crews){
+  const byTask={}, byCrew={};
+  const capOf = id => { const c=crews.find(x=>x.id===id); return (c && c.capMH>0)? c.capMH : 68; };
+  const groups={};
+  tasks.forEach(t=>{ const k=t.res+"|"+t.ci; (groups[k]||(groups[k]=[])).push(t); });
+  Object.entries(groups).forEach(([k,arr])=>{
+    const res=k.slice(0,k.indexOf("|")); const cap=capOf(res);
+    arr.sort((a,b)=> a.wk<b.wk?-1 : a.wk>b.wk?1 : a.day-b.day);
+    const mhU = CATALOG[arr[0].ci][CI.MH];
+    const capQ = mhU>0 ? cap/mhU : Infinity;
+    let carry=0;
+    arr.forEach(t=>{
+      const bt = baseline && baseline.byTask && baseline.byTask[t.id];
+      const planQ = (bt && bt.qty!=null) ? bt.qty : t.qty;
+      const lg = logs[t.id];
+      if(lg){ const actQ=lg.qty||0; carry=(planQ+carry)-actQ; byTask[t.id]={logged:true, planQ, actQ, reflowQ:actQ, reflowMH:(lg.mh||0), overCap:false}; }
+      else {
+        const want=Math.max(0, planQ+carry);
+        const capped=Math.min(want, capQ);
+        const reflowMH = mhU>0 ? want*mhU : 0;
+        const overCap = mhU>0 && reflowMH > cap+1e-6;
+        byTask[t.id]={logged:false, planQ, reflowQ:want, cappedQ:capped, reflowMH, overCap};
+        carry = want-capped;
+      }
+    });
+    const cur = byCrew[res] || (byCrew[res]={behindMH:0, over:false, cap});
+    if(mhU>0 && carry>0.0001) cur.behindMH += carry*mhU;
+    if(arr.some(t=>byTask[t.id] && byTask[t.id].overCap)) cur.over=true;
+  });
+  Object.values(byCrew).forEach(v=>{
+    v.extraDays = v.behindMH>0.5 ? Math.ceil(v.behindMH/(v.cap||68)) : 0;
+    v.status = v.behindMH>0.5 ? "behind" : v.over ? "over" : "on";
+  });
+  return {byTask, byCrew};
+}
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}){
+  const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
   const showEq = eqProps && (eqProps.showOwned||eqProps.showRental);
@@ -583,11 +640,12 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
               onDragOver={e=>{e.preventDefault(); e.currentTarget.classList.add("dropday");}}
               onDragLeave={e=>e.currentTarget.classList.remove("dropday")}
               onDrop={e=>{e.preventDefault(); e.currentTarget.classList.remove("dropday"); const id=e.dataTransfer.getData("text/plain"); if(id){ rescheduleDrop(id,null,i); setDay(i); }}}
-              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b></button>;
+              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b>{msFor(i).length>0 && <i className="msdot"/>}</button>;
           })}
         </div>
         <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
       </div>
+      {msFor(day).length>0 && <div className="msline">{msFor(day).map(m=>"◆ "+m.label).join("  ·  ")}</div>}
       <div className="msec">Crews</div>
       {crewsOnly.map(c=>crewBlock(c,"crew"))}
       <div className="msec">Subcontractors</div>
@@ -609,8 +667,10 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn}){
   const cat = CATS[c.it[CI.CAT]];
+  const useRf = reflowOn && rf && !rf.logged;
+  const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
   return (
     <button className={"card"+(selected?" sel":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
@@ -622,7 +682,8 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect}){
         {c.done && <span className="ck">✓</span>}
       </div>
       <div className="csub">{prev ? "→ cont." : (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC])}</div>
-      <div className="cnums"><b>{fmtN(t.qty,t.qty%1?1:0)} {c.it[CI.UM]}</b><span>{fmtN(c.planMH,c.planMH%1?1:0)} MH</span></div>
+      <div className="cnums"><b className={bad?"cbad":""}>{fmtN(qShown,qShown%1?1:0)} {c.it[CI.UM]}</b><span className={bad?"cbad":""}>{fmtN(mhShown,mhShown%1?1:0)} MH{bad?" ▲":""}</span></div>
+      {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
     </button>
   );
 }
@@ -713,6 +774,8 @@ function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
         <input className="namein" value={name} onChange={e=>setName(e.target.value)}
           onBlur={()=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,name}:c))}/>
         <span className={"pill "+(pf>=1?"pgood":pf>0?"pbad":"dim")}>PF {pf?pf.toFixed(2):"—"}</span>
+        <label className="capfield">Daily MH cap<input type="number" min="0" step="1" value={res.capMH??68}
+          onChange={e=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,capMH:+e.target.value||0}:c))}/></label>
       </div>
       <table className="dt list">
         <thead><tr><th>Day</th><th>Item</th><th>CC</th><th className="r">Plan</th><th className="r">Actual</th><th className="r">PPC</th><th className="r">Plan MH</th><th className="r">Act MH</th></tr></thead>
@@ -1065,25 +1128,6 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
         </div>
       </div>
 
-      <div className="panel">
-        <div className="ph lbhead">Crew leaderboard — performance factor
-          <div className="qmode sm">
-            {[["week","This week"],["season","Season"]].map(([k,l])=>
-              <button key={k} className={scope===k?"on":""} onClick={()=>setScope(k)}>{l}</button>)}
-          </div>
-        </div>
-        <div className="lboard">
-          {board.length? board.map((r,i)=>{
-            const tone=r.pf>=1?"good":r.pf>=0.9?"warn":"bad";
-            return <div key={r.c.id} className={"lbcard "+tone}>
-              <span className="rank">{i+1}</span>
-              <div className="lbmain"><b>{r.c.name}</b><span className="dim2">{r.c.type==="sub"?"Subcontractor":"Crew"}</span></div>
-              <div className="lbbar"><i style={{width:Math.min(100,r.pf*100/1.5)+"%"}}/></div>
-              <div className="lbpf"><b>{r.pf?r.pf.toFixed(2):"—"}</b><span>{fmtN(r.e)}/{fmtN(r.a)} MH</span></div>
-            </div>;
-          }) : <div className="empty">No logged production for this scope yet.</div>}
-        </div>
-      </div>
     </div>
   );
 }
@@ -1125,6 +1169,46 @@ function Trends({crews,tasks,logs,taskCalc,wk}){
 }
 
 /* ============ CATALOG / CTC ============ */
+function MilestoneModal({milestones,setMilestones,close}){
+  const [date,setDate]=useState(""); const [label,setLabel]=useState("");
+  const add=()=>{ if(!date||!label.trim())return; setMilestones(m=>[...m,{id:"m"+Math.random().toString(36).slice(2,7),date,label:label.trim()}].sort((a,b)=>a.date.localeCompare(b.date))); setDate(""); setLabel(""); };
+  const del=id=>setMilestones(m=>m.filter(x=>x.id!==id));
+  return (
+    <Modal close={close} w={540}>
+      <h3>Milestones</h3>
+      <p className="dim2">Dated markers shown on the board — end of a block, end of a drain run, inspections, deadlines, anything worth flagging.</p>
+      <div className="logrow">
+        <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+        <label style={{flex:2}}>Label<input value={label} placeholder="e.g. End of Orange St drain run" onChange={e=>setLabel(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")add();}}/></label>
+        <button className="cta" style={{alignSelf:"flex-end"}} disabled={!date||!label.trim()} onClick={add}>Add</button>
+      </div>
+      <table className="dt list">
+        <thead><tr><th>Date</th><th>Milestone</th><th/></tr></thead>
+        <tbody>{milestones.length? milestones.map(m=>
+          <tr key={m.id}><td className="mono">{m.date}</td><td>◆ {m.label}</td><td><button className="ghost sm" onClick={()=>del(m.id)}>Remove</button></td></tr>)
+          : <tr><td colSpan={3} className="empty">No milestones yet — add one above.</td></tr>}
+        </tbody>
+      </table>
+      <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
+    </Modal>
+  );
+}
+function CatalogGate({onUnlock}){
+  const [v,setV]=useState(""); const [err,setErr]=useState(false);
+  const submit=()=>{ if(v.trim()==="42069") onUnlock(); else { setErr(true); setV(""); } };
+  return (
+    <div className="page">
+      <div className="gatebox">
+        <div className="ph">Restricted — Catalog / CTC</div>
+        <p className="dim2">This view shows contract cost &amp; billing data. Enter the access code to continue.</p>
+        <input className={"search"+(err?" gerr":"")} type="password" inputMode="numeric" autoFocus placeholder="Access code"
+          value={v} onChange={e=>{setV(e.target.value); setErr(false);}} onKeyDown={e=>{if(e.key==="Enter")submit();}}/>
+        {err && <div className="warnline">Incorrect code — try again.</div>}
+        <div className="btnrow"><button className="cta" onClick={submit}>Unlock</button></div>
+      </div>
+    </div>
+  );
+}
 function CatalogView({installedFor,fcst,ctcOf,remainingFor,contractQtyFor,umOverrides,setUmOverrides,openSched}){
   const setUM = (i,v)=> setUmOverrides(o=>{
     const c={...o}; const t=v.trim();
@@ -1503,6 +1587,25 @@ thead .rescol{z-index:12}
 .card.dragging{opacity:.38}
 .cell.drop{outline:2px dashed var(--brand);outline-offset:-3px;background:var(--cellhov)}
 .card.sel{outline:3px solid var(--lime);outline-offset:-1px}
+.cbad{color:#b00020!important;font-weight:800}
+.csub2{font-size:10px;font-weight:700;opacity:.9;margin-top:1px}
+.cstat{display:inline-block;margin-top:4px;font:700 10px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px;white-space:nowrap}
+.cstat.on{background:var(--pillGoodBg);color:var(--good)}
+.cstat.over{background:var(--noteWbg);color:var(--warn)}
+.cstat.behind{background:var(--pillBadBg);color:var(--bad)}
+.snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.snapbtn:hover{border-color:var(--brand);color:var(--brand)}
+.capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+.capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
+.msflag{display:block;margin-top:3px;font:700 9.5px "Saira Condensed";letter-spacing:.03em;color:var(--lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
+.la-root[data-theme="light"] .msflag{color:#7a6b00}
+.msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
+.msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
+.gatebox{max-width:430px;margin:8vh auto;background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:22px 24px;text-align:center}
+.gatebox .ph{margin-bottom:6px}
+.gatebox .search{margin:14px 0 0;text-align:center;letter-spacing:.3em;font-size:18px}
+.gatebox .gerr{border-color:var(--bad)}
+.gatebox .btnrow{justify-content:center}
 .selbar{display:flex;align-items:center;gap:10px;margin:0 18px 8px;padding:8px 12px;background:var(--pn);border:1px solid var(--lime);border-radius:10px;color:var(--tx);font-size:13px}
 .selbar b{font-family:"IBM Plex Mono";color:var(--lime)}
 .selbar button{margin-left:auto;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font:600 12px "Saira Condensed"}
