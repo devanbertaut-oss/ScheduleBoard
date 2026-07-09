@@ -194,7 +194,14 @@ function autoDesc(name, ts, logs, calc, isSub){
 }
 
 /* ============================================================ */
+function useIsMobile(){
+  const q="(max-width:720px)";
+  const [m,setM]=useState(()=> typeof window!=="undefined" && window.matchMedia(q).matches);
+  useEffect(()=>{ const mq=window.matchMedia(q); const on=()=>setM(mq.matches); mq.addEventListener?.("change",on); return ()=>mq.removeEventListener?.("change",on); },[]);
+  return m;
+}
 function LookAhead(){
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState("dash");
   const [wk, setWk] = useState(WK0);
   const [crews, setCrews] = useState(seedCrews);
@@ -335,7 +342,7 @@ function LookAhead(){
           <img className="brandlogo dk" src="assets/rngd-white.png" alt="RNGD" draggable="false"/>
           <img className="brandlogo lt" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
           <span className="brandbar"/>
-          <span className="proj">Look-Ahead<em>DPW547 · Job 2124013</em></span>
+          <span className="proj">Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em></span>
         </div>
         <nav className="tabs">
           {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"]].map(([k,l])=>
@@ -380,6 +387,7 @@ function LookAhead(){
       </div>
 
       {/* ============ BOARD GRID ============ */}
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps}}/> :
       <div className="boardwrap">
         <table className="board">
           <thead>
@@ -405,7 +413,7 @@ function LookAhead(){
             {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
           </tbody>
         </table>
-      </div>
+      </div>}
       </>}
 
       {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
@@ -479,6 +487,75 @@ function EquipRow({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmEqui
         </div>
       </td>
     </tr>
+  );
+}
+function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmEquip,renameEquip,setEqHrs}){
+  const items = equipment.filter(e=>e.res===res.id && ((e.kind==="owned"&&showOwned)||(e.kind==="rental"&&showRental)));
+  return (
+    <div className="meq">
+      <span className="meqlbl">Equipment hrs</span>
+      {items.map(e=>
+        <span key={e.id} className={"eqchip "+e.kind}>
+          <i className="eqdot"/>
+          <input className="eqname" value={e.name} onChange={ev=>renameEquip(e.id,ev.target.value)} aria-label="Equipment name"/>
+          <input className="eqhrs" type="number" min="0" step="0.5" placeholder="0" value={eqHours[e.id+"_"+wk]??""} onChange={ev=>setEqHrs(e.id,ev.target.value)} aria-label="Reported hours"/>
+          <span className="equ">hrs</span>
+          <button className="eqx" onClick={()=>rmEquip(e.id)} aria-label="Remove equipment">✕</button>
+        </span>)}
+      {showOwned && <button className="eqadd" onClick={()=>addEquip(res.id,"owned")}>+ Equipment</button>}
+      {showRental && <button className="eqadd rental" onClick={()=>addEquip(res.id,"rental")}>+ Rental</button>}
+    </div>
+  );
+}
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps}){
+  const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
+  const [day,setDay]=useState(todayIdx);
+  const showEq = eqProps && (eqProps.showOwned||eqProps.showRental);
+  const crewBlock = (res,kind)=>{
+    const tks = weekTasks.filter(t=>t.res===res.id && t.day===day);
+    return (
+      <div className="mcrew" key={res.id}>
+        <div className="mcrewhead">
+          <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
+          <button className="mlog" onClick={()=>setModal({type:"sched",res:res.id,day})}>＋ Schedule</button>
+        </div>
+        {tks.length ? tks.map(t=><Card key={t.id} t={t} c={taskCalc(t)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>)
+          : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
+        {showEq && <MobileEquip res={res} {...eqProps}/>}
+      </div>
+    );
+  };
+  return (
+    <div className="mboard">
+      <div className="mdaynav">
+        <button className="mdaystep" onClick={()=>setDay(d=>Math.max(0,d-1))} disabled={day===0} aria-label="Previous day">‹</button>
+        <div className="mdays">
+          {DAYS.map((d,i)=>{
+            const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
+            return <button key={d} className={"mday"+(i===day?" on":"")+(today?" today":"")+(i>4?" wknd":"")} onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b></button>;
+          })}
+        </div>
+        <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
+      </div>
+      <div className="msec">Crews</div>
+      {crewsOnly.map(c=>crewBlock(c,"crew"))}
+      <div className="msec">Subcontractors</div>
+      {subsOnly.map(c=>crewBlock(c,"sub"))}
+      <div className="msec">Site · Notes</div>
+      {siteRows.map(r=>{
+        const ns = notes.filter(n=>n.row===r.id && n.day===day);
+        return (
+          <div className="mcrew" key={r.id}>
+            <div className="mcrewhead">
+              <span className="chip site">{r.name}</span>
+              <button className="mlog" onClick={()=>setModal({type:"note",row:r.id,day})}>＋ Note</button>
+            </div>
+            {ns.length ? ns.map(n=><button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:r.id,day})}>{n.level!=="info"?"⚠ ":""}{n.text}</button>)
+              : <div className="mempty">No notes for this day.</div>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 function Card({t,c,prev,onOpen}){
@@ -1216,7 +1293,7 @@ const CSS = `
 @media (prefers-color-scheme: light){ .la-root[data-theme="system"] .brandlogo.dk{display:none} .la-root[data-theme="system"] .brandlogo.lt{display:block} }
 .brandbar{width:2px;height:26px;background:var(--lime);border-radius:2px}
 .logo{font-size:22px;font-weight:700}
-.proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;max-width:280px}
 .proj em{color:var(--dm);font-style:normal;font-size:11px;font-weight:600;letter-spacing:.04em}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
 .tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
@@ -1440,6 +1517,72 @@ thead .rescol{z-index:12}
 .eqadd{background:transparent;border:1px dashed var(--ln);color:var(--dm);border-radius:8px;padding:3px 10px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .eqadd:hover{color:var(--brand);border-color:var(--brand)}
 .eqadd.rental:hover{color:var(--lime);border-color:var(--lime)}
+
+/* ===== mobile day-view board ===== */
+.mboard{padding:0 12px 40px}
+.mdaynav{display:flex;align-items:stretch;gap:6px;background:var(--bg);padding:6px 0 10px;border-bottom:1px solid var(--ln);margin-bottom:4px}
+.mdaystep{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:10px;min-width:38px;font-size:18px;cursor:pointer}
+.mdaystep:disabled{opacity:.35}
+.mdays{display:flex;gap:6px;overflow-x:auto;flex:1;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
+.mday{scroll-snap-align:center;flex:0 0 auto;min-width:52px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:6px 4px;color:var(--dm);text-align:center;cursor:pointer;line-height:1.1}
+.mday span{display:block;font:700 11px "Saira Condensed";letter-spacing:.06em}
+.mday b{display:block;font:600 16px "IBM Plex Mono";color:var(--tx)}
+.mday.on{background:var(--brand);border-color:var(--brand)}
+.mday.on span,.mday.on b{color:#fff}
+.mday.today:not(.on) b{color:var(--brand)}
+.mday.wknd:not(.on){opacity:.7}
+.msec{font:700 11px "Saira Condensed";letter-spacing:.14em;text-transform:uppercase;color:var(--dm2);margin:16px 0 8px}
+.mcrew{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:10px 12px;margin-bottom:10px}
+.mcrewhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.mlog{background:transparent;border:1px dashed var(--ln);color:var(--brand);border-radius:9px;padding:6px 12px;font:600 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer;min-height:38px}
+.mempty{color:var(--dm2);font-size:13px;padding:6px 2px}
+.mcrew .card{margin-bottom:6px}
+.meq{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--cellln)}
+.meqlbl{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:var(--dm2);width:100%}
+
+/* ===== responsive (phones/tablets ≤760px) ===== */
+@media (max-width:760px){
+ .top{gap:10px;padding:10px 12px 8px}
+ .brandlogo{height:22px}
+ .proj{font-size:12.5px;max-width:220px}
+ .proj em{display:none}
+ .tabs{order:3;width:100%;overflow-x:auto;border-radius:10px}
+ .tabs button{flex:1 0 auto;white-space:nowrap;min-height:40px}
+ .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between}
+ .weeknav span{min-width:0;flex:1;font-size:15px}
+ .weeknav button,.actions button,.btn{min-height:40px}
+ .actions{order:4;width:100%;flex-wrap:wrap}
+ .actions button{flex:1 1 auto}
+ .kpis{flex-wrap:nowrap;overflow-x:auto;scroll-snap-type:x mandatory;padding:10px 12px 6px;-webkit-overflow-scrolling:touch}
+ .kpi{flex:0 0 auto;scroll-snap-align:start}
+ .legend{padding:8px 12px;gap:10px}
+ .page{padding:14px 12px}
+ .cc{max-width:100%}
+ .cchead{flex-direction:column;align-items:flex-start;gap:8px}
+ .cchead h2{font-size:24px}
+ .ccpct{text-align:left}
+ .evgrid{grid-template-columns:1fr 1fr;gap:8px}
+ .evtile.big{grid-column:span 2}
+ .evtile b{font-size:22px} .evtile.big b{font-size:32px}
+ .ccrow{grid-template-columns:1fr}
+ .lboard{grid-template-columns:1fr}
+ .page h2{font-size:22px}
+ /* modals become bottom sheets */
+ .ovl{padding:0;align-items:flex-end}
+ .modal{max-width:100%!important;width:100%;border-radius:16px 16px 0 0;max-height:92vh;overflow:auto;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
+ .logrow{flex-direction:column;gap:8px}
+ .eosgrid{grid-template-columns:1fr}
+ .colgrid{columns:1}
+ .btnrow{flex-wrap:wrap}
+ /* 16px form controls prevent iOS zoom-on-focus */
+ .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea,.search,.namein{font-size:16px}
+ .card{padding:8px 10px}
+ .chip{min-height:34px}
+}
+@media (max-width:420px){
+ .evgrid{grid-template-columns:1fr}
+ .evtile.big{grid-column:span 1}
+}
 
 @media print{
  body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
