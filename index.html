@@ -566,6 +566,7 @@ function LookAhead(){
 
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
+      {modal?.type==="qlog"    && <QuickLogModal t={tasks.find(x=>x.id===modal.id)} c={taskCalc(tasks.find(x=>x.id===modal.id))} lg={logs[modal.id]} saveLog={saveLog} openFull={()=>setModal({type:"task",id:modal.id})} close={()=>setModal(null)}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
@@ -759,6 +760,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
           return (
           <div className="mcard" key={t.id}>
             <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={has(t.day-1)} span={{idx:t.day-lo+1,total:hi-lo+1}} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <button className={"mqlog"+(taskCalc(t).done?" done":"")} onClick={()=>setModal({type:"qlog",id:t.id})}>{taskCalc(t).done?"✓ Logged — edit":"Log actuals"}</button>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
@@ -883,6 +885,32 @@ function SiteRow({row,notes,setNotes,setModal}){
   );
 }
 
+/* ============ QUICK-LOG — one-thumb field logging (mobile) ============ */
+function QuickLogModal({t,c,lg,saveLog,openFull,close}){
+  const it=c.it, cat=CATS[it[CI.CAT]];
+  const [qty,setQty]=useState(lg?.qty??"");
+  const [mh,setMh]=useState(lg?.mh??"");
+  const planQ=t.qty, planMH=Math.round(t.qty*it[CI.MH]*10)/10;
+  return (
+    <Modal close={close} w={420}>
+      <div className="qlhead">
+        <span className="cscope" style={{background:cat.bg,color:cat.tx}}>{cat.code}</span>
+        <h3 style={{margin:0}}>{it[CI.TASK]}</h3>
+      </div>
+      <div className="qlplan">Plan: <b>{fmtN(planQ)} {it[CI.UM]}</b> · {fmtN(planMH)} MH{t.loc?" · "+t.loc:""}</div>
+      <div className="logrow">
+        <label>Actual qty ({it[CI.UM]})<input type="number" inputMode="decimal" autoFocus value={qty} onChange={e=>setQty(e.target.value)}/></label>
+        <label>Manhours<input type="number" inputMode="decimal" value={mh} onChange={e=>setMh(e.target.value)}/></label>
+      </div>
+      <button className="qlfill" onClick={()=>{ setQty(String(planQ)); setMh(String(planMH)); }}>Hit plan — fill {fmtN(planQ)} {it[CI.UM]} / {fmtN(planMH)} MH</button>
+      <div className="btnrow">
+        <button className="cta big" onClick={()=>{saveLog(t.id,qty,mh,true); close();}}>Save — done ✓</button>
+        <button className="ghost" onClick={()=>{saveLog(t.id,qty,mh,false); close();}}>In-progress</button>
+      </div>
+      <button className="qlmore" onClick={openFull}>Full details &amp; cost →</button>
+    </Modal>
+  );
+}
 /* ============ TASK MODAL — tables, no loads field ============ */
 function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
   const it = CATALOG[t.ci];
@@ -2215,9 +2243,18 @@ thead .rescol{z-index:12}
 .mcard{position:relative;margin-bottom:8px}
 .mcard .card{margin-bottom:0}
 .mmove{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:4px}
-.mmove button{flex:1;height:36px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.mmove button{flex:1;height:44px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;font:600 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .mmove button:disabled{opacity:.3}
 .mmove span{font:700 10px "Saira Condensed";letter-spacing:.12em;color:var(--dm2);text-transform:uppercase;flex:none}
+/* One-thumb quick-log (mobile field): a big log button per card + compact sheet */
+.mqlog{width:100%;height:44px;margin-top:6px;background:var(--brand);border:0;color:#fff;border-radius:9px;font:700 14px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;cursor:pointer}
+.mqlog.done{background:var(--pillGoodBg);color:var(--good);border:1px solid var(--good)}
+.qlhead{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+.qlhead h3{font-size:18px}
+.qlplan{color:var(--dm);font-size:13px;margin-bottom:12px}.qlplan b{color:var(--tx)}
+.qlfill{width:100%;margin:2px 0 12px;padding:9px;background:var(--pn2);border:1px dashed var(--ln);color:var(--lime);border-radius:9px;font:700 12.5px "Saira Condensed";letter-spacing:.03em;cursor:pointer}
+.cta.big{flex:1;min-height:48px;font-size:15px}
+.qlmore{display:block;width:100%;margin-top:10px;background:none;border:0;color:var(--dm);font-size:12.5px;text-decoration:underline;cursor:pointer}
 .chip{display:inline-block;border:0;border-radius:8px;padding:5px 11px;font-weight:700;font-size:14px;cursor:pointer}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
@@ -2408,11 +2445,11 @@ thead .rescol{z-index:12}
 
 /* ===== mobile day-view board ===== */
 .mboard{padding:0 12px 40px}
-.mdaynav{display:flex;align-items:stretch;gap:6px;background:var(--bg);padding:6px 0 10px;border-bottom:1px solid var(--ln);margin-bottom:4px}
-.mdaystep{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:10px;min-width:38px;font-size:18px;cursor:pointer}
+.mdaynav{display:flex;align-items:stretch;gap:6px;background:var(--bg);padding:8px 0 10px;border-bottom:1px solid var(--ln);margin-bottom:4px;position:sticky;top:0;z-index:20}
+.mdaystep{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:10px;min-width:44px;font-size:20px;cursor:pointer}
 .mdaystep:disabled{opacity:.35}
 .mdays{display:flex;gap:6px;overflow-x:auto;flex:1;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
-.mday{scroll-snap-align:center;flex:0 0 auto;min-width:52px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:6px 4px;color:var(--dm);text-align:center;cursor:pointer;line-height:1.1}
+.mday{scroll-snap-align:center;flex:0 0 auto;min-width:56px;min-height:48px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:7px 5px;color:var(--dm);text-align:center;cursor:pointer;line-height:1.1}
 .mday span{display:block;font:700 11px "Saira Condensed";letter-spacing:.06em}
 .mday b{display:block;font:600 16px "IBM Plex Mono";color:var(--tx)}
 .mday.on{background:var(--brand);border-color:var(--brand)}
