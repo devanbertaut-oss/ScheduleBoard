@@ -433,6 +433,18 @@ function LookAhead(){
   const crewsOnly = crews.filter(c=>c.type==="crew").sort(pinSort);
   const subsOnly  = crews.filter(c=>c.type==="sub").sort(pinSort);
   const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
+  /* Snapshot for Procore (SOP slide 7 — board photo by 2 PM Wednesday). Prints just
+     the board grid + legend; the browser's "Save as PDF" filename comes from the
+     document title, so name it for the Procore album. */
+  const snapshotBoard = ()=>{
+    if(tab!=="board") setTab("board");
+    const prevTitle=document.title;
+    document.title = "DPW547_Board_"+wk;
+    document.body.classList.add("board-print");
+    const done=()=>{ document.body.classList.remove("board-print"); document.title=prevTitle; window.removeEventListener("afterprint",done); };
+    window.addEventListener("afterprint",done);
+    setTimeout(()=>window.print(), 60); // let the tab switch paint first
+  };
   const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews, cfg) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews,cfg]);
 
   return (
@@ -463,6 +475,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
+          <button onClick={snapshotBoard} title="Print the board grid for the Procore album (Save as PDF)">Snapshot</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
           <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
           <button className="themebtn" title={"Theme: "+theme+" — click to change"}
@@ -502,6 +515,13 @@ function LookAhead(){
       </div>
 
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
+
+      {/* Print-only header for the Procore board snapshot */}
+      <div className="boardprinthdr print-only">
+        <div className="bph-l"><b>DPW547 · Job 2124013 — Watershed Look-Ahead</b><span>Week of {wkTitle(wk)}</span></div>
+        <div className="bph-r">{CATS.slice(0,6).map(c=><span key={c.name} className="bph-sc"><i style={{background:c.bg}}/>{c.code} {c.scope}</span>)}</div>
+      </div>
+
       {/* ============ BOARD GRID ============ */}
       {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}}/> :
       <div className="boardmain">
@@ -869,6 +889,12 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
   const [mh,setMh]=useState(lg.mh??"");
+  // Editable Activity-Tag fields (SOP slide 4) — persist through upTask so the
+  // field can correct Location / Equipt / Trucks after the tag is on the board.
+  const [loc,setLoc]=useState(t.loc||"");
+  const [equip,setEquip]=useState(t.equip||"");
+  const [trucks,setTrucks]=useState(t.trucks||"");
+  const saveTag=(k,v)=>upTask(t.id,{[k]: v.trim()||undefined});
   const cat=CATS[it[CI.CAT]];
   const budUC=unitCost(it), f=fcst(t.ci);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
@@ -880,7 +906,7 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
     <Modal close={close} w={560}>
       <h3>{it[CI.TASK]}</h3>
       <div className="chiprow">
-        <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.name}</span>
+        <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.code} · {cat.scope}</span>
         <span className="pill dim">Cost {it[CI.CC]}</span>
         <span className="pill dim">Pay {it[CI.PAY]}</span>
       </div>
@@ -901,6 +927,15 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
           <tr><th>Proj. margin</th><td className={margin<0?"neg":"pos"} colSpan={3}>{fmt$(margin)}</td></tr>
         </tbody>
       </table>
+
+      <div className="loghdr">Activity tag</div>
+      <div className="logrow">
+        <label>Location<input value={loc} placeholder="Street · intersection · STA — readable from 3 ft" onChange={e=>setLoc(e.target.value)} onBlur={()=>saveTag("loc",loc)}/></label>
+      </div>
+      <div className="logrow">
+        <label>Equipt<input value={equip} placeholder="e.g. 336 Excavator, Vac Truck" onChange={e=>setEquip(e.target.value)} onBlur={()=>saveTag("equip",equip)}/></label>
+        <label>Trucks<input value={trucks} placeholder="e.g. 3 end-dumps" onChange={e=>setTrucks(e.target.value)} onBlur={()=>saveTag("trucks",trucks)}/></label>
+      </div>
 
       <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
       <div className="logrow">
@@ -2437,13 +2472,32 @@ thead .rescol{z-index:12}
  .evtile.big{grid-column:span 1}
 }
 
+.print-only{display:none}
+.boardprinthdr{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:0 4px 8px;color:#111}
+.boardprinthdr .bph-l{display:flex;flex-direction:column;font-family:"Saira Condensed",sans-serif}
+.boardprinthdr .bph-l b{font-size:16px;letter-spacing:.03em}
+.boardprinthdr .bph-l span{font-size:12px;color:#444}
+.boardprinthdr .bph-r{display:flex;flex-wrap:wrap;gap:4px 12px;max-width:60%;justify-content:flex-end}
+.boardprinthdr .bph-sc{font-size:10px;font-weight:700;font-family:"IBM Plex Mono";display:flex;align-items:center;gap:4px}
+.boardprinthdr .bph-sc i{width:11px;height:11px;border-radius:2px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 @media print{
- body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
- .ovl{position:absolute;inset:0;background:#fff;padding:0}
+ /* Modal print (a modal is open): show only the modal */
+ body:not(.board-print) *{visibility:hidden}
+ body:not(.board-print) .ovl,body:not(.board-print) .ovl *{visibility:visible}
+ body:not(.board-print) .ovl{position:absolute;inset:0;background:#fff;padding:0}
  .modal{box-shadow:none;border:0;max-width:100%!important;background:#fff;color:#111}
  .modal .x,.btnrow,.crewhead select,.crewhead .cta,.prcfg{display:none!important}
  .prcfg,.prcfg *{visibility:hidden}
  .printarea{max-height:none;overflow:visible}
+ /* Board snapshot for Procore: print just the board grid + header/legend */
+ @page{size:landscape}
+ body.board-print{background:#fff}
+ body.board-print .no-print{display:none!important}
+ body.board-print .ovl{display:none!important}
+ body.board-print .print-only{display:flex!important}
+ body.board-print .la-root{padding:0;background:#fff;color:#111}
+ body.board-print .board,body.board-print .card,body.board-print .cscope,body.board-print .msflag,body.board-print .msdia{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ body.board-print .boardwrap{overflow:visible}
 }
 `;
 
