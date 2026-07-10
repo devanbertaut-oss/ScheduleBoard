@@ -247,6 +247,7 @@ function LookAhead(){
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
+  const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -299,6 +300,8 @@ function LookAhead(){
     }, 600);
   },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,loaded]);
 
+  /* command palette hotkey */
+  useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
   /* fonts */
   useEffect(()=>{
     const l=document.createElement("link"); l.rel="stylesheet";
@@ -388,6 +391,7 @@ function LookAhead(){
   return (
     <div className="la-root" data-theme={theme}>
       <style>{CSS}</style>
+      {palette && <CommandPalette {...{setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}}/>}
 
       {/* ============ TOP BAR ============ */}
       <header className="top no-print">
@@ -1113,7 +1117,9 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
     const maxCell=Math.max(1,...rows.flatMap(r=>r.days));
     return {savWk,savAll,cotw,heat:rows,maxCell};
   },[crews,tasks,logs,wk,savings,laborRate]);
-  const [scope,setScope]=useState("week"); // leaderboard scope: week | season
+  const [scope,setScope]=useState("week");
+  const [asOf,setAsOf]=useState(null); const [playing,setPlaying]=useState(false); const playRef=useRef(null);
+  useEffect(()=>()=>{ if(playRef.current) clearInterval(playRef.current); },[]);
 
   const ev = useMemo(()=>{
     let PV=0,EV=0,AC=0;
@@ -1199,8 +1205,13 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
 
       <div className="ccrow">
         <div className="panel cc-curve">
-          <div className="ph">Burn-up — planned vs earned vs actual (MH)</div>
-          <SCurve data={curve}/>
+          <div className="ph">Burn-up — planned vs earned vs actual (MH) <em className="dim2">— drag or ▶ play the time machine</em></div>
+          <SCurve data={asOf==null?curve:curve.slice(0,asOf+1)}/>
+          {curve.length>1 && <div className="tmach">
+            <button className="ghost sm" onClick={()=>{ if(playing){clearInterval(playRef.current);setPlaying(false);setAsOf(null);return;} setPlaying(true); let k=0; setAsOf(0); playRef.current=setInterval(()=>{ k++; if(k>=curve.length){clearInterval(playRef.current);setPlaying(false);setAsOf(null);} else setAsOf(k); },650); }}>{playing?"■ Stop":"▶ Play"}</button>
+            <input type="range" min="0" max={curve.length-1} value={asOf==null?curve.length-1:asOf} onChange={e=>{setAsOf(+e.target.value); setPlaying(false); if(playRef.current)clearInterval(playRef.current);}}/>
+            <span className="dim2">{(asOf==null?curve[curve.length-1]:curve[asOf]||{}).label}{asOf==null?" · to date":""}</span>
+          </div>}
         </div>
         <div className="panel cc-alerts">
           <div className="ph">Attention feed <em className="dim2">— {alerts.length}</em></div>
@@ -1283,10 +1294,12 @@ function MilestoneModal({milestones,setMilestones,close}){
         <button className="cta" style={{alignSelf:"flex-end"}} disabled={!date||!label.trim()} onClick={add}>Add</button>
       </div>
       <table className="dt list">
-        <thead><tr><th>Date</th><th>Milestone</th><th/></tr></thead>
+        <thead><tr><th>Date</th><th>Milestone</th><th/><th/></tr></thead>
         <tbody>{milestones.length? milestones.map(m=>
-          <tr key={m.id}><td className="mono">{m.date}</td><td>◆ {m.label}</td><td><button className="ghost sm" onClick={()=>del(m.id)}>Remove</button></td></tr>)
-          : <tr><td colSpan={3} className="empty">No milestones yet — add one above.</td></tr>}
+          <tr key={m.id} className={m.done?"msdone":""}><td className="mono">{m.date}</td><td>{m.done?"✅":"◆"} {m.label}</td>
+            <td><button className="ghost sm" onClick={()=>{ const nd=!m.done; setMilestones(ms=>ms.map(x=>x.id===m.id?{...x,done:nd}:x)); if(nd) celebrate(m.label+" — complete!"); }}>{m.done?"Undo":"Hit ✓"}</button></td>
+            <td><button className="ghost sm" onClick={()=>del(m.id)}>Remove</button></td></tr>)
+          : <tr><td colSpan={4} className="empty">No milestones yet — add one above.</td></tr>}
         </tbody>
       </table>
       <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
@@ -1757,6 +1770,49 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
     </div>
   );
 }
+function celebrate(msg){
+  try{
+    const layer=document.createElement("div"); layer.className="confetti";
+    const cols=["#00833e","#dce442","#ffffff","#2fbf6b"];
+    for(let i=0;i<52;i++){ const c=document.createElement("i"); c.style.left=(Math.random()*100)+"%"; c.style.background=cols[i%4]; c.style.animationDelay=(Math.random()*0.35)+"s"; c.style.setProperty("--r",(Math.random()*360)+"deg"); layer.appendChild(c); }
+    document.body.appendChild(layer);
+    const t=document.createElement("div"); t.className="toast"; t.textContent="🎉 "+msg; document.body.appendChild(t);
+    setTimeout(()=>{ layer.remove(); t.remove(); },2000);
+  }catch(e){}
+}
+function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}){
+  const [q,setQ]=useState(""); const [i,setI]=useState(0);
+  const cmds=[
+    {label:"Go to Command Center",hint:"tab",run:()=>setTab("dash")},
+    {label:"Go to Board",hint:"tab",run:()=>setTab("board")},
+    {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
+    {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
+    {label:"Go to Trucking",hint:"tab",run:()=>setTab("trucking")},
+    {label:"Schedule work",hint:"action",run:()=>setModal({type:"sched"})},
+    {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},
+    {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
+    {label:"Print / PDF",hint:"action",run:()=>setModal({type:"print"})},
+    {label:"Milestones",hint:"action",run:()=>setModal({type:"milestones"})},
+    {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
+    {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
+    {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
+  ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})));
+  const f=cmds.filter(c=>c.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0,10);
+  const go=c=>{ setPalette(false); c.run(); };
+  return (
+    <div className="ovl palovl" onMouseDown={e=>{if(e.target===e.currentTarget)setPalette(false);}}>
+      <div className="palbox">
+        <input autoFocus className="palin" placeholder="Type a command or crew name…  (⌘K / Ctrl+K)" value={q}
+          onChange={e=>{setQ(e.target.value); setI(0);}}
+          onKeyDown={e=>{ if(e.key==="ArrowDown"){e.preventDefault();setI(x=>Math.min(f.length-1,x+1));} else if(e.key==="ArrowUp"){e.preventDefault();setI(x=>Math.max(0,x-1));} else if(e.key==="Enter"&&f[i]) go(f[i]); else if(e.key==="Escape") setPalette(false); }}/>
+        <div className="pallist">
+          {f.map((c,j)=><button key={j} className={"palrow"+(j===i?" on":"")} onMouseEnter={()=>setI(j)} onClick={()=>go(c)}><span>{c.label}</span><em>{c.hint}</em></button>)}
+          {f.length===0 && <div className="empty">No match.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
 function Modal({children,close,w=520}){
   return (
     <div className="ovl" onMouseDown={e=>{if(e.target===e.currentTarget) close();}}>
@@ -1923,6 +1979,22 @@ thead .rescol{z-index:12}
 .gatebox .search{margin:14px 0 0;text-align:center;letter-spacing:.3em;font-size:18px}
 .gatebox .gerr{border-color:var(--bad)}
 .gatebox .btnrow{justify-content:center}
+.palovl{align-items:flex-start;padding-top:12vh}
+.palbox{width:100%;max-width:540px;background:var(--pn);border:1px solid var(--mdln);border-radius:14px;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+.palin{width:100%;background:var(--pn);border:0;border-bottom:1px solid var(--ln);color:var(--tx);padding:15px 18px;font:16px "Montserrat";outline:none}
+.pallist{max-height:52vh;overflow:auto;padding:6px}
+.palrow{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;background:none;border:0;color:var(--tx);padding:10px 12px;border-radius:9px;cursor:pointer;text-align:left;font:14px "Montserrat"}
+.palrow.on{background:var(--brand);color:#fff}
+.palrow em{font:700 10px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2);font-style:normal}
+.palrow.on em{color:rgba(255,255,255,.8)}
+.tmach{display:flex;align-items:center;gap:12px;margin-top:8px}
+.tmach input[type=range]{flex:1;accent-color:var(--brand)}
+.msdone td{opacity:.6;text-decoration:line-through}
+.confetti{position:fixed;inset:0;pointer-events:none;z-index:200;overflow:hidden}
+.confetti i{position:absolute;top:-12px;width:8px;height:13px;border-radius:2px;animation:cfall 1.9s linear forwards}
+@keyframes cfall{to{transform:translateY(108vh) rotate(var(--r,360deg));opacity:.85}}
+.toast{position:fixed;left:50%;bottom:9vh;transform:translateX(-50%);background:var(--pn);border:1px solid var(--brand);color:var(--tx);padding:12px 22px;border-radius:12px;z-index:201;font:700 16px "Saira Condensed";letter-spacing:.03em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .3s ease}
+@keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
 .selbar{display:flex;align-items:center;gap:10px;margin:0 18px 8px;padding:8px 12px;background:var(--pn);border:1px solid var(--lime);border-radius:10px;color:var(--tx);font-size:13px}
 .selbar b{font-family:"IBM Plex Mono";color:var(--lime)}
 .selbar button{margin-left:auto;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font:600 12px "Saira Condensed"}
