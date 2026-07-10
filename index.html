@@ -246,6 +246,7 @@ function LookAhead(){
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
+  const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -282,6 +283,7 @@ function LookAhead(){
         if (s.milestones) setMilestones(s.milestones);
         if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
         if (s.truckDay) setTruckDay(s.truckDay);
+        if (s.savings) setSavings(s.savings);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
         if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
@@ -293,9 +295,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,loaded]);
 
   /* fonts */
   useEffect(()=>{
@@ -477,9 +479,9 @@ function LookAhead(){
       </div>}
       </>}
 
-      {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}}/>}
+      {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal,savings,cfg}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay}}/>}
+      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings}}/>}
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
@@ -1095,7 +1097,22 @@ function SCurve({data}){
     </div>
   );
 }
-function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal}){
+function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal,savings,cfg}){
+  const laborRate = (cfg&&cfg.laborRate)||58;
+  const eng = useMemo(()=>{
+    const wkEnd=addDays(wk,6);
+    const savWk=(savings||[]).filter(x=>x.date>=wk&&x.date<=wkEnd).reduce((a,x)=>a+(+x.amount||0),0);
+    const savAll=(savings||[]).reduce((a,x)=>a+(+x.amount||0),0);
+    const pfFor=(cid,w)=>{let a=0,e=0;tasks.filter(t=>t.res===cid&&t.wk===w).forEach(t=>{const c=taskCalc(t);a+=c.actMH;e+=c.earnMH;});return {a,pf:a>0?e/a:0};};
+    const prevWk=addDays(wk,-7);
+    const cotw=crews.map(c=>{const cur=pfFor(c.id,wk),prev=pfFor(c.id,prevWk); if(cur.a<=0||prev.a<=0)return null; const d=cur.pf-prev.pf; return {c,cur,prev,d,impact:d*cur.a*laborRate};}).filter(Boolean).sort((x,y)=>y.d-x.d)[0];
+    const rows=crews.filter(c=>c.type!=="site").map(c=>{
+      const days=DAYS.map((_,d)=>{let w=0;tasks.filter(t=>t.res===c.id&&t.wk===wk&&t.day===d).forEach(t=>{const x=taskCalc(t);if(logs[t.id])w+=Math.max(0,x.actMH-x.earnMH)*laborRate;});return w;});
+      return {c,days,tot:days.reduce((a,b)=>a+b,0)};
+    }).filter(r=>r.tot>0 || tasks.some(t=>t.res===r.c.id&&t.wk===wk));
+    const maxCell=Math.max(1,...rows.flatMap(r=>r.days));
+    return {savWk,savAll,cotw,heat:rows,maxCell};
+  },[crews,tasks,logs,wk,savings,laborRate]);
   const [scope,setScope]=useState("week"); // leaderboard scope: week | season
 
   const ev = useMemo(()=>{
@@ -1154,6 +1171,21 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
         <div className="ccpct"><b>{pct(ev.pctC)}</b><label>Job earned</label></div>
       </div>
 
+      <div className="engbar">
+        <div className="savtick">
+          <label>$ Saved this week</label>
+          <b>{fmt$(eng.savWk)}</b>
+          <span>all-time {fmt$(eng.savAll)} · logged from the Trucking optimizer</span>
+        </div>
+        {eng.cotw && eng.cotw.d>0.001 ? (
+          <div className="cotw">
+            <div className="cotwtag">🏆 Crew of the Week</div>
+            <b>{eng.cotw.c.name}</b>
+            <span>PF {eng.cotw.prev.pf.toFixed(2)} → {eng.cotw.cur.pf.toFixed(2)} (+{eng.cotw.d.toFixed(2)}) · ≈ {fmt$(eng.cotw.impact)} better than last week</span>
+          </div>
+        ) : <div className="cotw dim"><div className="cotwtag">🏆 Crew of the Week</div><span className="dim2">Most-improved crew shows here once two weeks of production are logged.</span></div>}
+      </div>
+
       <div className="evgrid">
         <Tile big label="CPI · Cost performance" value={cpiTxt} tone={ev.CPI?evTone(ev.CPI):""} sub={ev.CPI?(ev.CPI>=1?"Under budget on labor":"Over budget on labor"):"awaiting data"}/>
         <Tile big label="SPI · Schedule performance" value={spiTxt} tone={ev.SPI?evTone(ev.SPI):""} sub={ev.SPI?(ev.SPI>=1?"Ahead of plan":"Behind plan"):"awaiting data"}/>
@@ -1179,6 +1211,20 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
               </button>)
               : <div className="empty">All clear — no items need attention.</div>}
           </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph">Idle-cost heatmap <em className="dim2">— labor $ spent beyond earned value, by crew &amp; day (where money leaked)</em></div>
+        <div className="heatwrap">
+          <table className="heat"><thead><tr><th></th>{DAYS.map((d,i)=><th key={d} className={i>4?"wknd":""}>{d}</th>)}<th className="r">Week</th></tr></thead>
+            <tbody>{eng.heat.length? eng.heat.map(r=>
+              <tr key={r.c.id}><td className="hname">{r.c.name}</td>
+                {r.days.map((w,i)=>{const t=eng.maxCell?w/eng.maxCell:0;
+                  return <td key={i} className="hcell" title={w>0?fmt$(w)+" over-spend":"on/under budget"} style={{background:w>0?`rgba(229,72,77,${(0.12+0.72*t).toFixed(2)})`:"transparent"}}>{w>0?fmt$(w):""}</td>;})}
+                <td className="r hweek">{r.tot>0?fmt$(r.tot):"—"}</td></tr>)
+              : <tr><td colSpan={9} className="empty">No logged production this week.</td></tr>}
+            </tbody></table>
         </div>
       </div>
 
@@ -1549,7 +1595,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
-function TruckingView({truckDay,setTruckDay}){
+function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
   const upDay = fn => setTruckDay(d=>fn(d.date===today?{...d}:{date:today,trucks:[],loads:[]}));
@@ -1667,6 +1713,7 @@ function TruckingView({truckDay,setTruckDay}){
           </div>
         </div>
         <p className="trkcall ok"><b>{cheaper==="hold"?"Hold the hourly truck":"Order the by-load delivery"}</b> — saves {fmt$(save)} in trucking. Staging aggregate by-load for later days also frees your hourly trucks for haul-out (no excavator wait). Material cost is the same either way.</p>
+        <div className="btnrow"><button className="cta" disabled={save<=0} onClick={()=>setSavings&&setSavings(v=>[...(v||[]),{id:"s"+Math.random().toString(36).slice(2,7),date:new Date().toISOString().slice(0,10),amount:Math.round(save),note:(cheaper==="hold"?"Held hourly truck":"By-load delivery")+" — "+mat}])}>Log {fmt$(save)} saved</button><span className="sp"/><em className="dim2">Feeds the &ldquo;$ saved this week&rdquo; ticker on Command.</em></div>
       </div>
 
       {/* Live daily tracker */}
@@ -1800,6 +1847,25 @@ const CSS = `
 .rlcard .cstat{margin-top:6px}
 .rltruck{margin-top:5px;font:600 11px "IBM Plex Mono";color:var(--dm2)}
 .rltruck.short{color:var(--bad)}
+.engbar{display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:14px}
+.savtick{background:var(--pn);border:1px solid var(--brand);border-radius:14px;padding:12px 16px}
+.savtick label{display:block;font:700 12px "Saira Condensed";letter-spacing:.07em;text-transform:uppercase;color:var(--dm)}
+.savtick b{display:block;font:800 34px "Saira Condensed";color:var(--good);line-height:1.05}
+.savtick span{font-size:11.5px;color:var(--dm2)}
+.cotw{background:var(--pn);border:1px solid var(--lime);border-radius:14px;padding:12px 16px;display:flex;flex-direction:column;justify-content:center}
+.cotw.dim{border-color:var(--ln)}
+.cotwtag{font:700 12px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--lime)}
+.la-root[data-theme="light"] .cotwtag{color:var(--warn)}
+.cotw b{font:800 22px "Saira Condensed";color:var(--tx)}
+.cotw span{font-size:12px;color:var(--dm)}
+.heatwrap{overflow-x:auto}
+.heat{width:100%;border-collapse:collapse;font-size:12px}
+.heat th{color:var(--dm);font:700 11px "Saira Condensed";text-transform:uppercase;letter-spacing:.05em;padding:5px 6px;text-align:center}
+.heat th.wknd{opacity:.6}
+.heat .hname{font:700 13px "Saira Condensed";color:var(--tx);white-space:nowrap;padding-right:10px}
+.heat .hcell{text-align:center;border:1px solid var(--ln);font:11px "IBM Plex Mono";color:#fff;min-width:54px;height:30px}
+.heat .hweek{font:600 12px "IBM Plex Mono";color:var(--bad);padding-left:8px}
+@media(max-width:760px){.engbar{grid-template-columns:1fr}}
 .trk .panel{margin-bottom:14px}
 .trkrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px}
 .trkrow label{display:flex;flex-direction:column;gap:4px;font:600 11px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;color:var(--dm)}
