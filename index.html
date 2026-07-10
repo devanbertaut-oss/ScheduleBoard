@@ -299,6 +299,7 @@ function LookAhead(){
   const [baseline, setBaseline] = useState(null);        // {takenAt, byTask:{id:{qty,day,wk}}}
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
+  const [boardView, setBoardView] = useState("Field");   // board cards: HQ (money) | Field (production) | Ops (logistics)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
@@ -340,6 +341,7 @@ function LookAhead(){
         if (s.baseline) setBaseline(s.baseline);
         if (s.milestones) setMilestones(s.milestones);
         if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
+        if (s.boardView) setBoardView(s.boardView);
         if (s.truckDay) setTruckDay(s.truckDay);
         if (s.savings) setSavings(s.savings);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
@@ -353,9 +355,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings,loaded]);
 
   /* command palette hotkey */
   useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
@@ -521,13 +523,16 @@ function LookAhead(){
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
+        <span className="viewseg" title="Card view — HQ: labor $ vs pay · Field: qty & MH · Ops: loads & bedding tons">
+          {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView(v)}>{v}</button>)}
+        </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
 
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -545,11 +550,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -619,7 +624,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -640,7 +645,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -738,7 +743,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -753,7 +758,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
@@ -767,6 +772,9 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
   };
   return (
     <div className="mboard">
+      <div className="viewseg mviewseg">
+        {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView&&setBoardView(v)}>{v}</button>)}
+      </div>
       <div className="mdaynav">
         <button className="mdaystep" onClick={()=>setDay(d=>Math.max(0,d-1))} disabled={day===0} aria-label="Previous day">‹</button>
         <div className="mdays">
@@ -803,10 +811,24 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView}){
   const cat = CATS[c.it[CI.CAT]];
   const useRf = reflowOn && rf && !rf.logged;
   const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
+  const it=c.it, view=boardView||"Field";
+  let n1,n2,alert=bad;
+  if(view==="HQ"){                       // money — labor $ vs pay $ (labor-only figure)
+    const lab=qShown*it[CI.UL], pay=qShown*it[CI.BID];
+    n1=fmt$(lab); n2=fmt$(pay)+" pay"; alert=bad||(pay>0&&lab>=pay);
+  }else if(view==="Ops"){                // logistics — haul loads + bedding stone tons
+    const b=bedForItem(it[CI.CC],it[CI.TASK],it[CI.UM]);
+    const scale=t.qty?qShown/t.qty:1;
+    const lds=(c.loads||0)*scale;
+    const tn=b?qShown*b.tonPer:0;
+    n1=(lds>=0.05?fmtN(lds,1)+" lds":"— lds"); n2=(tn>=0.05?fmtN(tn,tn<10?1:0)+" tn":"—");
+  }else{                                 // Field — production (qty + MH)
+    n1=fmtN(qShown,qShown%1?1:0)+" "+it[CI.UM]; n2=fmtN(mhShown,mhShown%1?1:0)+" MH"+(bad?" ▲":"");
+  }
   return (
     <button className={"card"+(selected?" sel":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
@@ -818,7 +840,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn}){
         {c.done && <span className="ck">✓</span>}
       </div>
       <div className="csub">{prev ? "→ cont." : (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC])}</div>
-      <div className="cnums"><b className={bad?"cbad":""}>{fmtN(qShown,qShown%1?1:0)} {c.it[CI.UM]}</b><span className={bad?"cbad":""}>{fmtN(mhShown,mhShown%1?1:0)} MH{bad?" ▲":""}</span></div>
+      <div className="cnums"><b className={alert?"cbad":""}>{n1}</b><span className={alert?"cbad":""}>{n2}</span></div>
       {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
     </button>
   );
@@ -2095,6 +2117,12 @@ thead .rescol{z-index:12}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
 .snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
+.viewseg button{background:transparent;border:0;color:var(--dm);padding:5px 11px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
+.viewseg button:first-child{border-left:0}
+.viewseg button.on{background:var(--brand);color:#fff}
+.mviewseg{display:flex;margin:0 12px 8px;width:calc(100% - 24px)}
+.mviewseg button{flex:1}
 .snapbtn:hover{border-color:var(--brand);color:var(--brand)}
 .capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 .capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
