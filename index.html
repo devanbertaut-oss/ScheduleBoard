@@ -86,6 +86,61 @@ const TRUCK_BASE = {
   pits:{"Wood EB (sand)":32,"PMC (limestone)":26,"Vulcan (limestone)":40,"Five-S":36,"Haul-out / dump":24},
   rates:{triHr:105, quadHr:120, Sand:{r:8.5,u:"CY"}, Dirt:{r:10,u:"CY"}, "57 Limestone":{r:7.5,u:"TN"}, "610 Limestone":{r:7.5,u:"TN"}, "Crushed Concrete":{r:10,u:"TN"}, "#8 Washed":{r:7.5,u:"TN"}}
 };
+/* ── Bedding / embedment spec tables — SWB Standard Drawings ─────────────────
+   Authoritative fall-back for trench detail when a plan sheet doesn't define it.
+   Bedding = compacted #610 crushed-stone aggregate; per Notes, backfill around/
+   above the pipe is PUMPED SAND (owner-pumped, not a haul driver), so the STONE
+   BEDDING is what drives trucking. tw=trench width(ft), bed=bedding depth(ft). */
+const STONE_TON_PER_CY = 1.4;                       // #610 crushed stone density
+const ARCH_BED = {  /* D-3933  Reinf. Concrete Arch Pipe — bottom bedding layer */
+  18:{od:'22"x13.5"',tw:3.75,bed:0.50}, 21:{od:'26"x15.5"',tw:4.13,bed:0.50},
+  24:{od:'28.5"x18"',tw:4.50,bed:0.50}, 30:{od:'36"x23"', tw:5.08,bed:0.50},
+  36:{od:'44"x27"',  tw:5.83,bed:0.50}, 42:{od:'51"x31"', tw:6.49,bed:0.75},
+  48:{od:'58"x36"',  tw:7.17,bed:0.75}, 54:{od:'65"x40"', tw:7.84,bed:1.00} };
+const RCP_BED = {   /* Round RCP — D-3810 (48-72") + small-dia bottom bedding */
+  12:{tw:3.00,bed:0.50}, 15:{tw:3.33,bed:0.50}, 18:{tw:3.67,bed:0.50},
+  24:{tw:4.33,bed:0.50}, 30:{tw:5.00,bed:0.50}, 36:{tw:5.75,bed:0.50},
+  48:{tw:7.00,bed:1.00}, 54:{tw:7.50,bed:1.25}, 60:{tw:8.50,bed:1.50},
+  66:{tw:9.00,bed:1.50}, 72:{tw:10.0,bed:1.50} };
+/* HPPP flexible pipe — stone embedment wraps the barrel (tw,od,bed in INCHES).
+   CY/LF = (tw*(bed+od) - pi*od^2/4) / 144 / 27. */
+const HPPP_SPEC = {
+  12:{od:14.45,tw:30,bed:4}, 15:{od:17.57,tw:34,bed:4}, 18:{od:21.20,tw:39,bed:4},
+  24:{od:27.80,tw:48,bed:4}, 30:{od:35.10,tw:56,bed:6}, 36:{od:41.00,tw:63,bed:6} };
+const MH_BED_FT = 0.50;   /* compacted-stone bedding under a structure base */
+const MH_BASE = {  /* Drain Manhole Schedule — base footprint (ft^2) by structure */
+  1:78*78*Math.PI/4/144, 2:84*84*Math.PI/4/144, 3:90*90*Math.PI/4/144,
+  4:84*66/144, 5:90*78/144, 6:96*90/144, 7:94*90/144, 8:102*90/144,
+  9:126*78/144, 10:145.5*78/144 };
+/* Resolve a scheduled item to its bedding takeoff. Returns per-unit stone volume
+   and the governing drawing, or null when no spec size can be inferred. */
+function bedForItem(cc, desc, um){
+  const code=(cc||"").replace(/-/g,".");
+  const near=(tbl,n)=>{ const ks=Object.keys(tbl).map(Number).sort((a,b)=>a-b);
+    let p=ks[0]; for(const k of ks){ if(k<=n) p=k; } return p; };
+  // structures (manholes / catch basins) — bedding per EACH from base footprint
+  if(um==="EACH"||um==="VF"){
+    if(/catch basin|manhole|drop inlet|structure/i.test(desc||"")||/^33\.49\./.test(code)){
+      const cyEa=(MH_BASE[3]*MH_BED_FT)/27; // default No.3 base unless sized below
+      return {size:null, cyPer:cyEa, tonPer:cyEa*STONE_TON_PER_CY, per:um, spec:"MH sched (D-870/3340/3937)", fam:"Structure"}; }
+    return null;
+  }
+  if(um!=="LF") return null;
+  // pull an inch size from code tail (33.40.19.42) or the description ("(51\"X31\"")
+  let n=null; const mCode=code.match(/^33\.40\.(18|19|20|25)\.(\d{2})$/);
+  if(mCode) n=+mCode[2];
+  if(n==null){ const mD=(desc||"").match(/(\d{2})\s*(?:"|in\b)/i); if(mD) n=+mD[1]; }
+  if(n==null) return null;
+  const isArch=/arch/i.test(desc||"")||/^33\.40\.19\./.test(code);
+  const isHPPP=/hppp|polypropylene/i.test(desc||"")||/^33\.40\.25\./.test(code);
+  if(isArch){ const s=ARCH_BED[near(ARCH_BED,n)]; return {size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,per:"LF",spec:"D-3933",fam:"Arch pipe"}; }
+  if(isHPPP){ const s=HPPP_SPEC[near(HPPP_SPEC,n)]; const cy=(s.tw*(s.bed+s.od)-Math.PI*s.od*s.od/4)/144/27; return {size:n,cyPer:cy,tonPer:cy*STONE_TON_PER_CY,tw:s.tw/12,per:"LF",spec:"HPPP embedment",fam:"HPPP"}; }
+  const s=RCP_BED[near(RCP_BED,n)]; return {size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,per:"LF",spec:(n>=48?"D-3810":"Round RCP"),fam:"Round pipe"};
+}
+/* Labor-category cost codes: exclude leave/holiday (50.50.x), misc/overhead (99.x),
+   fuel/consumables, and sales-tax phases so daily tracking stays on productive work. */
+const NON_LABOR_CC = /^(50\.50\.|99\.|01\.15\.17|31\.22\.16|02\.32\.19)/;
+const isLaborCode = cc => !NON_LABOR_CC.test((cc||"").replace(/-/g,"."));
 const idx = {};
 CATALOG.forEach((r,i)=>{ idx[r[CI.CC]] = i; });
 /* Align each catalog item's display description & unit to the official CTC by
@@ -248,6 +303,8 @@ function LookAhead(){
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
   const [palette, setPalette] = useState(false); // command palette (⌘K)
+  const [installEvt, setInstallEvt] = useState(null); // PWA install prompt
+  const [digest, setDigest] = useState(null); // once-a-day standup banner
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -302,6 +359,20 @@ function LookAhead(){
 
   /* command palette hotkey */
   useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
+  /* PWA install prompt capture */
+  useEffect(()=>{ const bi=e=>{ e.preventDefault(); setInstallEvt(e); }; const ai=()=>setInstallEvt(null);
+    window.addEventListener("beforeinstallprompt",bi); window.addEventListener("appinstalled",ai);
+    return ()=>{ window.removeEventListener("beforeinstallprompt",bi); window.removeEventListener("appinstalled",ai); }; },[]);
+  /* once-a-day standup digest */
+  useEffect(()=>{ if(!loaded) return; const today=new Date().toISOString().slice(0,10);
+    let last=null; try{ last=localStorage.getItem("lafable-digest"); }catch(e){}
+    if(last===today) return;
+    let ti=-1; for(let i=0;i<7;i++){ if(addDays(wk,i)===today){ ti=i; break; } }
+    const todayTasks = ti>=0 ? tasks.filter(t=>t.wk===wk&&t.day===ti).length : 0;
+    const yUnlogged = ti>0 ? tasks.filter(t=>t.wk===wk&&t.day===ti-1&&!logs[t.id]).length : 0;
+    const msSoon = (milestones||[]).filter(m=>m.date>=today && m.date<=addDays(today,7) && !m.done).length;
+    const savWk = (savings||[]).filter(x=>x.date>=wk&&x.date<=addDays(wk,6)).reduce((a,x)=>a+(+x.amount||0),0);
+    setDigest({todayTasks,yUnlogged,msSoon,savWk}); },[loaded]);
   /* fonts */
   useEffect(()=>{
     const l=document.createElement("link"); l.rel="stylesheet";
@@ -418,12 +489,19 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
           <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
+          {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <button className="themebtn" title={"Theme: "+theme+" — click to change"}
             onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
             {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
           </button>
         </div>
       </header>
+
+      {digest && <div className="digest no-print">
+        <span className="dgtag">Standup</span>
+        <span className="dgtxt">{digest.todayTasks} task{digest.todayTasks!==1?"s":""} on today{digest.yUnlogged>0?` · ${digest.yUnlogged} from yesterday still unlogged`:""}{digest.msSoon>0?` · ${digest.msSoon} milestone${digest.msSoon>1?"s":""} within 7 days`:""}{digest.savWk>0?` · ${fmt$(digest.savWk)} saved this week`:""}.</span>
+        <button className="dgx" onClick={()=>{ try{localStorage.setItem("lafable-digest",new Date().toISOString().slice(0,10));}catch(e){} setDigest(null); }}>Got it</button>
+      </div>}
 
       {/* ============ KPI STRIP ============ */}
       {tab==="board" && <>
@@ -1330,18 +1408,22 @@ function CatalogView({installedFor,fcst,ctcOf,remainingFor,contractQtyFor,umOver
   });
   const [q,setQ]=useState("");
   const [ctcOnly,setCtcOnly]=useState(false);
+  const [laborOnly,setLaborOnly]=useState(()=>{ try{ return localStorage.getItem("lafable-laboronly")!=="0"; }catch(e){ return true; } });
+  useEffect(()=>{ try{ localStorage.setItem("lafable-laboronly", laborOnly?"1":"0"); }catch(e){} },[laborOnly]);
   const rows = useMemo(()=>{
     const s=q.trim().toLowerCase();
     return CATALOG.map((r,i)=>({r,i}))
-      .filter(({r,i})=>(!s||r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s)) && (!ctcOnly || ctcOf(i)))
+      .filter(({r,i})=>(!s||r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s)) && (!ctcOnly || ctcOf(i)) && (!laborOnly || isLaborCode(r[CI.CC])))
       .slice(0,120);
-  },[q,ctcOnly]);
+  },[q,ctcOnly,laborOnly]);
   const nCtc = useMemo(()=>CATALOG.reduce((a,_,i)=>a+(ctcOf(i)?1:0),0),[]);
+  const nLabor = useMemo(()=>CATALOG.reduce((a,r)=>a+(isLaborCode(r[CI.CC])?1:0),0),[]);
   return (
     <div className="page">
-      <h2>Catalog / CTC <em className="dim2">— {CATALOG.length} items · {nCtc} tied to the Jul 2026 CTC (billed-to-date vs forecast)</em></h2>
+      <h2>Catalog / CTC <em className="dim2">— {CATALOG.length} items · {nLabor} labor cost codes · {nCtc} tied to the Jul 2026 CTC (billed-to-date vs forecast)</em></h2>
       <div className="ctcbar">
         <input className="search" placeholder="Search description, cost code, or pay item…" value={q} onChange={e=>setQ(e.target.value)}/>
+        <label className="switch" title="Hide non-labor codes — leave/holiday (50.50.x), misc/overhead (99.x), fuel & consumables, sales tax"><input type="checkbox" checked={laborOnly} onChange={e=>setLaborOnly(e.target.checked)}/><i/><span>Labor codes only</span></label>
         <label className="switch"><input type="checkbox" checked={ctcOnly} onChange={e=>setCtcOnly(e.target.checked)}/><i/><span>CTC only</span></label>
       </div>
       <table className="dt list">
@@ -1505,6 +1587,8 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
   const nCtc=Object.keys(ctc||{}).length;
+  const nLaborCtc=Object.keys(ctc||{}).filter(isLaborCode).length;
+  const nOverhead=nCtc-nLaborCtc;
   const num=x=>{const n=parseFloat(x); return isFinite(n)?Math.round(n*100)/100:null;};
   const doExport=()=>{
     const blob=new Blob([JSON.stringify({version:"ctc-v1",exportedAt:new Date().toISOString(),cfg,ctc},null,2)],{type:"application/json"});
@@ -1537,8 +1621,8 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
       <h3>Data & assumptions</h3>
       <div className="logrow">{F("crewSize","Crew size")}{F("shiftHrs","Shift hours")}</div>
       <div className="logrow">{F("laborRate","Labor $/MH")}{F("truckRate","Trucking $/load")}</div>
-      <div className="loghdr">CTC dataset — {nCtc} cost codes (billed vs forecast)</div>
-      <p className="dim2">Import next month's <b>CTC by Cost Code</b> export (.xlsx) to refresh billed-to-date &amp; forecast quantities across the whole board, or a previously exported .json. Export saves the current dataset + assumptions.</p>
+      <div className="loghdr">CTC dataset — {nLaborCtc} labor cost codes{nOverhead>0?` · ${nOverhead} non-labor filtered`:""}</div>
+      <p className="dim2">Import next month's <b>CTC by Cost Code</b> export (.xlsx) to refresh billed-to-date &amp; forecast quantities across the whole board, or a previously exported .json. Export saves the current dataset + assumptions. Non-labor codes — leave/holiday (50.50.x), misc/overhead (99.x), fuel &amp; consumables, sales tax — are filtered from production tracking; the <b>Catalog / CTC</b> tab's <b>Labor codes only</b> switch controls this.</p>
       <div className="btnrow">
         <label className="btn cta" style={{cursor:"pointer"}}>Import CTC / JSON<input type="file" accept=".xlsx,.json" onChange={onFile} style={{display:"none"}}/></label>
         <button className="btn" onClick={doExport}>Export data</button>
@@ -1562,22 +1646,30 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
       const pay=x.it[CI.PAY], cd=CD_CYT[pay];
       const cyt = (cd && cd.um===x.it[CI.UM]) ? x.qty*cd.cytU : 0; // only when estimate UM matches scheduled UM
       const isPipe = x.it[CI.UM]==="LF" && /pipe|hppp|pvc|dip|rcpa|liner/i.test(x.it[CI.TASK]);
-      return {...x, pay, um:x.it[CI.UM], desc:x.it[CI.TASK], cyt, isPipe};
+      const bed = bedForItem(x.it[CI.CC], x.it[CI.TASK], x.it[CI.UM]); // SWB-spec bedding takeoff
+      const bedCy = bed ? x.qty*bed.cyPer : 0, bedTon = bed ? x.qty*bed.tonPer : 0;
+      return {...x, pay, um:x.it[CI.UM], desc:x.it[CI.TASK], cyt, isPipe, bed, bedCy, bedTon};
     }).sort((a,b)=> (b.isPipe-a.isPipe) || b.cyt-a.cyt);
   },[weekTasks,cfg]);
 
-  const tot = groups.reduce((a,g)=>{ a.cyt+=g.cyt; a.loads+=g.loads; if(g.isPipe)a.pipe+=g.qty; return a; },{cyt:0,loads:0,pipe:0});
-  const truckDays = Math.ceil(tot.loads/6);
+  const STONE_TON_LOAD = 16; // legal tri-axle stone load
+  const tot = groups.reduce((a,g)=>{ a.cyt+=g.cyt; a.loads+=g.loads; a.bedCy+=g.bedCy; a.bedTon+=g.bedTon; if(g.isPipe)a.pipe+=g.qty; return a; },{cyt:0,loads:0,pipe:0,bedCy:0,bedTon:0});
+  const bedLoads = tot.bedTon/STONE_TON_LOAD;
+  const truckDays = Math.ceil((tot.loads+bedLoads)/6);
   const pipeItems = groups.filter(g=>g.isPipe);
   const aggItems  = groups.filter(g=>g.cyt>0);
+  const bedItems  = groups.filter(g=>g.bedCy>0);
 
   const text = useMemo(()=>{
     const L=[`WATERSHED LOOK-AHEAD — MATERIALS & TRUCKING CHEAT SHEET`, wkTitle(wk), "", "PIPE / STRUCTURES TO STAGE:"];
     (pipeItems.length?pipeItems:[{desc:"— none scheduled",qty:0,um:""}]).forEach(g=>L.push(`  • ${fmtN(g.qty)} ${g.um}  ${g.desc}`));
+    L.push("", "BEDDING & EMBEDMENT (#610 crushed stone, per SWB drawings):");
+    (bedItems.length?bedItems:[{desc:"— none scheduled",bedCy:0,bedTon:0,bed:{spec:""}}]).forEach(g=>L.push(`  • ${g.desc.slice(0,42)}: ${fmtN(g.qty)} ${g.um} → ${fmtN(g.bedCy,1)} CY (${fmtN(g.bedTon,1)} tn) [${g.bed?g.bed.spec:""}]`));
     L.push("", "AGGREGATE / HAUL:");
     aggItems.forEach(g=>L.push(`  • ${g.desc}: ${fmtN(g.qty)} ${g.um} → ~${fmtN(g.cyt)} CYT haul`));
     L.push("", `TOTAL PIPE: ${fmtN(tot.pipe)} LF`,
-      `TRUCKING: ~${fmtN(tot.loads)} loads  =  ${truckDays} truck-day(s) @ 6 loads/day`,
+      `BEDDING STONE: ${fmtN(tot.bedCy,1)} CY  (~${fmtN(tot.bedTon)} tons ≈ ${fmtN(bedLoads,1)} loads)`,
+      `TRUCKING: ~${fmtN(tot.loads+bedLoads)} loads  =  ${truckDays} truck-day(s) @ 6 loads/day`,
       `AGGREGATE (estimate takeoff, matched haul items): ~${fmtN(tot.cyt)} CYT  (~${fmtN(tot.cyt*TON_PER_CY)} tons)`,
       "", "Compare against yard inventory before ordering; book trucks to the peak day.");
     return L.join("\n");
@@ -1586,10 +1678,11 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
   return (
     <Modal close={close} w={640}>
       <div className="crewhead"><h3 style={{margin:0}}>Week cheat sheet — {wkTitle(wk)}</h3></div>
-      <p className="dim2">Foreman reference for the week on screen — pipe &amp; materials to stage, and trucking to book. Loads/truck-days from live trucking rates (all items); aggregate CYT from the estimate takeoff (haul items where the unit matches).</p>
+      <p className="dim2">Foreman reference for the week on screen — pipe &amp; materials to stage, and trucking to book. Bedding stone (#610) is computed from the governing SWB standard drawings (arch pipe D-3933, round RCP D-3810, HPPP embedment, structure bases) by trench width × bedding depth × scheduled quantity, and rolled into the truck-day count. Aggregate CYT from the estimate takeoff (haul items where the unit matches).</p>
       <div className="kpis" style={{padding:"4px 0 10px"}}>
         <div className="kpi"><label>Pipe</label><b>{fmtN(tot.pipe)} LF</b></div>
         <div className="kpi"><label>Loads</label><b>{fmtN(tot.loads)}</b></div>
+        <div className="kpi"><label>Bedding stone</label><b>{fmtN(tot.bedTon)} tn</b></div>
         <div className="kpi"><label>Truck-days</label><b>{truckDays}</b></div>
         <div className="kpi"><label>Aggregate</label><b>{fmtN(tot.cyt)} CYT</b></div>
       </div>
@@ -1597,6 +1690,11 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
       <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th>Crew</th></tr></thead>
         <tbody>{pipeItems.length? pipeItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,46)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="dim2">{[...g.crews].join(", ")}</td></tr>)
           : <tr><td colSpan={3} className="empty">No pipe scheduled this week.</td></tr>}</tbody></table>
+      <div className="loghdr">Bedding &amp; embedment — #610 crushed stone <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(SWB standard drawings)</em></div>
+      <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th className="r">Stone CY</th><th className="r">Tons</th><th>Spec</th></tr></thead>
+        <tbody>{bedItems.length? bedItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,38)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="r">{fmtN(g.bedCy,1)}</td><td className="r">{fmtN(g.bedTon,1)}</td><td className="dim2">{g.bed?g.bed.spec:""}</td></tr>)
+          : <tr><td colSpan={5} className="empty">No pipe/structure with a bedding spec scheduled.</td></tr>}
+          {bedItems.length>0 && <tr className="cheattot"><td><b>Total</b></td><td/><td className="r"><b>{fmtN(tot.bedCy,1)}</b></td><td className="r"><b>{fmtN(tot.bedTon)}</b></td><td className="dim2">≈ {fmtN(bedLoads,1)} loads</td></tr>}</tbody></table>
       <div className="loghdr">Aggregate &amp; haul</div>
       <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th className="r">Haul CYT</th><th className="r">Loads</th></tr></thead>
         <tbody>{aggItems.length? aggItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,40)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="r">{fmtN(g.cyt)}</td><td className="r">{fmtN(g.loads)}</td></tr>)
@@ -1650,6 +1748,18 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   const cheaper = hold<=byload ? "hold" : "byload";
   const save=Math.abs(hold-byload);
 
+  // ===== Bedding quick-calc (SWB spec) =====
+  const bedFams={"Arch pipe (D-3933)":{tbl:ARCH_BED,arch:true},"Round RCP (D-3810)":{tbl:RCP_BED},"HPPP (embedment)":{tbl:HPPP_SPEC,hppp:true}};
+  const [bfam,setBfam]=useState("Arch pipe (D-3933)");
+  const [bsz,setBsz]=useState(42);
+  const [blf,setBlf]=useState(100);
+  const bfamO=bedFams[bfam];
+  const bszKeys=Object.keys(bfamO.tbl).map(Number).sort((a,b)=>a-b);
+  const bs=bfamO.tbl[bsz]||bfamO.tbl[bszKeys[0]];
+  const bCyLf = bfamO.hppp ? (bs.tw*(bs.bed+bs.od)-Math.PI*bs.od*bs.od/4)/144/27 : bs.tw*bs.bed/27;
+  const bTwFt = bfamO.hppp ? bs.tw/12 : bs.tw;
+  const bTot=(+blf||0)*bCyLf, bTon=bTot*STONE_TON_PER_CY, bLoads=bTon/16;
+
   // ===== Live tracker =====
   const addTruck=()=>upDay(d=>({...d,trucks:[...d.trucks,{id:"3C",mode:"hourly",inT:new Date().toTimeString().slice(0,5)}]}));
   const upTruck=(i,k,v)=>upDay(d=>({...d,trucks:d.trucks.map((t,j)=>j===i?{...t,[k]:v}:t)}));
@@ -1674,6 +1784,24 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   return (
     <div className="page trk">
       <div className="cchead"><div><h2>Trucking</h2><p className="dim2">Cycle-time baselines, live load tracking, and the fleet-balance / sign-out optimizer — keep the excavator fed without paying trucks to sit.</p></div></div>
+
+      {/* Bedding quick-calc */}
+      <div className="panel">
+        <div className="ph">Bedding stone (#610) — SWB standard drawings</div>
+        <div className="trkrow">
+          <label>Pipe family
+            <select value={bfam} onChange={e=>{setBfam(e.target.value); const ks=Object.keys(bedFams[e.target.value].tbl).map(Number); if(!ks.includes(bsz)) setBsz(ks[Math.floor(ks.length/2)]);}}>
+              {Object.keys(bedFams).map(k=><option key={k}>{k}</option>)}</select></label>
+          <label>Size (in){" "}
+            <select value={bsz} onChange={e=>setBsz(+e.target.value)}>{bszKeys.map(k=><option key={k} value={k}>{k}"{bfamO.arch&&bfamO.tbl[k].od?` (${bfamO.tbl[k].od})`:""}</option>)}</select></label>
+          <label>Length (LF){num(blf,setBlf)}</label>
+        </div>
+        <table className="dt list">
+          <thead><tr><th>Trench width</th><th className="r">Stone CY/LF</th><th className="r">Total CY</th><th className="r">Tons</th><th className="r">≈ Loads</th></tr></thead>
+          <tbody><tr><td>{fmtN(bTwFt,2)} ft</td><td className="r">{fmtN(bCyLf,3)}</td><td className="r"><b>{fmtN(bTot,1)}</b></td><td className="r"><b>{fmtN(bTon,1)}</b></td><td className="r">{fmtN(bLoads,1)}</td></tr></tbody>
+        </table>
+        <p className="dim2" style={{margin:"6px 2px 0"}}>Bedding = compacted #610 crushed stone below the pipe; backfill above is pumped sand (owner-pumped). Stone loads ≈ 16 tn tri-axle. Falls back to these specs whenever a plan sheet doesn't define the trench.</p>
+      </div>
 
       {/* Fleet balancer */}
       <div className="panel">
@@ -1993,6 +2121,11 @@ thead .rescol{z-index:12}
 .confetti{position:fixed;inset:0;pointer-events:none;z-index:200;overflow:hidden}
 .confetti i{position:absolute;top:-12px;width:8px;height:13px;border-radius:2px;animation:cfall 1.9s linear forwards}
 @keyframes cfall{to{transform:translateY(108vh) rotate(var(--r,360deg));opacity:.85}}
+.digest{display:flex;align-items:center;gap:12px;margin:10px 18px 0;padding:9px 14px;background:var(--pn);border:1px solid var(--brand);border-radius:11px}
+.dgtag{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;background:var(--brand);color:#fff;padding:3px 8px;border-radius:6px;flex:none}
+.dgtxt{flex:1;font-size:13px;color:var(--tx)}
+.dgx{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";cursor:pointer;flex:none}
+.cheattot td{border-top:2px solid var(--brand)}
 .toast{position:fixed;left:50%;bottom:9vh;transform:translateX(-50%);background:var(--pn);border:1px solid var(--brand);color:var(--tx);padding:12px 22px;border-radius:12px;z-index:201;font:700 16px "Saira Condensed";letter-spacing:.03em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .3s ease}
 @keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
 .selbar{display:flex;align-items:center;gap:10px;margin:0 18px 8px;padding:8px 12px;background:var(--pn);border:1px solid var(--lime);border-radius:10px;color:var(--tx);font-size:13px}
