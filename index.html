@@ -69,6 +69,21 @@ const CATS = [
   { name:"Site",      bg:"#c3c9d8", tx:"#1e2330" },
 ];
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+/* Per-task overrides (t.ov, sparse) — layered on the catalog row for ONE card only.
+   ov keys → catalog columns below; plus cfg keys crewSize/laborRate handled in cfgFor.
+   EST/REP are pay-item-level facts and deliberately not overridable. */
+const OV_MAP = { task:CI.TASK, cc:CI.CC, pay:CI.PAY, um:CI.UM, mh:CI.MH, bid:CI.BID,
+                 ul:CI.UL, ue:CI.UE, mat:CI.UM$, sub:CI.US, trk:CI.UT, misc:CI.UX, cat:CI.CAT };
+const itemFor = t => {
+  const base = CATALOG[t.ci];
+  if(!t.ov) return base;
+  const it = base.slice();
+  Object.keys(OV_MAP).forEach(k=>{ const v=t.ov[k]; if(v!=null && v!=="") it[OV_MAP[k]]=v; });
+  return it;
+};
+const cfgFor = (t,cfg) => (t && t.ov && (t.ov.crewSize!=null || t.ov.laborRate!=null))
+  ? {...cfg, ...(t.ov.crewSize!=null?{crewSize:t.ov.crewSize}:{}), ...(t.ov.laborRate!=null?{laborRate:t.ov.laborRate}:{})}
+  : cfg;
 /* Billed-to-date & forecast quantity per Spectrum phase code — Jul 2026 CTC by Cost Code export.
    u=unit cq=contract qty bq=current billed qty rq=adjusted remaining (forecast) qty. */
 const CTC_DATA = {"02.45.01.00":{"u":"SY","d":"Concrete Roadway Breaking","cq":14441.47,"bq":5788.28,"rq":-3541.47,"up":null,"bd":null,"cd":51114.06,"gp":null},"02.45.13.13":{"u":"SY","d":"Removal And Disposal Of Existing Portlan","cq":14441.47,"bq":6897.22,"rq":-3541.47,"up":null,"bd":null,"cd":136093.25,"gp":null},"02.45.02.00":{"u":"SY","d":"Asphalt Roadway Breaking","cq":8450.0,"bq":3066.26,"rq":0.0,"up":null,"bd":null,"cd":60703.82,"gp":null},"02.45.13.14":{"u":"SY","d":"Removal And Disposal Of Existing Asphalt","cq":8450.0,"bq":3066.26,"rq":0.0,"up":null,"bd":null,"cd":51006.41,"gp":null},"32.07.13.00":{"u":"TON","d":"Base Course Dump And Spread","cq":10145.48,"bq":4097.48,"rq":-1602.98,"up":null,"bd":null,"cd":356727.48,"gp":null},"32.07.23.00":{"u":"SY","d":"Base Course Fine Grading","cq":22760.55,"bq":4097.48,"rq":-3047.19,"up":null,"bd":null,"cd":221985.85,"gp":null},"33.40.18.24":{"u":"LF","d":"Reinforced Concrete Pipe (24\", Class IV,","cq":193.0,"bq":164.0,"rq":124.0,"up":null,"bd":null,"cd":67627.26,"gp":null},"33.40.28.15":{"u":"LF","d":"Post Install CCTV & Clean","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.40.19.24":{"u":"LF","d":"Reinforced Concrete Arch Pipe (29\"X18\",","cq":25.0,"bq":12.0,"rq":5.0,"up":null,"bd":null,"cd":2035.3,"gp":null},"33.40.19.30":{"u":"LF","d":"36\" X 22\" Concrete Arch Pipe (30\" Equiva","cq":224.0,"bq":242.0,"rq":18.0,"up":null,"bd":null,"cd":80993.51,"gp":null},"33.40.19.36":{"u":"LF","d":"Reinforced Concrete Arch Pipe (44\"X27\",","cq":3074.0,"bq":994.78,"rq":-1978.0,"up":null,"bd":null,"cd":148699.19,"gp":null},"33.40.19.37":{"u":"LF","d":"Reinforced Concrete Arch Pipe (44\"X27\",","cq":688.5,"bq":1140.0,"rq":237.0,"up":null,"bd":null,"cd":441652.56,"gp":null},"33.40.19.42":{"u":"LF","d":"Reinforced Concrete Arch Pipe (51\"X31\",","cq":1367.0,"bq":1009.0,"rq":908.0,"up":null,"bd":null,"cd":899951.36,"gp":null},"33.49.14.01":{"u":"VF","d":"No. 1 Standard Drain Manhole","cq":62.0,"bq":53.83,"rq":0.0,"up":null,"bd":null,"cd":53932.83,"gp":null},"33.49.16.27":{"u":"EACH","d":"Drain Manhole Adjustment","cq":3.0,"bq":0.37,"rq":8.63,"up":null,"bd":null,"cd":330.87,"gp":null},"33.49.14.02":{"u":"VF","d":"No. 2 Standard Drain Manhole","cq":69.0,"bq":31.11,"rq":0.0,"up":null,"bd":null,"cd":73699.07,"gp":null},"33.49.14.03":{"u":"VF","d":"No. 3 Standard Drain Manhole","cq":31.0,"bq":52.7,"rq":-9.36,"up":null,"bd":null,"cd":88598.97,"gp":null},"33.49.14.10":{"u":"EACH","d":"Specialized Drainage Manhole W/ Weir","cq":8.0,"bq":5.0,"rq":0.0,"up":null,"bd":null,"cd":60923.82,"gp":null},"33.49.14.04":{"u":"EACH","d":"Special Drain Manhole No. 4","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1014.3,"gp":null},"33.49.14.07":{"u":"EACH","d":"Special Drain Manhole No. 7","cq":39.0,"bq":8.0,"rq":-27.0,"up":null,"bd":null,"cd":96751.98,"gp":null},"33.49.14.08":{"u":"EACH","d":"Special Drain Manhole No. 8","cq":20.0,"bq":11.0,"rq":-5.0,"up":null,"bd":null,"cd":180181.33,"gp":null},"33.49.14.09":{"u":"EACH","d":"Special Drain Manhole No. 9","cq":3.0,"bq":2.0,"rq":0.0,"up":null,"bd":null,"cd":33768.55,"gp":null},"33.49.20.00":{"u":"EACH","d":"Special Conflict Manhole","cq":3.0,"bq":4.0,"rq":6.0,"up":null,"bd":null,"cd":77553.73,"gp":null},"33.49.16.28":{"u":"EACH","d":"New Structure Adjust - CB","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":720.73,"gp":null},"33.49.17.02":{"u":"EACH","d":"No. 1 Standard Catch Basin","cq":14.0,"bq":2.0,"rq":-10.0,"up":null,"bd":null,"cd":65198.69,"gp":null},"33.49.17.09":{"u":"EACH","d":"Double No. 1 Catch Basin","cq":43.0,"bq":19.0,"rq":-1.0,"up":null,"bd":null,"cd":218451.41,"gp":null},"33.49.16.29":{"u":"EACH","d":"New Structure Adj - DI","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1705.0,"gp":null},"33.49.17.08":{"u":"EACH","d":"24\" X 30\" Clear Opening Standard Drop In","cq":4.0,"bq":3.0,"rq":0.0,"up":null,"bd":null,"cd":11507.92,"gp":null},"33.49.17.03":{"u":"EACH","d":"Single Mountable Catch Basin","cq":4.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.14.04":{"u":"LF","d":"4\" PVC New Water Main With Main Line Fit","cq":0.0,"bq":5.0,"rq":5.0,"up":null,"bd":null,"cd":4570.11,"gp":null},"33.10.31.00":{"u":"EACH","d":"Pressure Test & Chlorinate Water Main","cq":1.57,"bq":1.62,"rq":0.05,"up":null,"bd":null,"cd":3859.55,"gp":null},"33.10.32.04":{"u":"EACH","d":"Water Main Tie-In 4 In","cq":0.98,"bq":0.93,"rq":-0.05,"up":null,"bd":null,"cd":3698.19,"gp":null},"33.10.15.04":{"u":"LF","d":"4\" DIP New Water Main With Main Line Fit","cq":27.0,"bq":27.0,"rq":0.0,"up":null,"bd":null,"cd":7211.59,"gp":null},"33.10.14.06":{"u":"LF","d":"6\" PVC New Water Main With Main Line Fit","cq":104.0,"bq":27.0,"rq":-77.0,"up":null,"bd":null,"cd":24782.35,"gp":null},"33.10.32.06":{"u":"EACH","d":"Water Main Tie-In 6 In","cq":0.08,"bq":0.06,"rq":-0.02,"up":null,"bd":null,"cd":300.24,"gp":null},"33.10.15.06":{"u":"LF","d":"6\" DIP New Water Main With Main Line Fit","cq":20.0,"bq":16.5,"rq":-11.5,"up":null,"bd":null,"cd":8330.59,"gp":null},"33.10.14.08":{"u":"LF","d":"8\" PVC New Water Main With Main Line Fit","cq":2068.0,"bq":1272.75,"rq":0.0,"up":null,"bd":null,"cd":362405.55,"gp":null},"33.10.32.08":{"u":"EACH","d":"Water Main Tie-In 8 In","cq":0.8,"bq":0.55,"rq":-0.25,"up":null,"bd":null,"cd":1735.69,"gp":null},"33.10.15.08":{"u":"LF","d":"8\" DIP New Water Main With Main Line Fit","cq":14.0,"bq":19.0,"rq":16.0,"up":null,"bd":null,"cd":35467.98,"gp":null},"33.10.14.12":{"u":"LF","d":"12\" PVC New Water Main With Main Line Fi","cq":1742.0,"bq":1118.0,"rq":-554.0,"up":null,"bd":null,"cd":287436.24,"gp":null},"33.10.32.12":{"u":"EACH","d":"Water Main Tie-In 12 In","cq":4.19,"bq":2.98,"rq":-1.21,"up":null,"bd":null,"cd":11224.95,"gp":null},"33.10.15.12":{"u":"LF","d":"12\" DIP New Water Main With Main Line Fi","cq":775.0,"bq":701.0,"rq":-17.5,"up":null,"bd":null,"cd":236609.56,"gp":null},"33.10.14.16":{"u":"LF","d":"16\" PVC New Water Main With Main Line Fi","cq":25.0,"bq":0.0,"rq":5.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.32.16":{"u":"EACH","d":"Water Main Tie-In 16 In","cq":1.67,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.10.35.01":{"u":"EACH","d":"New Water Valve Manhole (4\" - 12\")","cq":28.0,"bq":18.0,"rq":0.0,"up":null,"bd":null,"cd":73888.31,"gp":null},"33.49.16.33":{"u":"EACH","d":"Water Valve Manhole Adjustment","cq":28.0,"bq":8.0,"rq":0.0,"up":null,"bd":null,"cd":5021.8,"gp":null},"33.30.01.00":{"u":"LF","d":"Clean, CCTV, & Mandrel Sewer - 8 In","cq":800.0,"bq":0.0,"rq":25.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.19.06":{"u":"LF","d":"Install Sewer Main (6\", 0.0' - 6.0' Deep","cq":303.0,"bq":0.0,"rq":-303.0,"up":null,"bd":null,"cd":6599.05,"gp":null},"33.30.19.42":{"u":"LF","d":"Install Sewer Main (8\", 6.1' - 8.0' Deep","cq":800.0,"bq":798.0,"rq":108.0,"up":null,"bd":null,"cd":210828.59,"gp":null},"33.30.26.06":{"u":"VF","d":"Install Sewer Manhole","cq":80.0,"bq":50.63,"rq":-37.23,"up":null,"bd":null,"cd":60619.9,"gp":null},"33.49.16.34":{"u":"EACH","d":"Sewer Manhole Adjustment","cq":6.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3444.15,"gp":null},"33.30.40.11":{"u":"EACH","d":"Sewer Point Repair Up To Ten Feet (8\", 0","cq":5.0,"bq":3.0,"rq":-2.0,"up":null,"bd":null,"cd":4149.07,"gp":null},"33.43.02.09":{"u":"LF","d":"Post Video Sewer Point Repair","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.40.12":{"u":"EACH","d":"Sewer Point Repair Up To Ten Feet (8\", 6","cq":1.0,"bq":1.0,"rq":0.0,"up":null,"bd":null,"cd":14703.97,"gp":null},"33.30.40.13":{"u":"EACH","d":"Sewer Point Repair Up To Ten Feet (8\", 8","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":0.0,"gp":null},"33.30.40.17":{"u":"EACH","d":"Sewer Point Repair Up To Ten Feet (10\",","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1481.02,"gp":null},"33.40.25.10":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":12.06,"gp":null},"33.40.25.12":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":512.0,"bq":311.25,"rq":0.0,"up":null,"bd":null,"cd":33649.81,"gp":null},"33.40.25.15":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":790.0,"bq":617.02,"rq":-137.38,"up":null,"bd":null,"cd":190673.16,"gp":null},"33.40.25.18":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":376.0,"bq":284.0,"rq":-79.0,"up":null,"bd":null,"cd":73825.28,"gp":null},"33.40.25.24":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":254.0,"bq":92.0,"rq":-110.0,"up":null,"bd":null,"cd":33222.88,"gp":null},"33.40.25.30":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":778.0,"bq":685.75,"rq":15.0,"up":null,"bd":null,"cd":271825.62,"gp":null},"33.40.25.36":{"u":"LF","d":"High-Performance Polypropylene Pipe (HPP","cq":572.0,"bq":487.0,"rq":-49.0,"up":null,"bd":null,"cd":159349.11,"gp":null},"33.40.20.12":{"u":"LF","d":"HDPE Pipe (12\")","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":24.89,"gp":null},"33.40.20.15":{"u":"LF","d":"HDPE Pipe (15\")","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":2614.89,"gp":null},"33.40.20.18":{"u":"LF","d":"HDPE Pipe (18\")","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":2271.04,"gp":null},"33.40.20.30":{"u":"LF","d":"HDPE Pipe (30\")","cq":11.0,"bq":0.0,"rq":-11.0,"up":null,"bd":null,"cd":2263.99,"gp":null},"33.40.20.36":{"u":"LF","d":"HDPE Pipe (36\")","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":665.71,"gp":null},"01.11.21.00":{"u":"HR","d":"AWS utilities design/plan revi","cq":0.0,"bq":1086.5,"rq":1008.5,"up":null,"bd":null,"cd":29245.37,"gp":null},"01.15.17.00":{"u":"","d":"APR25-FUEL","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1618.61,"gp":null},"31.22.16.00":{"u":"","d":"AUG25 - Consumables","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":4557.26,"gp":null},"50.50.00.00":{"u":"","d":"At hospital","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":109533.22,"gp":null},"50.50.10.00":{"u":"","d":"24HRS PCH?","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":32903.0,"gp":null},"50.50.20.00":{"u":"","d":"HOL","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":90327.5,"gp":null},"50.50.30.00":{"u":"","d":"Bereavement","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3264.0,"gp":null},"50.50.40.00":{"u":"","d":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":21645.01,"gp":null},"50.50.60.00":{"u":"","d":"Jury Duty","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1544.0,"gp":null},"99.01.00.00":{"u":"VF","d":"M.Swiler - A Acme Lock Co Jeff","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":43183.78,"gp":null},"99.02.00.00":{"u":"LS","d":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":111350.07,"gp":null},"99.03.00.00":{"u":"","d":"J.Gomez - Discount Zone 1208 M","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":453.67,"gp":null},"99.07.00.00":{"u":"CY","d":"","cq":0.0,"bq":-0.0,"rq":0.0,"up":null,"bd":null,"cd":445.52,"gp":null},"99.13.00.00":{"u":"LF","d":"MAY25 - Sales Tax","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":3515.22,"gp":null},"99.14.00.00":{"u":"LS","d":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":5156.55,"gp":null},"99.17.00.00":{"u":"LS","d":"2023 Bobcat T770 Track Loader","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":1841.78,"gp":null},"99.18.00.00":{"u":"LS","d":"POSTED FROM PAYROLL","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":517.5,"gp":null},"99.99.99.99":{"u":"","d":"","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":19455.34,"gp":null},"50.50.70.00":{"u":"","d":"Paternity Leave","cq":0.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":600.0,"gp":null},"01.00.00.00":{"u":"LS","d":"General Conditions","cq":1.0,"bq":0.0,"rq":0.0,"up":null,"bd":null,"cd":250695.68,"gp":null},"01.14.04.00":{"u":"EACH","d":"Dress To Sell","cq":20.0,"bq":8.0,"rq":0.0,"up":null,"bd":null,"cd":60463.51,"gp":null},"01.56.41.00":{"u":"LS","d":"Arborist - Tree Trimming","cq":1.0,"bq":0.1,"rq":0.0,"up":null,"bd":null,"cd":6167.0,"gp":null},"02.32.19.00":{"u":"EACH","d":"Exploratories For Green Intersections &","cq":6.0,"bq":2.0,"rq":0.0,"up":null,"bd":null,"cd":2018.58,"gp":null}};
@@ -405,15 +420,22 @@ function LookAhead(){
     tasks.forEach(t=>{ if(t.ci===ci && logs[t.id]){ q+=logs[t.id].qty||0; m+=logs[t.id].mh||0; }});
     return q>0 ? m/q : null;
   };
-  const fcst = ci => {
+  const fcst = ci => {  // ci-level forecast: intentionally catalog-based (aggregates many tasks)
     const it=CATALOG[ci], bud=unitCost(it), ar=actRate(ci);
     if (ar==null || !it[CI.MH]) return { uc:bud, drift:0 };
     const scale = ar/it[CI.MH];
     const uc = (it[CI.UL]+it[CI.UE])*scale + it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
     return { uc, drift: uc-bud };
   };
+  const fcstFor = t => {  // task-level forecast: same math but honors t.ov price/MH overrides
+    const it=itemFor(t), bud=unitCost(it), ar=actRate(t.ci);
+    if (ar==null || !it[CI.MH]) return { uc:bud, drift:0 };
+    const scale = ar/it[CI.MH];
+    const uc = (it[CI.UL]+it[CI.UE])*scale + it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+    return { uc, drift: uc-bud };
+  };
   const taskCalc = t => {
-    const it=CATALOG[t.ci];
+    const it=itemFor(t);
     const planMH = t.qty*it[CI.MH];
     const lg = logs[t.id]||{};
     const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
@@ -499,6 +521,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
+          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
           <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
@@ -584,12 +607,13 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="cards"   && <CardExportModal {...{weekTasks,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
       {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
@@ -713,7 +737,8 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   Object.entries(groups).forEach(([k,arr])=>{
     const res=k.slice(0,k.indexOf("|")); const cap=capOf(res);
     arr.sort((a,b)=> a.wk<b.wk?-1 : a.wk>b.wk?1 : a.day-b.day);
-    const mhU = CATALOG[arr[0].ci][CI.MH];
+    // Group MH/unit from the first task's effective row; mixed per-task ov.mh in one group is approximated.
+    const mhU = itemFor(arr[0])[CI.MH];
     const capQ = mhU>0 ? cap/mhU : Infinity;
     let carry=0;
     arr.forEach(t=>{
@@ -730,7 +755,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
         byTask[t.id]={logged:false, planQ, reflowQ:want, cappedQ:capped, reflowMH, overCap};
         carry = want-capped; dayQ=want;
       }
-      const ut = CATALOG[t.ci][CI.UT] || 0;
+      const ut = itemFor(t)[CI.UT] || 0;
       if(ut>0){ const loads=dayQ*ut/truckRate; const dk=t.wk+"_"+t.day;
         (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; }
     });
@@ -849,6 +874,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
           <div><label>Job #</label><span>{JOB_NO}</span></div>
           <div><label>Item</label><span>{name}</span></div>
           <div><label>Goal</label><span>{qtyStr}</span></div>
+          <div><label>Equipt</label><span>{t.equip||"—"}</span></div>
           <div><label>Trucks</label><span>{lds>=0.05?fmtN(lds,1)+" loads":"—"}</span></div>
         </div>
       </> : <>
@@ -884,32 +910,66 @@ function SiteRow({row,notes,setNotes,setModal}){
   );
 }
 
-/* ============ TASK MODAL — tables, no loads field ============ */
-function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
-  const it = CATALOG[t.ci];
+/* Input that keeps local state while typing and commits on blur / Enter — avoids
+   fighting the debounced global re-render while a field is being edited. */
+function BlurInput({value,onCommit,...props}){
+  const [v,setV]=useState(value??"");
+  useEffect(()=>{ setV(value??""); },[value]);
+  return <input {...props} value={v} onChange={e=>setV(e.target.value)}
+    onBlur={()=>{ if(String(v)!==String(value??"")) onCommit(v); }}
+    onKeyDown={e=>{ if(e.key==="Enter") e.currentTarget.blur(); }}/>;
+}
+
+/* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
+function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close}){
+  const [tab,setTab]=useState("log");
+  const [picking,setPicking]=useState(false);
+  const [q,setQ]=useState("");
+  const it = itemFor(t), ecfg = cfgFor(t,cfg), bit = CATALOG[t.ci];
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
   const [mh,setMh]=useState(lg.mh??"");
   const cat=CATS[it[CI.CAT]];
-  const budUC=unitCost(it), f=fcst(t.ci);
+  const hasOv = !!(t.ov && Object.keys(t.ov).length);
+  const budUC=unitCost(it), f=fcstFor(t);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
-  const dayRate = it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : t.qty;
-  const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
+  const dayRate = it[CI.MH]>0 ? (ecfg.crewSize*ecfg.shiftHrs)/it[CI.MH] : t.qty;
+  const loads = ecfg.truckRate>0 ? (t.qty*it[CI.UT])/ecfg.truckRate : 0;
   const fac=f.uc*est, budTot=budUC*est, cvar=budTot-fac;
   const margin=(it[CI.BID]-f.uc)*est;
+  const setOv=(k,v)=>{ const o={...(t.ov||{})}; if(v==null||v==="") delete o[k]; else o[k]=v; upTask(t.id,{ov:Object.keys(o).length?o:null}); };
+  const results = useMemo(()=>{
+    const s=q.trim().toLowerCase(); if(!s) return [];
+    return CATALOG.map((r,i)=>({r,i}))
+      .filter(({r})=>r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s))
+      .slice(0,30);
+  },[q]);
+  const ovIn = (k,label,base,numeric)=>(
+    <label>{label}
+      <BlurInput className={t.ov&&t.ov[k]!=null?"ovon":""} type={numeric?"number":"text"}
+        value={t.ov?.[k] ?? ""} placeholder={String(base)}
+        onCommit={v=>setOv(k, numeric ? (v===""||isNaN(+v)?null:+v) : (String(v).trim()||null))}/>
+    </label>
+  );
   return (
-    <Modal close={close} w={560}>
+    <Modal close={close} w={640}>
       <h3>{it[CI.TASK]}</h3>
       <div className="chiprow">
         <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.name}</span>
         <span className="pill dim">Cost {it[CI.CC]}</span>
         <span className="pill dim">Pay {it[CI.PAY]}</span>
+        {hasOv && <span className="pill ovpill">custom</span>}
+      </div>
+      <div className="qmode mtabs">
+        <button className={tab==="log"?"on":""} onClick={()=>setTab("log")}>Details & Log</button>
+        <button className={tab==="edit"?"on":""} onClick={()=>setTab("edit")}>Edit</button>
       </div>
 
+      {tab==="log" ? <>
       <table className="dt">
         <tbody>
           <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
-          <tr><th>Crew</th><td>{cfg.crewSize} @ {fmt$(cfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
+          <tr><th>Crew</th><td>{ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
           <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
         </tbody>
       </table>
@@ -934,6 +994,85 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
         <span className="sp"/>
         <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
       </div>
+      </> : <>
+
+      <div className="loghdr">Plan</div>
+      {!picking ?
+        <div className="selitem">
+          <div><b>{bit[CI.TASK]}</b><em>{bit[CI.CC]} · Pay {bit[CI.PAY]} · {fmtN(bit[CI.MH],3)} MH/{bit[CI.UM]}</em></div>
+          <button className="ghost sm" onClick={()=>setPicking(true)}>Change item</button>
+        </div> :
+        <>
+          <input autoFocus className="search" placeholder="Search item, cost code, or pay item — e.g. 51x31, HPPP, 33.40" value={q} onChange={e=>setQ(e.target.value)}/>
+          <div className="results">
+            {results.map(({r,i})=>
+              <button key={i} onClick={()=>{ upTask(t.id,{ci:i, ov:null}); setPicking(false); setQ(""); }}>
+                <i style={{background:CATS[r[CI.CAT]].bg}}/>
+                <span>{r[CI.TASK]}</span>
+                <em>{r[CI.CC]} · {r[CI.PAY]} · {r[CI.UM]}</em>
+              </button>)}
+            {q && results.length===0 && <div className="empty">No catalog match — try part of the cost code or pay item.</div>}
+            {!q && <div className="empty">Pick the new catalog item for this card.</div>}
+          </div>
+          <div className="ovnote">Switching the item clears any per-card overrides below.</div>
+          <div className="btnrow"><button className="ghost sm" onClick={()=>{setPicking(false); setQ("");}}>Keep current item</button></div>
+        </>}
+      <div className="logrow">
+        <label>Crew / sub<select value={t.res} onChange={e=>upTask(t.id,{res:e.target.value})}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
+        <label>Day<select value={t.day} onChange={e=>upTask(t.id,{day:+e.target.value})}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(t.wk,i)}</option>)}</select></label>
+        <label>Week (snaps to Mon)<input type="date" value={t.wk} onChange={e=>{ if(e.target.value) upTask(t.id,{wk:mondayOf(e.target.value)}); }}/></label>
+      </div>
+      <div className="logrow">
+        <label>Planned qty ({it[CI.UM]})<BlurInput type="number" value={t.qty} onCommit={v=>upTask(t.id,{qty:+v||0})}/></label>
+        <label>Start STA<BlurInput placeholder="115+15.66" value={t.sta?staFmt(t.sta[0]):""} onCommit={v=>{const a=parseSTA(v), b=t.sta?t.sta[1]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
+        <label>End STA<BlurInput placeholder="118+40" value={t.sta?staFmt(t.sta[1]):""} onCommit={v=>{const b=parseSTA(v), a=t.sta?t.sta[0]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
+      </div>
+      <div className="logrow">
+        <label>Location<BlurInput list="loclist-edit" placeholder="Pick or type a location…" value={t.loc||""} onCommit={v=>upTask(t.id,{loc:String(v).trim()||null})}/>
+          <datalist id="loclist-edit">{LOCATIONS.map(l=><option key={l} value={l}/>)}</datalist></label>
+        <label>Equipment (Equipt. on card)<BlurInput placeholder="e.g. PC490, CAT 336" value={t.equip||""} onCommit={v=>upTask(t.id,{equip:String(v).trim()||null})}/></label>
+      </div>
+      {t.wk!==wk && <div className="ovnote">This card is now on the week of {t.wk} — it will leave the current board view.</div>}
+
+      <div className="loghdr">Overrides — this card only</div>
+      <div className="ovnote">Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
+      <div className="logrow">
+        {ovIn("task","Task name",bit[CI.TASK],false)}
+      </div>
+      <div className="logrow">
+        <label>Category
+          <select className={t.ov&&t.ov.cat!=null?"ovon":""} value={t.ov?.cat ?? ""} onChange={e=>setOv("cat", e.target.value===""?null:+e.target.value)}>
+            <option value="">(catalog: {CATS[bit[CI.CAT]].name})</option>
+            {CATS.map((c,i)=><option key={c.name} value={i}>{c.name}</option>)}
+          </select></label>
+        {ovIn("cc","Cost code",bit[CI.CC],false)}
+        {ovIn("pay","Pay item",bit[CI.PAY],false)}
+        {ovIn("um","Unit",bit[CI.UM],false)}
+      </div>
+      <div className="logrow">
+        {ovIn("mh","MH / unit",bit[CI.MH],true)}
+        {ovIn("crewSize","Crew size",cfg.crewSize,true)}
+        {ovIn("laborRate","Labor $/MH",cfg.laborRate,true)}
+      </div>
+      <div className="ovnote">→ effective rate {fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day · crew {ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</div>
+      <div className="logrow">
+        {ovIn("bid","Pay (bid) $/unit",bit[CI.BID],true)}
+        {ovIn("ul","Labor $/unit",bit[CI.UL],true)}
+        {ovIn("ue","Equip $/unit",bit[CI.UE],true)}
+      </div>
+      <div className="logrow">
+        {ovIn("mat","Material $/unit",bit[CI.UM$],true)}
+        {ovIn("sub","Sub $/unit",bit[CI.US],true)}
+        {ovIn("trk","Trucking $/unit",bit[CI.UT],true)}
+        {ovIn("misc","Misc $/unit",bit[CI.UX],true)}
+      </div>
+      <div className="btnrow">
+        <button className="cta" onClick={close}>Done</button>
+        {hasOv && <button className="ghost" onClick={()=>upTask(t.id,{ov:null})}>Reset all overrides</button>}
+        <span className="sp"/>
+        <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
+      </div>
+      </>}
     </Modal>
   );
 }
@@ -1567,7 +1706,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     const c=taskCalc(t), it=c.it, ci=t.ci, cr=crews.find(x=>x.id===t.res);
     const f=fcst(ci), td=tdMap[ci]||{qty:0,mh:0,actCost:0};
     return { t, c, it, ci, lg:logs[t.id], crew:cr?.name||"?", ctype:cr?.type||"crew",
-      um:umOverrides[ci] ?? it[CI.UM],
+      um:(t.ov && t.ov.um) || umOverrides[ci] || it[CI.UM],  // task override > catalog UM override > base
       sta:t.sta?`${fmtN(t.sta[0],2)}–${fmtN(t.sta[1],2)}`:"—",
       f, td, fac:f.uc*(it[CI.EST]||0) };
   }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs));
@@ -1621,6 +1760,99 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
         </>}
       </div>
     </Modal>
+  );
+}
+
+/* ============ CARD EXPORT — 4×4in notepad sheets for colored paper ============ */
+/* One physical card. Black ink only — the colored paper supplies the category color. */
+function PCard({cd}){
+  const {t,it,run,mh,loads} = cd;
+  return (
+    <div className="pcard">
+      <div className="pcorners">
+        <span className="pc pday">Multiple Day Operation Count{run.total>1 && <b>Day {run.idx}/{run.total}</b>}</span>
+        <span className="pc pmh">Total Manhours<b>{fmtN(mh,mh%1?1:0)} MH</b></span>
+      </div>
+      <div className="pwm">RNGD</div>
+      <div className="pbody">
+        <div><label>Location:</label><span>{t.loc||""}</span></div>
+        <div><label>Job #:</label><span>{JOB_NO}</span></div>
+        <div><label>Item:</label><span>{it[CI.TASK]}</span></div>
+        <div><label>Goal:</label><span>{fmtN(t.qty,t.qty%1?1:0)} {it[CI.UM]}</span></div>
+      </div>
+      <div className="pfoot">
+        <div><label>Equipt.:</label><span>{t.equip||""}</span></div>
+        <div><label>Trucks:</label><span>{loads>=0.05?fmtN(loads,1)+" loads":""}</span></div>
+      </div>
+    </div>
+  );
+}
+/* Sheet renderer, used twice: hidden print copy (body-level) + zoomed on-screen preview. */
+function CardSheets({pages,paper,paperBg,preview}){
+  const rows = paper==="tabloid"?4:2;
+  return (
+    <div className={"cardsheets"+(preview?" prev":"")}>
+      {pages.map((pg,pi)=>
+        <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")} style={preview&&paperBg?{background:paperBg}:undefined}>
+          <div className="pgrid" style={{gridTemplateRows:"repeat("+rows+",4in)"}}>
+            {pg.map(cd=><PCard key={cd.t.id} cd={cd}/>)}
+            {Array.from({length:3},(_,i)=><i key={"v"+i} className="cut v" style={{left:(i*4)+"in"}}/>)}
+            {Array.from({length:rows+1},(_,j)=><i key={"h"+j} className="cut h" style={{top:(j*4)+"in"}}/>)}
+          </div>
+        </div>)}
+    </div>
+  );
+}
+function CardExportModal({weekTasks,crews,taskCalc,cfg,wk,close}){
+  const countByCat = useMemo(()=>{ const m={}; weekTasks.forEach(t=>{ const c=itemFor(t)[CI.CAT]; m[c]=(m[c]||0)+1; }); return m; },[weekTasks]);
+  const [cat,setCat]=useState(()=>{ const f=CATS.findIndex((_,i)=>countByCat[i]); return f>=0?f:0; });
+  const [paper,setPaper]=useState("letter");
+  const [crewF,setCrewF]=useState("all");
+  // Body class routes @media print to the card-sheet path while this modal is open.
+  useEffect(()=>{ document.body.classList.add("print-cards"); return ()=>document.body.classList.remove("print-cards"); },[]);
+  const cards = useMemo(()=> weekTasks
+    .filter(t=> itemFor(t)[CI.CAT]===cat && (crewF==="all"||t.res===crewF))
+    .sort((a,b)=> a.day-b.day || String(a.res).localeCompare(String(b.res)))
+    .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:dayRunFor(weekTasks,t), mh:c.planMH, loads:c.loads}; })
+  ,[weekTasks,cat,crewF]);
+  const per = paper==="tabloid"?8:4;
+  const pages=[]; for(let i=0;i<cards.length;i+=per) pages.push(cards.slice(i,i+per));
+  const paperName = paper==="tabloid"?"11×17 (Tabloid)":"Letter 8.5×11";
+  return (
+    <>
+      {pages.length>0 && <CardSheets pages={pages} paper={paper}/>}
+      <Modal close={close} w={760}>
+        <h3>Print cards — 4"×4" notepad sheets</h3>
+        <div className="ovnote">Pick a color group and load that color paper in the printer. Cards print black-ink only, exactly 4"×4" between the trim lines.</div>
+        <div className="swatchrow">
+          {CATS.map((c,i)=>
+            <button key={c.name} className={"swatch"+(cat===i?" on":"")} style={{background:c.bg,color:c.tx}} onClick={()=>setCat(i)}>
+              {c.name} · {countByCat[i]||0}
+            </button>)}
+        </div>
+        <div className="qmode sm" style={{margin:"4px 0 8px"}}>
+          <button className={paper==="letter"?"on":""} onClick={()=>setPaper("letter")}>Letter 8.5×11 — 4/sheet</button>
+          <button className={paper==="tabloid"?"on":""} onClick={()=>setPaper("tabloid")}>11×17 — 8/sheet</button>
+        </div>
+        <div className="logrow">
+          <label>Crew / sub<select value={crewF} onChange={e=>setCrewF(e.target.value)}>
+            <option value="all">All crews</option>
+            {crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
+        </div>
+        <div className="loghdr">{cards.length} card{cards.length===1?"":"s"} · {wkTitle(wk)} → {pages.length} sheet{pages.length===1?"":"s"} of {paperName}</div>
+        <div className="cardprev">
+          {pages.length
+            ? <CardSheets pages={pages} paper={paper} paperBg={CATS[cat].bg} preview/>
+            : <div className="ovnote" style={{padding:24,textAlign:"center"}}>No {CATS[cat].name} tasks on this week's board.</div>}
+        </div>
+        <p className="ovnote" style={{marginTop:10}}>Load {CATS[cat].name} paper. In the print dialog: paper size = {paperName}, Scale 100%, default margins, headers/footers OFF.</p>
+        <div className="btnrow">
+          <button className="cta" disabled={!cards.length} onClick={()=>window.print()}>Print sheets</button>
+          <button className="ghost" onClick={close}>Cancel</button>
+        </div>
+        <style>{"@page{size:"+(paper==="tabloid"?"11in 17in":"8.5in 11in")+";margin:0.25in}"}</style>
+      </Modal>
+    </>
   );
 }
 
@@ -1980,6 +2212,7 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},
     {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
     {label:"Print / PDF",hint:"action",run:()=>setModal({type:"print"})},
+    {label:"Print Cards — 4×4 notepad sheets",hint:"action",run:()=>setModal({type:"cards"})},
     {label:"Milestones",hint:"action",run:()=>setModal({type:"milestones"})},
     {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
@@ -2223,7 +2456,7 @@ thead .rescol{z-index:12}
 .hqwm{font:800 15px "Saira Condensed";letter-spacing:.06em;text-align:center;margin:-2px 0 2px}
 .hqbody{font-size:10.5px;line-height:1.28}
 .hqbody>div{display:flex;gap:5px}
-.hqbody label{flex:0 0 34px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
+.hqbody label{flex:0 0 40px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
 .hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
 .note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
@@ -2274,6 +2507,10 @@ thead .rescol{z-index:12}
 .qmode{display:flex;gap:6px;margin:12px 0 4px}
 .qmode button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:5px 12px;font-weight:600;cursor:pointer}
 .qmode button.on{border-color:var(--acc);color:var(--acc)}
+.qmode.mtabs{margin:2px 0 12px}
+.logrow input.ovon,.logrow select.ovon{border-color:var(--lime)}
+.ovnote{font-size:11.5px;color:var(--dm2);margin:2px 0 8px}
+.pill.ovpill{background:var(--lime);color:#22240a}
 .gen{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;font-weight:600;justify-content:flex-end}
 .gen b{font:600 16px "IBM Plex Mono";color:var(--good);text-transform:none}
 .dim2{color:var(--dm2);font-style:normal}
@@ -2464,13 +2701,53 @@ thead .rescol{z-index:12}
  .evtile.big{grid-column:span 1}
 }
 
+/* --- 4x4 card export (Print Cards) --- */
+.cardsheets{display:none}                        /* body-level print copy: hidden on screen */
+.cardsheets.prev{display:block;zoom:.5}          /* modal preview: zoomed to fit */
+.cardprev{overflow:auto;max-height:420px;border:1px solid var(--ln);border-radius:10px;background:var(--pn2);padding:12px}
+.cardpage{position:relative;background:#fff}
+.cardsheets.prev .cardpage{margin:0 auto 24px;box-shadow:0 4px 18px rgba(0,0,0,.35)}
+.cardsheets.prev .cardpage.pl{width:8in;min-height:10.5in}    /* letter content area @ .25in margins */
+.cardsheets.prev .cardpage.pt{width:10.5in;min-height:16.5in} /* 11x17 content area */
+.pgrid{position:relative;margin:0 auto;width:8in;display:grid;grid-template-columns:4in 4in}
+.cut{position:absolute;background:#000;opacity:.7;pointer-events:none}
+.cut.v{width:.5pt;top:0;bottom:0}
+.cut.h{height:.5pt;left:0;right:0}
+.pcard{width:4in;height:4in;box-sizing:border-box;padding:.24in .3in .3in;color:#000;font-family:"IBM Plex Mono",monospace;display:flex;flex-direction:column;overflow:hidden}
+.pcorners{display:flex;justify-content:space-between;align-items:flex-start;min-height:.55in}
+.pc{font:700 7.5pt "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;line-height:1.2;max-width:1.55in}
+.pc b{display:block;font:700 12pt "IBM Plex Mono"}
+.pc.pday{transform:rotate(-5deg);transform-origin:left top}
+.pc.pmh{transform:rotate(5deg);transform-origin:right top;text-align:right}
+.pwm{font:800 26pt "Saira Condensed";letter-spacing:.1em;text-align:center;margin:0 0 .1in}
+.pbody{flex:1;font-size:10.5pt;line-height:1.5}
+.pbody>div{display:flex;gap:.08in;border-bottom:.5pt solid #000;padding:.05in 0 .03in;align-items:baseline}
+.pbody span{overflow-wrap:anywhere}
+.pbody label{flex:0 0 .95in;font:700 9pt "Saira Condensed";text-transform:uppercase;letter-spacing:.06em}
+.pfoot{display:flex;gap:.25in;padding-top:.08in}
+.pfoot>div{flex:1;display:flex;gap:.08in;border-bottom:.5pt solid #000;align-items:baseline;min-height:.28in}
+.pfoot label{font:700 9pt "Saira Condensed";text-transform:uppercase}
+.swatchrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px}
+.swatch{border:2px solid transparent;border-radius:9px;padding:7px 12px;font:700 13px "Saira Condensed";cursor:pointer;letter-spacing:.04em}
+.swatch.on{border-color:var(--tx);box-shadow:0 0 0 2px var(--acc)}
+
 @media print{
- body *{visibility:hidden} .ovl,.ovl *{visibility:visible}
- .ovl{position:absolute;inset:0;background:#fff;padding:0}
+ /* report path (Print / PDF modal) — original behavior, now scoped */
+ body:not(.print-cards) *{visibility:hidden}
+ body:not(.print-cards) .ovl,body:not(.print-cards) .ovl *{visibility:visible}
+ body:not(.print-cards) .ovl{position:absolute;inset:0;background:#fff;padding:0}
  .modal{box-shadow:none;border:0;max-width:100%!important;background:#fff;color:#111}
  .modal .x,.btnrow,.crewhead select,.crewhead .cta,.prcfg{display:none!important}
  .prcfg,.prcfg *{visibility:hidden}
  .printarea{max-height:none;overflow:visible}
+ /* card-sheet path (Print Cards modal): display:none the app so layout ghosts can't
+    add blank pages; show only the body-level sheet copy at the page origin */
+ body.print-cards .la-root{padding:0!important;margin:0!important;background:#fff}
+ body.print-cards .la-root>*{display:none!important}
+ body.print-cards .la-root>.cardsheets{display:block!important}
+ .cardpage{page-break-after:always;break-after:page;margin:0 auto}
+ .cardpage:last-child{page-break-after:auto;break-after:auto}
+ .pcard{break-inside:avoid}
 }
 `;
 
