@@ -68,6 +68,43 @@ const CATS = [
   { name:"Earthwork", bg:"#d8b98e", tx:"#33240e" },
   { name:"Site",      bg:"#c3c9d8", tx:"#1e2330" },
 ];
+/* Scheduling Board SOP scope-color system — bold, "readable from 10 feet" colors,
+   one per real-world trade scope. Replaces CATS for card/legend/catalog coloring;
+   derived fresh from cost-code prefix (not the old hand-assigned CI.CAT bucket,
+   which mixes trades — see scopeKeyOf). "gen" is a non-SOP fallback for anything
+   that doesn't match a scope prefix (fencing, signage, general conditions, etc). */
+const SCOPES = {
+  drainage:{name:"Drainage",             bg:"#F58A2E", tx:"#3a2205"},
+  base:    {name:"Base",                 bg:"#8B63E0", tx:"#ffffff"},
+  water:   {name:"Water",                bg:"#2F82DB", tx:"#ffffff"},
+  sewer:   {name:"Sewer",                bg:"#12A150", tx:"#ffffff"},
+  struct:  {name:"Structural Concrete",  bg:"#A6CF3A", tx:"#26330a"},
+  earth:   {name:"Earthwork",            bg:"#A56A3C", tx:"#ffffff"},
+  sub:     {name:"Subcontractor",        bg:"#F0C22E", tx:"#3a2f05"},
+  elec:    {name:"Electrical",           bg:"#E24C4B", tx:"#ffffff"},
+  survey:  {name:"Survey",               bg:"#F183B7", tx:"#3d1029"},
+  pile:    {name:"Pile Driving",         bg:"#5FBCE0", tx:"#0e2a3a"},
+  gen:     {name:"General",              bg:"#c3c9d8", tx:"#1e2330"},
+};
+function scopeKeyOf(cc){
+  const c=(cc||"").replace(/-/g,".");
+  if(/^33\.40\./.test(c)) return "drainage";
+  if(/^33\.10\./.test(c)) return "water";
+  if(/^(33\.30|33\.43)\./.test(c)) return "sewer";
+  if(/^33\.49\./.test(c)) return "struct";
+  if(/^32\.07\./.test(c)) return "base";
+  if(/^(31\.23|02\.45)\./.test(c)) return "earth";
+  if(/^26\./.test(c)) return "elec";
+  if(/^(01\.18\.34|01\.19)\./.test(c)) return "survey";
+  if(/pile/i.test(cc||"")) return "pile";
+  return "gen";
+}
+/* Subcontractor-performed work always shows Subcontractor-yellow, regardless of trade. */
+function scopeFor(cc,resId,crews){
+  const res=(crews||[]).find(x=>x.id===resId);
+  if(res && res.type==="sub") return "sub";
+  return scopeKeyOf(cc);
+}
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
 /* Billed-to-date & forecast quantity per Spectrum phase code — Jul 2026 CTC by Cost Code export.
    u=unit cq=contract qty bq=current billed qty rq=adjusted remaining (forecast) qty. */
@@ -310,11 +347,14 @@ function LookAhead(){
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [boardView, setBoardView] = useState("Ops");     // board cards: Ops (default) | Field | HQ (sticky note)
+  const [cardStyle, setCardStyle] = useState("bold");     // card tag treatment: bold | highlighter | flat
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
   const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [installEvt, setInstallEvt] = useState(null); // PWA install prompt
+  const [logoHover, setLogoHover] = useState(false);   // brand lockup hover — retriggers the animation set
+  const anim=(name,dur,ease,fill)=> logoHover ? (name+" "+dur+" "+(ease||"ease")+(fill?" "+fill:"")) : "none";
   const [digest, setDigest] = useState(null); // once-a-day standup banner
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
@@ -352,6 +392,7 @@ function LookAhead(){
         if (s.milestones) setMilestones(s.milestones);
         if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
         if (s.boardView) setBoardView(s.boardView);
+        if (s.cardStyle) setCardStyle(s.cardStyle);
         if (s.truckDay) setTruckDay(s.truckDay);
         if (s.savings) setSavings(s.savings);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
@@ -365,9 +406,9 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,cardStyle,truckDay,savings})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,cardStyle,truckDay,savings,loaded]);
 
   /* command palette hotkey */
   useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
@@ -478,11 +519,18 @@ function LookAhead(){
 
       {/* ============ TOP BAR ============ */}
       <header className="top no-print">
-        <div className="brand">
-          <img className="brandlogo dk" src="assets/rngd-white.png" alt="RNGD" draggable="false"/>
-          <img className="brandlogo lt" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
-          <span className="brandbar"/>
-          <span className="proj">Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em></span>
+        <div className="brand" onMouseEnter={()=>setLogoHover(true)} onMouseLeave={()=>setLogoHover(false)}>
+          <span className="brandsweep" style={{animation:anim("brandSweep",".8s","cubic-bezier(.25,.7,.2,1)")}}/>
+          <div className="brandmark">
+            <img className="brandlogo dk" src="assets/rngd-white.png" alt="RNGD" draggable="false" style={{animation:anim("markSnap",".55s","cubic-bezier(.2,1.5,.35,1)","both")}}/>
+            <img className="brandlogo lt" src="assets/rngd-black.png" alt="RNGD" draggable="false" style={{animation:anim("markSnap",".55s","cubic-bezier(.2,1.5,.35,1)","both")}}/>
+            <span className="brandmicro" style={{animation:anim("microReveal",".6s","ease","both")}}>Renegade Thinking. · Revolutionary Results.</span>
+          </div>
+          <span className="brandbar" style={{animation:anim("barFlare",".6s","cubic-bezier(.2,1.3,.4,1)","both")}}/>
+          <span className="proj" style={{animation:anim("projShift",".6s","ease","both")}}>
+            Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em>
+            <span className="projul" style={{animation:anim("ulGrow",".5s","cubic-bezier(.2,.7,.2,1)",".08s both")}}/>
+          </span>
         </div>
         <nav className="tabs">
           {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
@@ -527,14 +575,17 @@ function LookAhead(){
       </div>
 
       <div className="legend no-print">
-        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.name}</span>)}
-        <span><i style={{background:"#c4b5fd"}}/>Crew / Foreman</span>
-        <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
+        {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].name}</span>)}
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
         <span className="viewseg" title="Card view — HQ: labor $ vs pay · Field: qty & MH · Ops: loads & bedding tons">
           {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView(v)}>{v}</button>)}
+        </span>
+        <span className="tagswitch"><label>Tag style</label>
+          <span className="viewseg">
+            {[["bold","Bold sticky"],["highlighter","Highlight"],["flat","Flat brand"]].map(([k,l])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)}>{l}</button>)}
+          </span>
         </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
@@ -542,7 +593,7 @@ function LookAhead(){
 
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -553,18 +604,18 @@ function LookAhead(){
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
                 const ms = milestones.filter(m=>m.date===date);
                 return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
-                  {ms.map(m=><span key={m.id} className="msflag" title={m.label}>◆ {m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
+                  {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
             </tr>
           </thead>
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -584,7 +635,7 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,crews,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
@@ -634,7 +685,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -655,7 +706,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} run={dayRunFor(weekTasks,t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -753,7 +804,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -768,7 +819,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} run={dayRunFor(weekTasks,t)} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
@@ -821,8 +872,19 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run}){
-  const cat = CATS[c.it[CI.CAT]];
+/* Tag treatments — Bold sticky (default, solid scope fill) / Highlight (dark panel,
+   colored left border + title) / Flat brand (tinted panel). Container paint only —
+   card content layout is governed separately by boardView (Ops/Field/HQ). */
+function cardVisual(scope, style){
+  const s = scope || SCOPES.gen, bg=s.bg;
+  if(style==="highlighter")
+    return { css:{background:"#15181a",color:"#e9ebec",borderLeft:"5px solid "+bg,boxShadow:"0 2px 5px rgba(0,0,0,.35)"}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1 };
+  if(style==="flat")
+    return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1 };
+  return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72 };
+}
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle}){
+  const cat = cardVisual(SCOPES[resKind==="sub"?"sub":scopeKeyOf(c.it[CI.CC])], cardStyle);
   const useRf = reflowOn && rf && !rf.logged;
   const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
   const it=c.it, view=boardView||"Ops";
@@ -836,7 +898,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
     <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
-      style={{background:cat.bg,color:cat.tx}}
+      style={cat.css}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
       {view==="HQ" ? <>
         <div className="hqcorners">
@@ -853,14 +915,14 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
         </div>
       </> : <>
         <div className="cardtop">
-          <span className="ct">{name}</span>
+          <span className="ct" style={{color:cat.titleColor}}>{name}</span>
           {c.done && <span className="ck">✓</span>}
         </div>
         {view==="Ops" ? <>
-          <div className="csub">{prev?"→ cont.":(t.loc||"—")}</div>
+          <div className="csub" style={{color:cat.subColor,opacity:cat.subOpacity}}>{prev?"→ cont.":(t.loc||"—")}</div>
           <div className="cnums"><b>{startSta?"STA "+startSta:"—"}</b><span>{qtyStr}</span></div>
         </> : <>
-          <div className="csub">{prev?"→ cont.":(t.loc || (startSta?startSta+(t.sta?"–"+staFmt(t.sta[1]):""):it[CI.CC]))}</div>
+          <div className="csub" style={{color:cat.subColor,opacity:cat.subOpacity}}>{prev?"→ cont.":(t.loc || (startSta?startSta+(t.sta?"–"+staFmt(t.sta[1]):""):it[CI.CC]))}</div>
           <div className="cnums"><b className={bad?"cbad":""}>{qtyStr}</b><span className={bad?"cbad":""}>{mhStr}{bad?" ▲":""}</span></div>
         </>}
         {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
@@ -885,12 +947,12 @@ function SiteRow({row,notes,setNotes,setModal}){
 }
 
 /* ============ TASK MODAL — tables, no loads field ============ */
-function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close}){
+function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,crews,close}){
   const it = CATALOG[t.ci];
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
   const [mh,setMh]=useState(lg.mh??"");
-  const cat=CATS[it[CI.CAT]];
+  const cat=SCOPES[scopeFor(it[CI.CC],t.res,crews)];
   const budUC=unitCost(it), f=fcst(t.ci);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
   const dayRate = it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : t.qty;
@@ -1021,7 +1083,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
         <div className="results">
           {results.map(({r,i})=>
             <button key={i} onClick={()=>setCi(i)}>
-              <i style={{background:CATS[r[CI.CAT]].bg}}/>
+              <i style={{background:SCOPES[scopeKeyOf(r[CI.CC])].bg}}/>
               <span>{r[CI.TASK]}</span>
               <em>{r[CI.CC]} · {r[CI.PAY]} · {r[CI.UM]}</em>
             </button>)}
@@ -1494,7 +1556,7 @@ function CatalogView({installedFor,fcst,ctcOf,remainingFor,contractQtyFor,umOver
           const over = c && c.rq!=null && c.rq<0;
           return <tr key={i} className={c?"":"nctc"}>
             <td className="mono">{r[CI.CC]}</td><td className="mono">{r[CI.PAY]}</td>
-            <td><i className="dot" style={{background:CATS[r[CI.CAT]].bg}}/>{r[CI.TASK].slice(0,42)}{r[CI.TASK].length>42?"…":""}</td>
+            <td><i className="dot" style={{background:SCOPES[scopeKeyOf(r[CI.CC])].bg}}/>{r[CI.TASK].slice(0,42)}{r[CI.TASK].length>42?"…":""}</td>
             <td><input className="umin" value={umOverrides[i] ?? r[CI.UM]} title="Unit of measure (editable)"
               onChange={e=>setUM(i,e.target.value)} maxLength={8}/></td>
             <td className="r">{r[CI.MH]?fmtN(r[CI.MH],3):"—"}</td>
@@ -2033,15 +2095,25 @@ const CSS = `
 .la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Saira Condensed","Oswald",sans-serif;letter-spacing:.04em}
 .la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
 .top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--ln);background:var(--pn);position:sticky;top:0;z-index:40}
-.brand{display:flex;align-items:center;gap:12px}
-.brandlogo{height:26px;width:auto;display:block;user-select:none}
+.brand{display:flex;align-items:center;gap:12px;position:relative;overflow:hidden;padding:4px 8px 4px 2px;border-radius:8px;cursor:pointer}
+.brandsweep{position:absolute;top:0;bottom:0;left:0;width:34%;pointer-events:none;background:linear-gradient(100deg,rgba(220,228,66,0) 0%,rgba(220,228,66,.16) 30%,rgba(220,228,66,.85) 50%,rgba(220,228,66,.16) 70%,rgba(220,228,66,0) 100%);mix-blend-mode:screen;opacity:0;z-index:3}
+.brandmark{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
+.brandmicro{font:700 6.5px "Saira Condensed";letter-spacing:.14em;color:var(--dm2);text-transform:uppercase;line-height:1.25;white-space:nowrap}
+.brandlogo{height:26px;width:auto;display:block;user-select:none;transform-origin:left center}
 .la-root[data-theme="light"] .brandlogo.dk{display:none}
 .la-root[data-theme="dark"] .brandlogo.lt{display:none}
 .la-root[data-theme="system"] .brandlogo.lt{display:none}
 @media (prefers-color-scheme: light){ .la-root[data-theme="system"] .brandlogo.dk{display:none} .la-root[data-theme="system"] .brandlogo.lt{display:block} }
-.brandbar{width:2px;height:26px;background:var(--lime);border-radius:2px}
+.brandbar{width:2px;height:34px;background:var(--lime);border-radius:2px;transform-origin:center bottom;box-shadow:0 0 10px rgba(220,228,66,.45)}
 .logo{font-size:22px;font-weight:700}
-.proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;max-width:280px}
+.projul{position:absolute;left:0;bottom:-3px;height:2px;width:100%;background:var(--lime);transform-origin:left center;transform:scaleX(0)}
+@keyframes brandSweep{0%{transform:translateX(-160%) skewX(-16deg);opacity:0}12%{opacity:.95}55%{opacity:.9}100%{transform:translateX(560%) skewX(-16deg);opacity:0}}
+@keyframes markSnap{0%{transform:translateX(-8px) scale(.84);opacity:.35}55%{transform:translateX(3px) scale(1.09)}76%{transform:translateX(-1px) scale(.97)}100%{transform:translateX(0) scale(1);opacity:1}}
+@keyframes barFlare{0%{transform:scaleY(.15);opacity:.3}50%{transform:scaleY(1.18)}100%{transform:scaleY(1);opacity:1}}
+@keyframes ulGrow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes projShift{0%{letter-spacing:.05em}60%{letter-spacing:.13em}100%{letter-spacing:.07em}}
+@keyframes microReveal{0%{opacity:.35;letter-spacing:.02em}100%{opacity:1;letter-spacing:.12em}}
+.proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;max-width:280px;position:relative}
 .proj em{color:var(--dm);font-style:normal;font-size:11px;font-weight:600;letter-spacing:.04em}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
 .tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
@@ -2155,6 +2227,8 @@ thead .rescol{z-index:12}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
 .snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.tagswitch{display:inline-flex;align-items:center;gap:8px}
+.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
 .viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
 .viewseg button{background:transparent;border:0;color:var(--dm);padding:5px 11px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
 .viewseg button:first-child{border-left:0}
@@ -2164,8 +2238,8 @@ thead .rescol{z-index:12}
 .snapbtn:hover{border-color:var(--brand);color:var(--brand)}
 .capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 .capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
-.msflag{display:block;margin-top:3px;font:700 9.5px "Saira Condensed";letter-spacing:.03em;color:var(--lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
-.la-root[data-theme="light"] .msflag{color:#7a6b00}
+.msflag{display:inline-flex;align-items:center;gap:3px;margin-top:4px;font:700 9px "Saira Condensed";letter-spacing:.02em;color:#0c0d0c;background:var(--lime);padding:2px 6px 2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
 .msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
 .msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
 .gatebox{max-width:430px;margin:8vh auto;background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:22px 24px;text-align:center}
