@@ -196,6 +196,16 @@ const seedNotes = [
 
 /* ---------- helpers ---------- */
 const DAYS = ["M","T","W","TH","F","SA","SU"];
+/* Job locations — combobox suggestions (free text still allowed). */
+const LOCATIONS = ["Orange Street","Magazine","Annunciation St (Race - Euterpe)","Annunciation St (Euterpe - Melpomene)","Race St","St Thomas","Third/Annunciation","Second/Annunciation","Annunciation Square","Clay Square Park"];
+const JOB_NO = "2124013";
+/* Multi-day operation position: which day of a same-crew/item/location run a task is,
+   across the week (used by the HQ sticky-note "Day X/Y" corner). */
+function dayRunFor(weekTasks,t){
+  const sib=weekTasks.filter(x=>x.res===t.res&&x.ci===t.ci&&(x.loc||"")===(t.loc||"")).sort((a,b)=>a.day-b.day);
+  const idx=sib.findIndex(x=>x.id===t.id);
+  return {idx:idx+1, total:sib.length};
+}
 const fmt$ = (n,d=0) => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmtN = (n,d=0) => Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct  = n => Math.round(n*100)+"%";
@@ -299,7 +309,7 @@ function LookAhead(){
   const [baseline, setBaseline] = useState(null);        // {takenAt, byTask:{id:{qty,day,wk}}}
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
-  const [boardView, setBoardView] = useState("Field");   // board cards: HQ (money) | Field (production) | Ops (logistics)
+  const [boardView, setBoardView] = useState("Ops");     // board cards: Ops (default) | Field | HQ (sticky note)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
@@ -645,7 +655,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} run={dayRunFor(weekTasks,t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -758,7 +768,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} run={dayRunFor(weekTasks,t)} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
@@ -811,37 +821,50 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run}){
   const cat = CATS[c.it[CI.CAT]];
   const useRf = reflowOn && rf && !rf.logged;
   const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
-  const it=c.it, view=boardView||"Field";
-  let n1,n2,alert=bad;
-  if(view==="HQ"){                       // money — labor $ vs pay $ (labor-only figure)
-    const lab=qShown*it[CI.UL], pay=qShown*it[CI.BID];
-    n1=fmt$(lab); n2=fmt$(pay)+" pay"; alert=bad||(pay>0&&lab>=pay);
-  }else if(view==="Ops"){                // logistics — haul loads + bedding stone tons
-    const b=bedForItem(it[CI.CC],it[CI.TASK],it[CI.UM]);
-    const scale=t.qty?qShown/t.qty:1;
-    const lds=(c.loads||0)*scale;
-    const tn=b?qShown*b.tonPer:0;
-    n1=(lds>=0.05?fmtN(lds,1)+" lds":"— lds"); n2=(tn>=0.05?fmtN(tn,tn<10?1:0)+" tn":"—");
-  }else{                                 // Field — production (qty + MH)
-    n1=fmtN(qShown,qShown%1?1:0)+" "+it[CI.UM]; n2=fmtN(mhShown,mhShown%1?1:0)+" MH"+(bad?" ▲":"");
-  }
+  const it=c.it, view=boardView||"Ops";
+  const name = it[CI.TASK].length>30 ? it[CI.TASK].slice(0,29)+"…" : it[CI.TASK];
+  const qtyStr = fmtN(qShown,qShown%1?1:0)+" "+it[CI.UM];
+  const startSta = t.sta ? staFmt(t.sta[0]) : null;
+  const mhStr = fmtN(mhShown,mhShown%1?1:0)+" MH";
+  const scale=t.qty?qShown/t.qty:1, lds=(c.loads||0)*scale;
+  const multi = run && run.total>1;
   return (
-    <button className={"card"+(selected?" sel":"")} draggable={!!canDrag}
+    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
       style={{background:cat.bg,color:cat.tx}}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
-      <div className="cardtop">
-        <span className="ct">{c.it[CI.TASK].length>30 ? c.it[CI.TASK].slice(0,29)+"…" : c.it[CI.TASK]}</span>
-        {c.done && <span className="ck">✓</span>}
-      </div>
-      <div className="csub">{prev ? "→ cont." : (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC])}</div>
-      <div className="cnums"><b className={alert?"cbad":""}>{n1}</b><span className={alert?"cbad":""}>{n2}</span></div>
-      {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
+      {view==="HQ" ? <>
+        <div className="hqcorners">
+          <span className="hqday">{multi?`Day ${run.idx}/${run.total}`:""}</span>
+          <span className="hqmh">{mhStr}</span>
+        </div>
+        <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
+        <div className="hqbody">
+          <div><label>Loc</label><span>{t.loc||"—"}</span></div>
+          <div><label>Job #</label><span>{JOB_NO}</span></div>
+          <div><label>Item</label><span>{name}</span></div>
+          <div><label>Goal</label><span>{qtyStr}</span></div>
+          <div><label>Trucks</label><span>{lds>=0.05?fmtN(lds,1)+" loads":"—"}</span></div>
+        </div>
+      </> : <>
+        <div className="cardtop">
+          <span className="ct">{name}</span>
+          {c.done && <span className="ck">✓</span>}
+        </div>
+        {view==="Ops" ? <>
+          <div className="csub">{prev?"→ cont.":(t.loc||"—")}</div>
+          <div className="cnums"><b>{startSta?"STA "+startSta:"—"}</b><span>{qtyStr}</span></div>
+        </> : <>
+          <div className="csub">{prev?"→ cont.":(t.loc || (startSta?startSta+(t.sta?"–"+staFmt(t.sta[1]):""):it[CI.CC]))}</div>
+          <div className="cnums"><b className={bad?"cbad":""}>{qtyStr}</b><span className={bad?"cbad":""}>{mhStr}{bad?" ▲":""}</span></div>
+        </>}
+        {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
+      </>}
     </button>
   );
 }
@@ -966,6 +989,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
   const [ci,setCi]=useState(preset.ci ?? null);
   const [res,setRes]=useState(preset.res ?? crews[0]?.id);
   const [day,setDay]=useState(preset.day ?? 0);
+  const [loc,setLoc]=useState(preset.loc ?? "");
   const [mode,setMode]=useState("qty");
   const [qty,setQty]=useState("");
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
@@ -1033,6 +1057,10 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
           </div>}
 
         <div className="logrow">
+          <label>Location<input list="loclist" placeholder="Pick or type a location…" value={loc} onChange={e=>setLoc(e.target.value)}/>
+            <datalist id="loclist">{LOCATIONS.map(l=><option key={l} value={l}/>)}</datalist></label>
+        </div>
+        <div className="logrow">
           <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
           <label>Days ({fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/d)<input type="number" placeholder={String(nDays)} value={daysOv} onChange={e=>setDaysOv(e.target.value)}/></label>
@@ -1050,10 +1078,12 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
         <div className="btnrow">
           <button className="cta" disabled={!useQty} onClick={()=>{
             const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?Math.min(a,b):null;
-            for(let i=0;i<nDays;i++){
+            let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
+            for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
               const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
               const sta = cursor!=null? [cursor, cursor+dq] : null; if(cursor!=null) cursor+=dq;
-              list.push({ id:tid(), res, ci, day:Math.min(6,day+i), qty:dq, sta, wk });
+              list.push({ id:tid(), res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null });
+              curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
             }
             add(list);
           }}>Add {nDays>1?nDays+" days":"to board"}</button>
@@ -1231,6 +1261,14 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
     return { PV,EV,AC, CPI,SPI, CV:EV-AC, SV:EV-PV, BACmh,BAC$, EACmh, VACmh:BACmh-EACmh, VAC$:BAC$-EAC$, pctC:BACmh>0?EV/BACmh:0 };
   },[tasks,logs]);
 
+  /* Target PPC (Percent Plan Complete) = tasks completed ÷ tasks committed, for the
+     week under Weekly Work Planning. Below 80% flags a project-team review. */
+  const ppc = useMemo(()=>{
+    const committed = tasks.filter(t=>t.wk===wk && (crews.find(c=>c.id===t.res)||{}).type!=="site");
+    const done = committed.filter(t=>logs[t.id] && logs[t.id].done);
+    return { committed:committed.length, done:done.length, pct: committed.length? done.length/committed.length : 0 };
+  },[tasks,logs,wk,crews]);
+
   const curve = useMemo(()=>{
     const set=[...new Set(tasks.map(t=>t.wk))].sort();
     let pv=0,ev=0,ac=0;
@@ -1273,8 +1311,12 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
   return (
     <div className="page cc">
       <div className="cchead">
-        <div><h2>Command Center</h2><p className="dim2">Earned-value performance across the job — live from field-reported quantities.</p></div>
-        <div className="ccpct"><b>{pct(ev.pctC)}</b><label>Job earned</label></div>
+        <div><h2>Command Center</h2><p className="dim2">Weekly Work Planning performance — live from field-reported production.</p></div>
+        <div className={"ccpct"+(ppc.committed&&ppc.pct<0.8?" ppcbad":"")} title="PPC = Tasks Completed ÷ Tasks Committed × 100% — measured at Weekly Work Planning. Below 80% triggers a project-team review.">
+          <b>{ppc.committed?pct(ppc.pct):"—"}</b>
+          <label>Target PPC · Percent Plan Complete</label>
+          <span className="ppcsub">{ppc.done}/{ppc.committed} tasks · target 80%{ppc.committed&&ppc.pct<0.8?" · ▼ review":""}</span>
+        </div>
       </div>
 
       <div className="engbar">
@@ -1293,14 +1335,10 @@ function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,set
       </div>
 
       <div className="evgrid">
-        <Tile big label="CPI · Cost performance" value={cpiTxt} tone={ev.CPI?evTone(ev.CPI):""} sub={ev.CPI?(ev.CPI>=1?"Under budget on labor":"Over budget on labor"):"awaiting data"}/>
-        <Tile big label="SPI · Schedule performance" value={spiTxt} tone={ev.SPI?evTone(ev.SPI):""} sub={ev.SPI?(ev.SPI>=1?"Ahead of plan":"Behind plan"):"awaiting data"}/>
+        <Tile big label="Tasks complete (PPC)" value={ppc.committed?ppc.done+"/"+ppc.committed:"—"} tone={ppc.committed?(ppc.pct>=0.8?"good":"bad"):""} sub={ppc.committed?pct(ppc.pct)+" of committed · target 80%":"nothing committed this week"}/>
         <Tile label="Earned MH (EV)" value={fmtN(ev.EV)} sub={"of "+fmtN(ev.BACmh)+" budget"}/>
         <Tile label="Actual MH (AC)" value={fmtN(ev.AC)} sub={"planned "+fmtN(ev.PV)}/>
         <Tile label="Cost var (CV)" value={fmtN(ev.CV)+" MH"} tone={ev.CV>=0?"good":"bad"} sub={ev.CV>=0?"earned ≥ spent":"spent > earned"}/>
-        <Tile label="Schedule var (SV)" value={fmtN(ev.SV)+" MH"} tone={ev.SV>=0?"good":"bad"} sub={ev.SV>=0?"ahead":"behind"}/>
-        <Tile label="EAC · Forecast MH" value={fmtN(ev.EACmh)} tone={ev.EACmh<=ev.BACmh?"good":"bad"} sub={"budget "+fmtN(ev.BACmh)}/>
-        <Tile label="VAC · Forecast $" value={fmt$(ev.VAC$)} tone={ev.VAC$>=0?"good":"bad"} sub={ev.VAC$>=0?"projected savings":"projected overrun"}/>
       </div>
 
       <div className="ccrow">
@@ -2177,6 +2215,16 @@ thead .rescol{z-index:12}
 .csub{font-size:10.5px;opacity:.75;margin:1px 0 2px}
 .cnums{display:flex;justify-content:space-between;font-size:12px}
 .cnums b{font-weight:600}.cnums span{opacity:.7;font-size:10.5px}
+/* HQ view — RNGD standard sticky note */
+.card.hq{padding:5px 8px 7px}
+.hqcorners{display:flex;justify-content:space-between;font:700 9px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase;min-height:11px}
+.hqday{opacity:.85;transform:rotate(-4deg);transform-origin:left}
+.hqmh{opacity:.9;transform:rotate(4deg);transform-origin:right}
+.hqwm{font:800 15px "Saira Condensed";letter-spacing:.06em;text-align:center;margin:-2px 0 2px}
+.hqbody{font-size:10.5px;line-height:1.28}
+.hqbody>div{display:flex;gap:5px}
+.hqbody label{flex:0 0 34px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
+.hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
 .note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
 .note.crit{background:var(--noteCbg);border-color:var(--noteCln);color:var(--noteCtx)}
@@ -2267,6 +2315,9 @@ thead .rescol{z-index:12}
 .la-root[data-theme="light"] .ccpct b{color:var(--brand)}
 @media (prefers-color-scheme: light){.la-root[data-theme="system"] .ccpct b{color:var(--brand)}}
 .ccpct label{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.1em;font-weight:700}
+.ccpct .ppcsub{display:block;color:var(--dm);font-size:11px;font-weight:600;margin-top:2px}
+.ccpct.ppcbad b{color:#ff5a5f}
+.ccpct.ppcbad .ppcsub{color:#ff5a5f}
 .evgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
 .evtile{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
 .evtile:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--dm2)}
