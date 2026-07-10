@@ -16,11 +16,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <style>
   html{color-scheme:dark}
-  html,body{margin:0;background:#000000}
+  html,body{margin:0;background:#111315}
   html[data-boot="light"]{color-scheme:light}
   html[data-boot="light"],html[data-boot="light"] body{background:#f4f5f6}
-  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-    color:#dce442;font:700 14px "Saira Condensed",system-ui,sans-serif;letter-spacing:.22em;text-transform:uppercase}
+  #boot{position:fixed;inset:0;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;
+    color:#dce442;font:700 14px "Saira Condensed",system-ui,sans-serif;letter-spacing:.22em;text-transform:uppercase;text-align:center}
+  #boot small{color:#8a8d93;font-weight:600;font-size:10px;letter-spacing:.28em}
   html[data-boot="light"] #boot{color:#00833e}
 </style>
 <script>
@@ -40,7 +41,7 @@
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
 </head>
 <body>
-<div id="boot">Loading the board&hellip;</div>
+<div id="boot">Loading the board&hellip;<small>Renegade Thinking. Revolutionary Results.</small></div>
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 const { useState, useMemo, useEffect, useRef } = React;
@@ -59,14 +60,34 @@ const CATALOG=[["C202(52)(C)","Concrete Roadway Breaking","02.45.01.00","SY",0.0
 
 
 const CI = { PAY:0, TASK:1, CC:2, UM:3, MH:4, BID:5, UL:6, UE:7, UM$:8, US:9, UT:10, UX:11, EST:12, REP:13, CAT:14 };
+/* Scope color-coding — RNGD Scheduling Board SOP (slide 5). One color per
+   scope, uniform across every project board, so the sequence reads from 10 ft
+   (color first, text second). Catalog CAT indices 0-6 map to these fills; the
+   physical board uses solid-color sticky notes, so the digital tags do too. */
 const CATS = [
-  { name:"Drainage",  bg:"#f2a7cf", tx:"#3d1029" },
-  { name:"Water",     bg:"#9fc9f5", tx:"#0e2a4a" },
-  { name:"Sewer",     bg:"#c7e96e", tx:"#26330a" },
-  { name:"Structure", bg:"#f6c286", tx:"#3d2408" },
-  { name:"Concrete",  bg:"#f2df76", tx:"#38300a" },
-  { name:"Earthwork", bg:"#d8b98e", tx:"#33240e" },
-  { name:"Site",      bg:"#c3c9d8", tx:"#1e2330" },
+  { name:"Drainage",   scope:"Drainage",            bg:"#F97316", tx:"#2a1400" }, // ORANGE
+  { name:"Water",      scope:"Water",               bg:"#3B82F6", tx:"#ffffff" }, // BLUE
+  { name:"Sewer",      scope:"Sewer",               bg:"#22C55E", tx:"#05331a" }, // GREEN
+  { name:"Structure",  scope:"Structural Concrete", bg:"#86EFAC", tx:"#05331c" }, // LT GREEN
+  { name:"Concrete",   scope:"Base",                bg:"#7030A0", tx:"#ffffff" }, // PURPLE
+  { name:"Earthwork",  scope:"Earth Work",          bg:"#7A4E2D", tx:"#f7e9dc" }, // BROWN
+  { name:"Site",       scope:"Site",                bg:"#C8CDD4", tx:"#1e2330" }, // SLATE
+];
+/* The full SOP scope standard (slide 5) — used by the printable legend / 10-Foot
+   Test reference. Includes scopes that aren't in this job's catalog but must stay
+   consistent across all RNGD boards. `diamond` marks the angled milestone tag. */
+const SCOPE_LEGEND = [
+  { name:"Drainage",            color:"#F97316", label:"Orange" },
+  { name:"Base",                color:"#7030A0", label:"Purple" },
+  { name:"Water",               color:"#3B82F6", label:"Blue" },
+  { name:"Sewer",               color:"#22C55E", label:"Green" },
+  { name:"Subcontractors",      color:"#FACC15", label:"Yellow" },
+  { name:"Electrical",          color:"#EF4444", label:"Red" },
+  { name:"Survey",              color:"#EC4899", label:"Pink" },
+  { name:"Earth Work",          color:"#7A4E2D", label:"Brown" },
+  { name:"Structural Concrete", color:"#86EFAC", label:"Lt Green" },
+  { name:"Pile Driving",        color:"#7DD3FC", label:"Lt Blue" },
+  { name:"Milestones",          color:"#DCE442", label:"Diamond", diamond:true },
 ];
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
 /* Billed-to-date & forecast quantity per Spectrum phase code — Jul 2026 CTC by Cost Code export.
@@ -247,6 +268,7 @@ function LookAhead(){
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
+  const [lastUpdated, setLastUpdated] = useState(null); // ISO ts of last board content change — drives the SOP staleness banner
   const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
@@ -285,20 +307,29 @@ function LookAhead(){
         if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
         if (s.truckDay) setTruckDay(s.truckDay);
         if (s.savings) setSavings(s.savings);
+        if (s.lastUpdated) setLastUpdated(s.lastUpdated);
         if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
         if (typeof s.showRental==="boolean") setShowRental(s.showRental);
       }
     }catch(e){ /* first run — seeds stand */ }
     setLoaded(true);
   })(); },[]);
+  /* Track the last real board edit so the SOP "living document" staleness banner
+     can nudge the team. Skip the first post-load run so hydration isn't counted. */
+  const firstBump = useRef(true);
+  useEffect(()=>{
+    if(!loaded) return;
+    if(firstBump.current){ firstBump.current=false; return; }
+    setLastUpdated(new Date().toISOString());
+  },[loaded,tasks,logs,notes,milestones,equipment,eqHours,crews,siteRows]);
   const saveTimer = useRef(null);
   useEffect(()=>{
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings})); }catch(e){}
+      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,lastUpdated})); }catch(e){}
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,truckDay,savings,lastUpdated,loaded]);
 
   /* command palette hotkey */
   useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
@@ -339,11 +370,24 @@ function LookAhead(){
       earnMH:(lg.qty||0)*it[CI.MH] };
   };
   const kpi = useMemo(()=>{
-    let p=0,a=0,e=0,cells=0,logged=0;
-    weekTasks.forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; cells++; if(logs[t.id]) logged++; });
+    let p=0,a=0,e=0,cells=0,logged=0,done=0;
+    weekTasks.forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; cells++; if(logs[t.id]) logged++; if(c.done) done++; });
     const ts = notes.filter(n=>n.level!=="info").length;
-    return { p,a,e, pf: a>0? e/a : 0, cells, logged, ts };
+    // PPC (Percent Plan Complete) — Last Planner metric, SOP slide 7. Committed = tasks
+    // on the week; complete = tasks marked done. Target ≥ 80%; below triggers team review.
+    return { p,a,e, pf: a>0? e/a : 0, cells, logged, done, ppc: cells? done/cells : 0, ts };
   },[weekTasks,logs,notes,cfg]);
+
+  /* Goal Gradient — the week is never framed at 0%. Progress counts crew-days already
+     staged plus milestones set, so the board reads as "well underway", not "empty". */
+  const weekPlan = useMemo(()=>{
+    const WORKDAYS=5, staged=new Set(), filled=new Set();
+    weekTasks.forEach(t=>{ staged.add(t.res); if(t.day<WORKDAYS) filled.add(t.res+"_"+t.day); });
+    const crewN = Math.max(1, crews.length);
+    const wkMs = milestones.filter(m=>{ for(let i=0;i<7;i++) if(addDays(wk,i)===m.date) return true; return false; }).length;
+    const pctPlan = Math.min(1, (filled.size + wkMs) / (crewN*WORKDAYS));
+    return { staged:staged.size, crewN, pctPlan, ms:wkMs };
+  },[weekTasks,crews,milestones,wk]);
 
   /* mutations */
   const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
@@ -383,8 +427,11 @@ function LookAhead(){
   const setEqHrs = (id,val)=> setEqHours(h=>({...h,[id+"_"+wk]:val}));
   const eqProps = { equipment, eqHours, wk, showOwned, showRental, addEquip, rmEquip, renameEquip, setEqHrs };
 
-  const crewsOnly = crews.filter(c=>c.type==="crew");
-  const subsOnly  = crews.filter(c=>c.type==="sub");
+  // IKEA Effect: a foreman can pin "my crew" — it earns a ★ and sorts to the top,
+  // giving personal ownership of a lane on day one.
+  const pinSort = (a,b)=> (b.pinned?1:0)-(a.pinned?1:0);
+  const crewsOnly = crews.filter(c=>c.type==="crew").sort(pinSort);
+  const subsOnly  = crews.filter(c=>c.type==="sub").sort(pinSort);
   const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
   const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews, cfg) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews,cfg]);
 
@@ -399,7 +446,7 @@ function LookAhead(){
           <img className="brandlogo dk" src="assets/rngd-white.png" alt="RNGD" draggable="false"/>
           <img className="brandlogo lt" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
           <span className="brandbar"/>
-          <span className="proj">Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em></span>
+          <span className="proj">Look Ahead: Built by the Watershed Project Team<em>DPW547 · Job 2124013</em><span className="tagline">Renegade Thinking. Revolutionary Results.</span></span>
         </div>
         <nav className="tabs">
           {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
@@ -425,6 +472,8 @@ function LookAhead(){
         </div>
       </header>
 
+      {(tab==="board"||tab==="dash") && <RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/>}
+
       {/* ============ KPI STRIP ============ */}
       {tab==="board" && <>
       <div className="kpis no-print">
@@ -432,14 +481,19 @@ function LookAhead(){
         <div className="kpi"><label>Actual MH</label><b>{fmtN(kpi.a)}</b></div>
         <div className="kpi"><label>Earned MH</label><b>{fmtN(kpi.e)}</b></div>
         <div className="kpi"><label>PF</label><b className={kpi.pf>=1?"good":kpi.pf>0?"bad":""}>{kpi.pf?kpi.pf.toFixed(2):"—"}</b></div>
+        <div className="kpi" title="Percent Plan Complete = tasks done ÷ tasks committed. SOP target ≥ 80%; below triggers a team review."><label>PPC {kpi.done}/{kpi.cells}</label><b className={kpi.cells===0?"":kpi.ppc>=0.8?"good":"bad"}>{kpi.cells?pct(kpi.ppc):"—"}{kpi.cells>0&&kpi.ppc<0.8?" ⚠":""}</b></div>
         <div className="kpi"><label>Days Logged</label><b>{kpi.logged}/{kpi.cells}</b></div>
         <div className={"kpi ts"+(kpi.ts?" hot":"")}><label>Time-Sensitive</label><b>{kpi.ts} {kpi.ts>0&&"⚠"}</b></div>
       </div>
 
+      <div className="weekprog no-print" title="Crew-days staged plus milestones set, against a full 5-day week.">
+        <div className="wpbar"><i style={{width:Math.round(weekPlan.pctPlan*100)+"%"}}/></div>
+        <span className="wptxt"><b>This week is {pct(weekPlan.pctPlan)} planned</b> — {weekPlan.staged} of {weekPlan.crewN} crews staged{weekPlan.ms>0?", "+weekPlan.ms+" milestone"+(weekPlan.ms>1?"s":"")+" set":""}. Keep sequencing 4–5 weeks out.</span>
+      </div>
+
       <div className="legend no-print">
-        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.name}</span>)}
-        <span><i style={{background:"#c4b5fd"}}/>Crew / Foreman</span>
-        <span><i style={{background:"#fbe08a"}}/>Subcontractor</span>
+        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.scope}</span>)}
+        <button className="legendbtn" onClick={()=>setModal({type:"legend"})} title="SOP color-coding standard — print for your next board (the 10-Foot Test)">Scope legend ↗</button>
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
@@ -460,7 +514,7 @@ function LookAhead(){
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
                 const ms = milestones.filter(m=>m.date===date);
                 return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
-                  {ms.map(m=><span key={m.id} className="msflag" title={m.label}>◆ {m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
+                  {ms.map(m=><span key={m.id} className="msflag" title={"Milestone — "+m.label}><i className="msdia"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
             </tr>
           </thead>
@@ -493,11 +547,12 @@ function LookAhead(){
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
-      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
+      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
+      {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
       {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
@@ -551,7 +606,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
     <>
     <tr>
       <td className="rescol">
-        <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
+        <button className={"chip "+kind+(res.pinned?" pinned":"")} onClick={()=>setModal({type:"crew",id:res.id})}>{res.pinned&&<span className="pinstar">★ </span>}{res.name}</button>
         {reflowOn && (()=>{ const st=reflow.byCrew[res.id]; if(!st) return null;
           const lbl = st.status==="behind" ? ("Behind +"+st.extraDays+"d") : st.status==="over" ? "Over cap" : "On plan";
           return <span key="st" className={"cstat "+st.status} title={(st.behindMH>0.5?(fmtN(st.behindMH)+" MH short at cap. "):"within daily capacity. ")+(st.trucksNeeded?("Peak "+st.trucksNeeded+" trucks/day"+(st.trucksAvail?" (have "+st.trucksAvail+")":"")):"")}>{lbl}{st.truckShort?" 🚚":""}</span>;
@@ -562,7 +617,12 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=>{
+            // SOP multi-day badge (Day X/Y): span the contiguous run of same crew+item across the week.
+            const has=dd=>weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===dd);
+            let lo=t.day; while(has(lo-1)) lo--; let hi=t.day; while(has(hi+1)) hi++;
+            return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} prev={has(t.day-1)} span={{idx:t.day-lo+1,total:hi-lo+1}} onOpen={()=>setModal({type:"task",id:t.id})}/>;
+          })}
         </td>;
       })}
     </tr>
@@ -670,18 +730,21 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     return (
       <div className="mcrew" key={res.id}>
         <div className="mcrewhead">
-          <button className={"chip "+kind} onClick={()=>setModal({type:"crew",id:res.id})}>{res.name}</button>
+          <button className={"chip "+kind+(res.pinned?" pinned":"")} onClick={()=>setModal({type:"crew",id:res.id})}>{res.pinned&&<span className="pinstar">★ </span>}{res.name}</button>
           <button className="mlog" onClick={()=>setModal({type:"sched",res:res.id,day})}>＋ Schedule</button>
         </div>
-        {tks.length ? tks.map(t=>
+        {tks.length ? tks.map(t=>{
+          const has=dd=>weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===dd);
+          let lo=t.day; while(has(lo-1)) lo--; let hi=t.day; while(has(hi+1)) hi++;
+          return (
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={has(t.day-1)} span={{idx:t.day-lo+1,total:hi-lo+1}} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
               <span>move day</span>
               <button disabled={t.day===6} onClick={()=>moveTask(t.id,res.id,t.day+1)} aria-label="Move to next day">{t.day<6?DAYS[t.day+1]:""} ›</button>
             </div>
-          </div>)
+          </div>); })
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
         {showEq && <MobileEquip res={res} {...eqProps}/>}
       </div>
@@ -725,10 +788,44 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
     </div>
   );
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn}){
+/* Weekly Rhythm + staleness — SOP slide 7. The board is a living document: if it
+   hasn't been touched in 3+ days it's framed as a LOSS (crews reading a stale plan),
+   otherwise a quiet reminder of the three weekly touchpoints. */
+function RhythmBanner({lastUpdated,setModal}){
+  const days = lastUpdated==null ? null : Math.floor((Date.now()-new Date(lastUpdated).getTime())/86400000);
+  const stale = days==null || days>=3;
+  const now=new Date(), dow=now.getDay(), hr=now.getHours();
+  const wedDue = dow===3 && hr>=12 && (days==null || days>=1); // Wed, board update due 2 PM
+  if(stale){
+    return (
+      <div className="rhythm loss no-print">
+        <span className="rdot"/>
+        <span className="rmsg"><b>{days==null?"This board hasn't been updated yet":"Board not updated in "+days+" day"+(days===1?"":"s")}</b> — crews walk in reading a stale plan. Every day it slips, the look-ahead goes blind and the week's commitments quietly fall off.</span>
+        <button className="rbtn" onClick={()=>setModal({type:"eos"})}>Update now →</button>
+      </div>
+    );
+  }
+  return (
+    <div className="rhythm ok no-print">
+      <span className="rlab">Weekly rhythm</span>
+      <span className={"rstep"+(dow===3?" now":"")}>Wed 2 PM · Board update → Procore</span>
+      <span className={"rstep"+(hr<12?" now":"")}>AM · Safety Meeting</span>
+      <span className={"rstep"+(hr>=12?" now":"")}>PM · End of Shift</span>
+      {wedDue && <span className="rwed">◷ Wednesday photo due — don't lose this week's compliance record</span>}
+      <span className="rfresh">Updated {days===0?"today":days+"d ago"}</span>
+    </div>
+  );
+}
+/* Activity Tag — RNGD SOP slide 4 sticky-note layout: multi-day badge top-left,
+   planned Manhours top-right, then Item (scope), Goal (planned qty), Location,
+   and Equipment/Trucks. Falls back to station / cost code when Location is blank. */
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,span}){
   const cat = CATS[c.it[CI.CAT]];
   const useRf = reflowOn && rf && !rf.logged;
   const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
+  const multi = span && span.total>1;
+  const loc = t.loc || (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC]);
+  const gear = [t.equip, t.trucks].filter(Boolean).join(" · ");
   return (
     <button className={"card"+(selected?" sel":"")} draggable={!!canDrag}
       onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
@@ -736,11 +833,13 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn}){
       style={{background:cat.bg,color:cat.tx}}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
       <div className="cardtop">
-        <span className="ct">{c.it[CI.TASK].length>30 ? c.it[CI.TASK].slice(0,29)+"…" : c.it[CI.TASK]}</span>
-        {c.done && <span className="ck">✓</span>}
+        <span className="cmd">{multi ? "Day "+span.idx+"/"+span.total : (prev ? "↳ cont." : "")}</span>
+        <span className={"cmh"+(bad?" cbad":"")}>{fmtN(mhShown,mhShown%1?1:0)} MH{bad?" ▲":""}</span>
       </div>
-      <div className="csub">{prev ? "→ cont." : (t.sta ? staFmt(t.sta[0])+"–"+staFmt(t.sta[1]) : c.it[CI.CC])}</div>
-      <div className="cnums"><b className={bad?"cbad":""}>{fmtN(qShown,qShown%1?1:0)} {c.it[CI.UM]}</b><span className={bad?"cbad":""}>{fmtN(mhShown,mhShown%1?1:0)} MH{bad?" ▲":""}</span></div>
+      <div className="ct">{c.it[CI.TASK].length>34 ? c.it[CI.TASK].slice(0,33)+"…" : c.it[CI.TASK]}{c.done && <span className="ck"> ✓</span>}</div>
+      <div className="cgoal"><b className={bad?"cbad":""}>{fmtN(qShown,qShown%1?1:0)} {c.it[CI.UM]}</b></div>
+      <div className="cloc">◎ {loc}</div>
+      {gear && <div className="cgear">🛠 {gear}</div>}
       {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
     </button>
   );
@@ -832,6 +931,7 @@ function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
         <input className="namein" value={name} onChange={e=>setName(e.target.value)}
           onBlur={()=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,name}:c))}/>
         <span className={"pill "+(pf>=1?"pgood":pf>0?"pbad":"dim")}>PF {pf?pf.toFixed(2):"—"}</span>
+        <button className={"pinbtn"+(res.pinned?" on":"")} title="Mark as my crew — pins it to the top of the board" onClick={()=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,pinned:!c.pinned}:c))}>{res.pinned?"★ My crew":"☆ Pin as mine"}</button>
         <label className="capfield">Daily MH cap<input type="number" min="0" step="1" value={res.capMH??68}
           onChange={e=>setCrews(cs=>cs.map(c=>c.id===res.id?{...c,capMH:+e.target.value||0}:c))}/></label>
         <label className="capfield">Trucks avail<input type="number" min="0" step="1" value={res.trucks??0}
@@ -861,15 +961,20 @@ function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
 }
 
 /* ============ SCHEDULE MODAL — search + station→qty (PPC logic) ============ */
-function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
+function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
+  // Smart Defaults (Reduce decision fatigue): pre-select today's column and the last
+  // crew scheduled, so the foreman confirms rather than fills a blank form.
+  const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++) if(addDays(wk,i)===t) return i; return 0; })();
   const [q,setQ]=useState("");
   const [ci,setCi]=useState(preset.ci ?? null);
-  const [res,setRes]=useState(preset.res ?? crews[0]?.id);
-  const [day,setDay]=useState(preset.day ?? 0);
+  const [res,setRes]=useState(preset.res ?? lastRes ?? crews[0]?.id);
+  const [day,setDay]=useState(preset.day ?? todayIdx);
   const [mode,setMode]=useState("qty");
   const [qty,setQty]=useState("");
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
   const [daysOv,setDaysOv]=useState("");
+  const [loc,setLoc]=useState(preset.loc||""); // SOP Activity Tag: Location / Equipt / Trucks
+  const [equip,setEquip]=useState(""); const [trucks,setTrucks]=useState("");
 
   const results = useMemo(()=>{
     const s=q.trim().toLowerCase(); if(!s) return [];
@@ -892,6 +997,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
   return (
     <Modal close={close} w={620}>
       <h3>Schedule work</h3>
+      {it && <p className="reciprocity">✓ We did the math: days, manhours, trucking loads and budget check are auto-calculated from the catalog — set the crew and confirm.</p>}
       {!it && <>
         <input autoFocus className="search" placeholder="Search item, cost code, or pay item — e.g. 51x31, HPPP, 33.40" value={q} onChange={e=>setQ(e.target.value)}/>
         <div className="results">
@@ -938,6 +1044,15 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
           <label>Days ({fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/d)<input type="number" placeholder={String(nDays)} value={daysOv} onChange={e=>setDaysOv(e.target.value)}/></label>
         </div>
 
+        {/* SOP Activity Tag fields — Location / Equipt / Trucks (slide 4). Optional; card falls back to station. */}
+        <div className="logrow">
+          <label>Location<input placeholder="Street · intersection · STA — readable from 3 ft" value={loc} onChange={e=>setLoc(e.target.value)}/></label>
+        </div>
+        <div className="logrow">
+          <label>Equipt<input placeholder="e.g. 336 Excavator, Vac Truck" value={equip} onChange={e=>setEquip(e.target.value)}/></label>
+          <label>Trucks<input placeholder={loadsDay?"auto ~"+fmtN(Math.ceil(loadsDay))+" loads/day":"e.g. 3 end-dumps"} value={trucks} onChange={e=>setTrucks(e.target.value)}/></label>
+        </div>
+
         {useQty>0 && <table className="dt">
           <tbody>
             <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
@@ -953,7 +1068,8 @@ function SchedModal({wk,crews,cfg,installedFor,preset,close,add}){
             for(let i=0;i<nDays;i++){
               const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
               const sta = cursor!=null? [cursor, cursor+dq] : null; if(cursor!=null) cursor+=dq;
-              list.push({ id:tid(), res, ci, day:Math.min(6,day+i), qty:dq, sta, wk });
+              list.push({ id:tid(), res, ci, day:Math.min(6,day+i), qty:dq, sta, wk,
+                ...(loc.trim()?{loc:loc.trim()}:{}), ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
             }
             add(list);
           }}>Add {nDays>1?nDays+" days":"to board"}</button>
@@ -1548,6 +1664,28 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
     </Modal>
   );
 }
+/* ============ COLOR-CODING LEGEND — SOP slide 5 (The 10-Foot Test) ============ */
+function LegendModal({close}){
+  return (
+    <Modal close={close} w={560}>
+      <div className="crewhead"><h3 style={{margin:0}}>Color-Coding System — the standard</h3></div>
+      <p className="dim2">One sticky-note color per scope, uniform across <b>every</b> RNGD project board — so any team member reads the sequence from across the room. Color first, text second. Print this as a reference for your next board.</p>
+      <div className="legendgrid">
+        {SCOPE_LEGEND.map(s=>
+          <div key={s.name} className="legrow">
+            <i className={"legsw"+(s.diamond?" dia":"")} style={{background:s.color}}/>
+            <span className="legname">{s.name}</span>
+            <span className="legcol">{s.label}</span>
+          </div>)}
+      </div>
+      <div className="tenfoot">◆ Milestones angle the sticky note. &nbsp;·&nbsp; The 10-Foot Test: if you can't read the board's sequence by color from 10 feet, the tags are wrong.</div>
+      <div className="btnrow">
+        <button className="cta" onClick={()=>window.print()}>Print legend</button>
+        <button className="btn ghost" onClick={close}>Close</button>
+      </div>
+    </Modal>
+  );
+}
 function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
   const [copied,setCopied]=useState(false);
   const TON_PER_CY=1.35; // rough aggregate density for tonnage estimate
@@ -1826,7 +1964,7 @@ function Modal({children,close,w=520}){
 
 /* ============ CSS ============ */
 const CSS = `
-.la-root{--bg:#000000;--pn:#111314;--pn2:#181b1c;--ln:#2a2e30;--tx:#f4f5f5;--dm:#a8adb0;--dm2:#6c7178;--brand:#00833e;--lime:#dce442;--acc:#00a34d;--good:#2fbf6b;--bad:#e5484d;--warn:#dce442;
+.la-root{--bg:#111315;--pn:#1a1c1f;--pn2:#24272b;--ln:#2e3238;--tx:#f4f5f5;--dm:#c8cdd4;--dm2:#8a8d93;--brand:#00833e;--lime:#dce442;--acc:#00a34d;--good:#2fbf6b;--bad:#e5484d;--warn:#dce442;
  --tabon:#00833e;--cellln:#1b1e1f;--cellhov:#121615;--mdln:#2e3335;--ovl:rgba(0,0,0,.74);--barfill:#00833e;--pillGoodBg:#0e2f1c;--pillBadBg:#3a1717;
  --noteWbg:#2c2f14;--noteWln:#5f6a1e;--noteWtx:#dce442;--noteCbg:#3a1717;--noteCln:#8a3237;--noteCtx:#ffb0b4;--noteIbg:#101d15;--noteIln:#2a4a37;--noteItx:#9fe0b6;
  color-scheme:dark;
@@ -1855,6 +1993,7 @@ const CSS = `
 .logo{font-size:22px;font-weight:700}
 .proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;max-width:280px}
 .proj em{color:var(--dm);font-style:normal;font-size:11px;font-weight:600;letter-spacing:.04em}
+.proj .tagline{color:var(--lime);font-size:8.5px;font-weight:700;letter-spacing:.14em;margin-top:2px;opacity:.85}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
 .tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
 .tabs button.on{background:var(--tabon);color:#fff}
@@ -1886,6 +2025,36 @@ const CSS = `
 .legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:wrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .hint{margin-left:auto;color:var(--dm2)}
+.reciprocity{margin:0 0 10px;padding:7px 11px;border-radius:6px;background:var(--pillGoodBg);color:var(--good);font-size:11.5px;font-weight:600;line-height:1.4}
+.pinbtn{background:none;border:1px solid var(--ln);color:var(--dm);border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:"Saira Condensed",sans-serif;letter-spacing:.04em;text-transform:uppercase}
+.pinbtn.on{border-color:var(--lime);color:var(--lime);background:rgba(220,228,66,.1)}
+.chip.pinned{box-shadow:0 0 0 1px var(--lime) inset}
+.pinstar{color:var(--lime)}
+.weekprog{display:flex;align-items:center;gap:12px;margin:2px 18px 0;padding:6px 0}
+.wpbar{flex:0 0 160px;height:8px;border-radius:999px;background:var(--pn2);overflow:hidden;border:1px solid var(--ln)}
+.wpbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand),var(--lime));border-radius:999px;transition:width .4s ease}
+.wptxt{font-size:12px;color:var(--dm)}.wptxt b{color:var(--tx)}
+.rhythm{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 18px 0;padding:8px 14px;border-radius:8px;font-size:12px}
+.rhythm.loss{background:rgba(229,72,77,.12);border:1px solid var(--bad);color:var(--tx)}
+.rhythm.loss .rmsg{flex:1;min-width:180px;line-height:1.4}
+.rhythm.loss .rmsg b{color:var(--bad)}
+.rhythm .rdot{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:0 0 auto;box-shadow:0 0 0 4px rgba(229,72,77,.18)}
+.rbtn{background:var(--bad);color:#fff;border:0;border-radius:6px;padding:5px 12px;font-weight:800;font-family:"Saira Condensed",sans-serif;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;white-space:nowrap}
+.rhythm.ok{background:var(--pn2);border:1px solid var(--ln);color:var(--dm)}
+.rhythm.ok .rlab{font-family:"Saira Condensed",sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--lime);font-size:11px}
+.rstep{padding:2px 8px;border-radius:999px;background:var(--pn);border:1px solid var(--ln);font-size:11px}
+.rstep.now{border-color:var(--brand);color:var(--tx);box-shadow:0 0 0 1px var(--brand) inset}
+.rwed{color:var(--warn);font-weight:700}
+.rfresh{margin-left:auto;color:var(--dm2);font-size:11px}
+.legendbtn{background:none;border:1px solid var(--ln);color:var(--lime);border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;letter-spacing:.05em;cursor:pointer;text-transform:uppercase}
+.legendbtn:hover{border-color:var(--lime)}
+.legendgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;padding:6px 0 10px}
+.legrow{display:flex;align-items:center;gap:10px}
+.legsw{width:20px;height:20px;border-radius:4px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.legsw.dia{border-radius:3px;transform:rotate(45deg);width:15px;height:15px;margin:2px 3px}
+.legname{font-weight:700;font-family:"Saira Condensed",sans-serif;letter-spacing:.03em}
+.legcol{margin-left:auto;color:var(--dm2);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.tenfoot{border-top:1px solid var(--ln);padding-top:10px;margin-top:2px;color:var(--dm);font-size:11.5px;line-height:1.5}
 .boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0}
 .boardmain{display:flex;gap:14px;align-items:flex-start}
 .crewrail{width:236px;flex:none;padding:0 16px 30px 0;display:flex;flex-direction:column;gap:8px}
@@ -1970,8 +2139,11 @@ thead .rescol{z-index:12}
 .snapbtn:hover{border-color:var(--brand);color:var(--brand)}
 .capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 .capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
-.msflag{display:block;margin-top:3px;font:700 9.5px "Saira Condensed";letter-spacing:.03em;color:var(--lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
-.la-root[data-theme="light"] .msflag{color:#7a6b00}
+.msflag{display:inline-flex;align-items:center;gap:5px;margin-top:4px;padding:2px 7px 2px 5px;font:700 9.5px "Saira Condensed";letter-spacing:.03em;color:var(--lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;
+  border:1px solid var(--lime);border-radius:4px;background:rgba(220,228,66,.1);text-transform:uppercase}
+.msdia{width:9px;height:9px;flex:0 0 auto;background:var(--lime);transform:rotate(45deg);border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.25)}
+.la-root[data-theme="light"] .msflag{color:#7a6b00;border-color:#c9c200;background:rgba(174,184,0,.12)}
+.la-root[data-theme="light"] .msdia{background:#aeb800}
 .msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
 .msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
 .gatebox{max-width:430px;margin:8vh auto;background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:22px 24px;text-align:center}
@@ -2009,13 +2181,16 @@ thead .rescol{z-index:12}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
 .chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
-.card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono"}
-.cardtop{display:flex;justify-content:space-between;gap:4px}
-.ct{font-family:"Saira Condensed";font-weight:600;font-size:13.5px;line-height:1.15}
+.card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono";-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.cardtop{display:flex;justify-content:space-between;align-items:center;gap:4px;min-height:13px}
+.cmd{font-family:"Saira Condensed";font-weight:700;font-size:10px;letter-spacing:.05em;text-transform:uppercase;opacity:.8}
+.cmh{font-family:"Saira Condensed";font-weight:700;font-size:11px;letter-spacing:.02em;padding:0 5px;border-radius:999px;background:rgba(0,0,0,.14)}
+.ct{font-family:"Saira Condensed";font-weight:600;font-size:13.5px;line-height:1.12;margin-top:1px}
 .ck{font-weight:700}
-.csub{font-size:10.5px;opacity:.75;margin:1px 0 2px}
-.cnums{display:flex;justify-content:space-between;font-size:12px}
-.cnums b{font-weight:600}.cnums span{opacity:.7;font-size:10.5px}
+.cgoal{font-size:13px;font-weight:700;margin:1px 0}
+.cgoal b{font-weight:700}
+.cloc{font-size:10.5px;opacity:.78;line-height:1.2}
+.cgear{font-size:10px;opacity:.72;line-height:1.2;margin-top:1px}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
 .note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
 .note.crit{background:var(--noteCbg);border-color:var(--noteCln);color:var(--noteCtx)}
@@ -2213,7 +2388,7 @@ thead .rescol{z-index:12}
  .top{gap:10px;padding:10px 12px 8px}
  .brandlogo{height:22px}
  .proj{font-size:12.5px;max-width:220px}
- .proj em{display:none}
+ .proj em,.proj .tagline{display:none}
  .tabs{order:3;width:100%;overflow-x:auto;border-radius:10px}
  .tabs button{flex:1 0 auto;white-space:nowrap;min-height:40px}
  .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between}

@@ -1,12 +1,12 @@
 {
   "name": "RNGD Look-Ahead — DPW547",
   "short_name": "RNGD",
-  "description": "Daily production tracking and earned-value command center for DPW547.",
+  "description": "RNGD Scheduling Board — daily production flow, color-coded by scope. Renegade Thinking. Revolutionary Results.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#000000",
+  "background_color": "#111315",
   "theme_color": "#00833e",
   "icons": [
     { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
