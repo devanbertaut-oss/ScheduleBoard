@@ -65,29 +65,29 @@ const CI = { PAY:0, TASK:1, CC:2, UM:3, MH:4, BID:5, UL:6, UE:7, UM$:8, US:9, UT
    (color first, text second). Catalog CAT indices 0-6 map to these fills; the
    physical board uses solid-color sticky notes, so the digital tags do too. */
 const CATS = [
-  { name:"Drainage",   scope:"Drainage",            bg:"#F97316", tx:"#2a1400" }, // ORANGE
-  { name:"Water",      scope:"Water",               bg:"#3B82F6", tx:"#ffffff" }, // BLUE
-  { name:"Sewer",      scope:"Sewer",               bg:"#22C55E", tx:"#05331a" }, // GREEN
-  { name:"Structure",  scope:"Structural Concrete", bg:"#86EFAC", tx:"#05331c" }, // LT GREEN
-  { name:"Concrete",   scope:"Base",                bg:"#7030A0", tx:"#ffffff" }, // PURPLE
-  { name:"Earthwork",  scope:"Earth Work",          bg:"#7A4E2D", tx:"#f7e9dc" }, // BROWN
-  { name:"Site",       scope:"Site",                bg:"#C8CDD4", tx:"#1e2330" }, // SLATE
+  { name:"Drainage",   scope:"Drainage",            code:"DRN", bg:"#F97316", tx:"#2a1400" }, // ORANGE
+  { name:"Water",      scope:"Water",               code:"WTR", bg:"#2563EB", tx:"#ffffff" }, // BLUE (AA white)
+  { name:"Sewer",      scope:"Sewer",               code:"SWR", bg:"#22C55E", tx:"#05331a" }, // GREEN
+  { name:"Structure",  scope:"Structural Concrete", code:"STR", bg:"#86EFAC", tx:"#05331c" }, // LT GREEN
+  { name:"Concrete",   scope:"Base",                code:"BSE", bg:"#7030A0", tx:"#ffffff" }, // PURPLE
+  { name:"Earthwork",  scope:"Earth Work",          code:"ERT", bg:"#7A4E2D", tx:"#f7e9dc" }, // BROWN
+  { name:"Site",       scope:"Site",                code:"SIT", bg:"#C8CDD4", tx:"#1e2330" }, // SLATE
 ];
 /* The full SOP scope standard (slide 5) — used by the printable legend / 10-Foot
    Test reference. Includes scopes that aren't in this job's catalog but must stay
    consistent across all RNGD boards. `diamond` marks the angled milestone tag. */
 const SCOPE_LEGEND = [
-  { name:"Drainage",            color:"#F97316", label:"Orange" },
-  { name:"Base",                color:"#7030A0", label:"Purple" },
-  { name:"Water",               color:"#3B82F6", label:"Blue" },
-  { name:"Sewer",               color:"#22C55E", label:"Green" },
-  { name:"Subcontractors",      color:"#FACC15", label:"Yellow" },
-  { name:"Electrical",          color:"#EF4444", label:"Red" },
-  { name:"Survey",              color:"#EC4899", label:"Pink" },
-  { name:"Earth Work",          color:"#7A4E2D", label:"Brown" },
-  { name:"Structural Concrete", color:"#86EFAC", label:"Lt Green" },
-  { name:"Pile Driving",        color:"#7DD3FC", label:"Lt Blue" },
-  { name:"Milestones",          color:"#DCE442", label:"Diamond", diamond:true },
+  { name:"Drainage",            code:"DRN", color:"#F97316", label:"Orange" },
+  { name:"Base",                code:"BSE", color:"#7030A0", label:"Purple" },
+  { name:"Water",               code:"WTR", color:"#2563EB", label:"Blue" },
+  { name:"Sewer",               code:"SWR", color:"#22C55E", label:"Green" },
+  { name:"Subcontractors",      code:"SUB", color:"#FACC15", label:"Yellow" },
+  { name:"Electrical",          code:"ELE", color:"#EF4444", label:"Red" },
+  { name:"Survey",              code:"SUR", color:"#EC4899", label:"Pink" },
+  { name:"Earth Work",          code:"ERT", color:"#7A4E2D", label:"Brown" },
+  { name:"Structural Concrete", code:"STR", color:"#86EFAC", label:"Lt Green" },
+  { name:"Pile Driving",        code:"PIL", color:"#7DD3FC", label:"Lt Blue" },
+  { name:"Milestones",          code:"◆",   color:"#DCE442", label:"Diamond", diamond:true },
 ];
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
 /* Billed-to-date & forecast quantity per Spectrum phase code — Jul 2026 CTC by Cost Code export.
@@ -492,7 +492,7 @@ function LookAhead(){
       </div>
 
       <div className="legend no-print">
-        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/>{c.scope}</span>)}
+        {CATS.slice(0,6).map(c=><span key={c.name}><i style={{background:c.bg}}/><em className="lgcode">{c.code}</em>{c.scope}</span>)}
         <button className="legendbtn" onClick={()=>setModal({type:"legend"})} title="SOP color-coding standard — print for your next board (the 10-Foot Test)">Scope legend ↗</button>
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
@@ -833,7 +833,10 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,span}){
       style={{background:cat.bg,color:cat.tx}}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
       <div className="cardtop">
-        <span className="cmd">{multi ? "Day "+span.idx+"/"+span.total : (prev ? "↳ cont." : "")}</span>
+        <span className="ctleft">
+          <span className="cscope" title={cat.scope}>{cat.code}</span>
+          {(multi || prev) && <span className="cmd">{multi ? "Day "+span.idx+"/"+span.total : "↳ cont."}</span>}
+        </span>
         <span className={"cmh"+(bad?" cbad":"")}>{fmtN(mhShown,mhShown%1?1:0)} MH{bad?" ▲":""}</span>
       </div>
       <div className="ct">{c.it[CI.TASK].length>34 ? c.it[CI.TASK].slice(0,33)+"…" : c.it[CI.TASK]}{c.done && <span className="ck"> ✓</span>}</div>
@@ -1674,6 +1677,7 @@ function LegendModal({close}){
         {SCOPE_LEGEND.map(s=>
           <div key={s.name} className="legrow">
             <i className={"legsw"+(s.diamond?" dia":"")} style={{background:s.color}}/>
+            <span className="legcode">{s.code}</span>
             <span className="legname">{s.name}</span>
             <span className="legcol">{s.label}</span>
           </div>)}
@@ -2052,7 +2056,9 @@ const CSS = `
 .legrow{display:flex;align-items:center;gap:10px}
 .legsw{width:20px;height:20px;border-radius:4px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .legsw.dia{border-radius:3px;transform:rotate(45deg);width:15px;height:15px;margin:2px 3px}
+.legcode{font-family:"IBM Plex Mono",monospace;font-weight:700;font-size:10px;letter-spacing:.05em;padding:1px 5px;border-radius:3px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);flex:0 0 auto}
 .legname{font-weight:700;font-family:"Saira Condensed",sans-serif;letter-spacing:.03em}
+.legend .lgcode{font-family:"IBM Plex Mono",monospace;font-style:normal;font-weight:700;font-size:9px;letter-spacing:.04em;padding:0 3px;margin-right:4px;border-radius:2px;background:var(--pn2);border:1px solid var(--ln);color:var(--dm)}
 .legcol{margin-left:auto;color:var(--dm2);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 .tenfoot{border-top:1px solid var(--ln);padding-top:10px;margin-top:2px;color:var(--dm);font-size:11.5px;line-height:1.5}
 .boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0}
@@ -2183,6 +2189,10 @@ thead .rescol{z-index:12}
 .chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
 .card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono";-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .cardtop{display:flex;justify-content:space-between;align-items:center;gap:4px;min-height:13px}
+.ctleft{display:flex;align-items:center;gap:5px;min-width:0}
+/* Redundant scope cue — a code chip readable regardless of the fill hue or the
+   viewer's color vision (color-blind safe; the SOP relies on hue alone). */
+.cscope{font-family:"IBM Plex Mono",monospace;font-weight:700;font-size:9.5px;letter-spacing:.06em;padding:1px 4px;border-radius:3px;background:rgba(0,0,0,.55);color:#fff;flex:0 0 auto;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .cmd{font-family:"Saira Condensed";font-weight:700;font-size:10px;letter-spacing:.05em;text-transform:uppercase;opacity:.8}
 .cmh{font-family:"Saira Condensed";font-weight:700;font-size:11px;letter-spacing:.02em;padding:0 5px;border-radius:999px;background:rgba(0,0,0,.14)}
 .ct{font-family:"Saira Condensed";font-weight:600;font-size:13.5px;line-height:1.12;margin-top:1px}
