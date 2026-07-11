@@ -2116,7 +2116,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
    Only the filled-in values render as computer (mono) text; the corner numbers land
    where the pad convention writes them — day count top-left, total MH top-right. */
 function PCard({cd}){
-  const {t,mh,loads,code} = cd;
+  const {t,mh,loads} = cd;
   const merged = !!cd.merged;
   // One or more (item, qty, station) lines — stations stay separate on a merged card.
   const lines = merged ? cd.lines : [{it:cd.it, qty:t.qty, sta:t.sta}];
@@ -2127,7 +2127,7 @@ function PCard({cd}){
   return (
     <div className={"pcard"+(merged?" merged":"")}>
       <div className="pcorners">
-        <span className="pcv pday">{code?<span className="pscope">{code}</span>:null}{!merged && cd.run.total>1?` Day ${cd.run.idx}/${cd.run.total}`:""}</span>
+        <span className="pcv pday">{!merged && cd.run.total>1?`Day ${cd.run.idx}/${cd.run.total}`:""}</span>
         <span className="pcv pmh">{fmtN(mh,mh%1?1:0)} MH</span>
       </div>
       <div className="pwm"><img src="assets/rngd-black.png" alt="RNGD"/></div>
