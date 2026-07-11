@@ -116,6 +116,21 @@ function scopeFor(cc,resId,crews){
   return scopeKeyOf(cc);
 }
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+/* Unit taxonomy for station-to-station takeoff. A station range yields a length in feet;
+   area/volume/weight pay items need extra dimensions to turn that run length into their unit.
+   Width & depth are entered in feet; density in TON/CY (matches STONE_TON_PER_CY / TON_PER_CY). */
+const UNIT_KIND = { SY:"area", SF:"area", CY:"vol", CF:"vol", TON:"wt", TN:"wt" };
+const unitKind  = um => UNIT_KIND[String(um||"").toUpperCase()] || "lin";
+// Convert station length (feet) + dimensions to a quantity in the item's unit.
+// Returns null when a required dimension is missing so the UI can show "—" and block Add.
+function staGenQty(um, len, w, d, dens){
+  if(len==null) return null;
+  const k = unitKind(um), U = String(um||"").toUpperCase();
+  if(k==="area"){ if(!(w>0)) return null; return len*w/(U==="SY"?9:1); }          // ft² → SY (÷9) or SF
+  if(k==="vol"){  if(!(w>0&&d>0)) return null; return len*w*d/(U==="CY"?27:1); }   // ft³ → CY (÷27) or CF
+  if(k==="wt"){   if(!(w>0&&d>0&&dens>0)) return null; return len*w*d/27*dens; }    // ft³ → CY → TON
+  return len; // linear / everything else: unchanged
+}
 /* Per-task overrides (t.ov, sparse) — layered on the catalog row for ONE card only.
    ov keys → catalog columns below; plus cfg keys crewSize/laborRate handled in cfgFor.
    EST/REP are pay-item-level facts and deliberately not overridable. */
@@ -1429,6 +1444,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
   const [mode,setMode]=useState("qty");
   const [qty,setQty]=useState("");
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
+  const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
   const [daysOv,setDaysOv]=useState("");
 
   const results = useMemo(()=>{
@@ -1440,7 +1456,9 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
 
   const it = ci!=null ? CATALOG[ci] : null;
   const a=parseSTA(s0), b=parseSTA(s1);
-  const staQty = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ assume 1
+  const staLen = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ length 1
+  const kind = it ? unitKind(it[CI.UM]) : "lin";                 // area/vol/wt need extra dims; else raw length
+  const staQty = it ? staGenQty(it[CI.UM], staLen, +width, +depth, +dens) : null;
   const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
   const dayRate = it && it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : useQty||1;
   const nDays = daysOv? Math.max(1,+daysOv) : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
@@ -1487,11 +1505,23 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
         </div>
         {mode==="qty" ?
           <div className="logrow"><label>Quantity ({it[CI.UM]})<input type="number" autoFocus value={qty} onChange={e=>setQty(e.target.value)}/></label></div> :
+          <>
           <div className="logrow">
             <label>Start STA<input placeholder="115+15.66" value={s0} onChange={e=>setS0(e.target.value)}/></label>
             <label>End STA<input placeholder="118+40 (blank ⇒ qty 1)" value={s1} onChange={e=>setS1(e.target.value)}/></label>
-            <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>
+            {kind==="lin" && <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>}
+          </div>
+          {kind!=="lin" &&
+          <div className="logrow">
+            <label>Width (ft)<input type="number" placeholder="e.g. 12" value={width} onChange={e=>setWidth(e.target.value)}/></label>
+            {(kind==="vol"||kind==="wt") &&
+              <label>Depth (ft)<input type="number" placeholder="e.g. 0.5" value={depth} onChange={e=>setDepth(e.target.value)}/></label>}
+            {kind==="wt" &&
+              <label>Density (TON/CY)<input type="number" placeholder="e.g. 1.4" value={dens} onChange={e=>setDens(e.target.value)}/></label>}
+            <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b>
+              {staLen!=null && <em className="dim2"> from {fmtN(staLen,staLen%1?2:0)} ft</em>}</div>
           </div>}
+          </>}
 
         <div className="logrow">
           <label>Location<input list="loclist" placeholder="Pick or type a location…" value={loc} onChange={e=>setLoc(e.target.value)}/>
@@ -1517,10 +1547,11 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
         <div className="btnrow">
           <button className="cta" disabled={!useQty} onClick={()=>{
             const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?Math.min(a,b):null;
+            const staStep = cursor!=null ? Math.abs(b-a)/nDays : null;   // slice station range by feet/day, not by qty
             let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
             for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
               const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
-              const sta = cursor!=null? [cursor, cursor+dq] : null; if(cursor!=null) cursor+=dq;
+              const sta = cursor!=null? [cursor, cursor+staStep] : null; if(cursor!=null) cursor+=staStep;
               list.push({ id:tid(), res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
