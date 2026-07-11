@@ -160,8 +160,10 @@ const idx = {};
 CATALOG.forEach((r,i)=>{ idx[r[CI.CC]] = i; });
 /* Align each catalog item's display description & unit to the official CTC by
    Cost Code where the phase code exists in the export (units already reconcile).
-   Descriptions/units come from the embedded CTC; quantities stay live via state. */
-CATALOG.forEach(r=>{ const c=CTC_DATA[(r[CI.CC]||"").replace(/-/g,".")]; if(c){ if(c.d) r[CI.TASK]=c.d; if(c.u) r[CI.UM]=c.u; } });
+   The CTC export truncates descriptions at ~40 chars (it even collapses the seven
+   HPPP sizes into one identical string), so only adopt the CTC wording when it says
+   MORE than the QPC name — otherwise keep the full QPC description. */
+CATALOG.forEach(r=>{ const c=CTC_DATA[(r[CI.CC]||"").replace(/-/g,".")]; if(c){ if(c.d && c.d.length>(r[CI.TASK]||"").length) r[CI.TASK]=c.d; if(c.u) r[CI.UM]=c.u; } });
 const find = cc => idx[cc] ?? 0;
 
 /* ---------- seed ---------- */
@@ -1782,6 +1784,7 @@ function PCard({cd}){
         <div><label>Job #:</label><span>{JOB_NO}</span></div>
         <div className="pitem"><label>Item:</label><span>{it[CI.TASK]}</span></div>
         <div><label>Goal:</label><span>{fmtN(t.qty,t.qty%1?1:0)} {it[CI.UM]}</span></div>
+        {t.sta && <div className="psta"><span>STA {staFmt(t.sta[0])} – {staFmt(t.sta[1])}</span></div>}
         <i className="psp"/>
       </div>
       <div className="pfoot">
@@ -2730,6 +2733,7 @@ thead .rescol{z-index:12}
 .pbody>div.pitem span{padding-top:.03in}
 .pbody label{font-weight:700;font-size:12.5pt;letter-spacing:.01em;flex:none}
 .pbody span{font:500 10.5pt "IBM Plex Mono",monospace;flex:1;min-width:0;overflow-wrap:anywhere}
+.pbody>div.psta{padding-left:.55in;margin-top:-.05in}
 .psp{flex:.55}
 .pfoot{display:flex;padding-top:.05in}
 .pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
