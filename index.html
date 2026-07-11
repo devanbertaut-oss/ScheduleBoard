@@ -404,6 +404,8 @@ function LookAhead(){
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
   const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [installEvt, setInstallEvt] = useState(null); // PWA install prompt
+  const [logoHover, setLogoHover] = useState(false);   // brand lockup hover — retriggers the animation set
+  const anim=(name,dur,ease,fill)=> logoHover ? (name+" "+dur+" "+(ease||"ease")+(fill?" "+fill:"")) : "none";
   const [digest, setDigest] = useState(null); // once-a-day standup banner
   const [logoHover, setLogoHover] = useState(false); // brand lockup hover — retriggers the animation set
   const anim=(name,dur,ease,fill)=> logoHover ? (name+" "+dur+" "+(ease||"ease")+(fill?" "+fill:"")) : "none";
@@ -874,7 +876,7 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,crews,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
@@ -1220,22 +1222,9 @@ function SiteRow({row,notes,setNotes,setModal}){
   );
 }
 
-/* Input that keeps local state while typing and commits on blur / Enter — avoids
-   fighting the debounced global re-render while a field is being edited. */
-function BlurInput({value,onCommit,...props}){
-  const [v,setV]=useState(value??"");
-  useEffect(()=>{ setV(value??""); },[value]);
-  return <input {...props} value={v} onChange={e=>setV(e.target.value)}
-    onBlur={()=>{ if(String(v)!==String(value??"")) onCommit(v); }}
-    onKeyDown={e=>{ if(e.key==="Enter") e.currentTarget.blur(); }}/>;
-}
-
-/* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close}){
-  const [tab,setTab]=useState("log");
-  const [picking,setPicking]=useState(false);
-  const [q,setQ]=useState("");
-  const it = itemFor(t), ecfg = cfgFor(t,cfg), bit = CATALOG[t.ci];
+/* ============ TASK MODAL — tables, no loads field ============ */
+function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcst,crews,close}){
+  const it = CATALOG[t.ci];
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
   const [mh,setMh]=useState(lg.mh??"");
@@ -2862,6 +2851,8 @@ thead .rescol{z-index:12}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
 .snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.tagswitch{display:inline-flex;align-items:center;gap:8px}
+.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
 .viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
 .viewseg button{background:transparent;border:0;color:var(--dm);padding:5px 11px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
 .viewseg button:first-child{border-left:0}
