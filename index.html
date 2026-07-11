@@ -1484,11 +1484,16 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
   },[q]);
 
   const it = ci!=null ? CATALOG[ci] : null;
-  const a=parseSTA(s0), b=parseSTA(s1);
+  // End field is dual-purpose in station mode: a station (has "+") ends a run and the qty is
+  // computed from it; a plain number (no "+") is punched as the total qty, Start kept as a callout.
+  const endIsQty = s1.trim()!=="" && !s1.includes("+");
+  const a=parseSTA(s0), b = endIsQty ? null : parseSTA(s1);
+  const directQty = endIsQty ? (+s1||0) : null;
   const staLen = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ length 1
   const kind = it ? unitKind(it[CI.UM]) : "lin";                 // lin/area/vol/wt quantify; callout does not
   const genQty = it ? staGenQty(it[CI.UM], staLen, +width, +depth, +dens) : null; // LF/area/vol/wt
-  const staQty = kind==="callout"
+  const staQty = endIsQty ? directQty
+    : kind==="callout"
     ? ((a!=null || (qty!=="" && +qty>0)) ? (+qty||1) : null)     // manual count; station is a callout
     : genQty;
   const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
@@ -1540,10 +1545,10 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
           <>
           <div className="logrow">
             <label>{kind==="callout"?"Start STA (callout)":"Start STA"}<input placeholder="115+15.66" value={s0} onChange={e=>setS0(e.target.value)}/></label>
-            <label>End STA<input placeholder={kind==="callout"?"118+40 (optional)":"118+40 (blank ⇒ qty 1)"} value={s1} onChange={e=>setS1(e.target.value)}/></label>
-            {kind==="lin" && <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>}
+            <label>End STA or qty<input placeholder="118+40, or 250 = qty" value={s1} onChange={e=>setS1(e.target.value)}/></label>
+            {(kind==="lin"||endIsQty) && <div className="gen">{endIsQty?"Total qty":"Generated qty"}<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>}
           </div>
-          {(kind==="area"||kind==="vol"||kind==="wt") &&
+          {(kind==="area"||kind==="vol"||kind==="wt") && !endIsQty &&
           <div className="logrow">
             <label>Width (ft)<input type="number" placeholder="e.g. 12" value={width} onChange={e=>setWidth(e.target.value)}/></label>
             {(kind==="vol"||kind==="wt") &&
@@ -1553,11 +1558,12 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
             <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b>
               {staLen!=null && <em className="dim2"> from {fmtN(staLen,staLen%1?2:0)} ft</em>}</div>
           </div>}
-          {kind==="callout" &&
+          {kind==="callout" && !endIsQty &&
           <div className="logrow">
             <label>Quantity ({it[CI.UM]})<input type="number" placeholder="1" value={qty} onChange={e=>setQty(e.target.value)}/></label>
             <div className="gen">Station is a callout<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>
           </div>}
+          <div className="ovnote">End STA with a "+" computes the qty from the run; a plain number is the total qty, punched against the Start station.</div>
           </>}
 
         <div className="logrow">
@@ -1583,10 +1589,10 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
 
         <div className="btnrow">
           <button className="cta" disabled={!useQty} onClick={()=>{
-            const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?Math.min(a,b):null;
-            const isCallout = kind==="callout";
-            const staStep = (!isCallout && cursor!=null) ? Math.abs(b-a)/nDays : null;   // quantifying units: slice range by feet/day, not by qty
-            const calloutSta = (mode==="sta" && a!=null) ? [Math.min(a, b??a), Math.max(a, b??a)] : null; // callout: full location range, same on each day
+            const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?a:null;   // start at the entered Start station — preserves direction, incl. descending (110+00 → 103+00)
+            const isCallout = kind==="callout" || endIsQty;   // endIsQty: qty punched, Start is a location callout
+            const staStep = (!isCallout && cursor!=null) ? (b-a)/nDays : null;   // signed step: slice the run by feet/day in the entered direction
+            const calloutSta = (mode==="sta" && a!=null) ? [a, b??a] : null; // callout: location range kept in entered order, same on each day
             let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
             for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
               const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
