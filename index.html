@@ -1764,21 +1764,25 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
 }
 
 /* ============ CARD EXPORT — 4×4in notepad sheets for colored paper ============ */
-/* One physical card. Black ink only — the colored paper supplies the category color. */
+/* One physical card, matching the RNGD pad template exactly: the stencil wordmark
+   (assets/rngd-black.png), bold mixed-case labels, open writing space, no rules.
+   Only the filled-in values render as computer (mono) text; the corner numbers land
+   where the pad convention writes them — day count top-left, total MH top-right. */
 function PCard({cd}){
   const {t,it,run,mh,loads} = cd;
   return (
     <div className="pcard">
       <div className="pcorners">
-        <span className="pc pday">Multiple Day Operation Count{run.total>1 && <b>Day {run.idx}/{run.total}</b>}</span>
-        <span className="pc pmh">Total Manhours<b>{fmtN(mh,mh%1?1:0)} MH</b></span>
+        <span className="pcv pday">{run.total>1?`Day ${run.idx}/${run.total}`:""}</span>
+        <span className="pcv pmh">{fmtN(mh,mh%1?1:0)} MH</span>
       </div>
-      <div className="pwm">RNGD</div>
+      <div className="pwm"><img src="assets/rngd-black.png" alt="RNGD"/></div>
       <div className="pbody">
         <div><label>Location:</label><span>{t.loc||""}</span></div>
         <div><label>Job #:</label><span>{JOB_NO}</span></div>
-        <div><label>Item:</label><span>{it[CI.TASK]}</span></div>
+        <div className="pitem"><label>Item:</label><span>{it[CI.TASK]}</span></div>
         <div><label>Goal:</label><span>{fmtN(t.qty,t.qty%1?1:0)} {it[CI.UM]}</span></div>
+        <i className="psp"/>
       </div>
       <div className="pfoot">
         <div><label>Equipt.:</label><span>{t.equip||""}</span></div>
@@ -2713,20 +2717,24 @@ thead .rescol{z-index:12}
 .cut{position:absolute;background:#000;opacity:.7;pointer-events:none}
 .cut.v{width:.5pt;top:0;bottom:0}
 .cut.h{height:.5pt;left:0;right:0}
-.pcard{width:4in;height:4in;box-sizing:border-box;padding:.24in .3in .3in;color:#000;font-family:"IBM Plex Mono",monospace;display:flex;flex-direction:column;overflow:hidden}
-.pcorners{display:flex;justify-content:space-between;align-items:flex-start;min-height:.55in}
-.pc{font:700 7.5pt "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;line-height:1.2;max-width:1.55in}
-.pc b{display:block;font:700 12pt "IBM Plex Mono"}
-.pc.pday{transform:rotate(-5deg);transform-origin:left top}
-.pc.pmh{transform:rotate(5deg);transform-origin:right top;text-align:right}
-.pwm{font:800 26pt "Saira Condensed";letter-spacing:.1em;text-align:center;margin:0 0 .1in}
-.pbody{flex:1;font-size:10.5pt;line-height:1.5}
-.pbody>div{display:flex;gap:.08in;border-bottom:.5pt solid #000;padding:.05in 0 .03in;align-items:baseline}
-.pbody span{overflow-wrap:anywhere}
-.pbody label{flex:0 0 .95in;font:700 9pt "Saira Condensed";text-transform:uppercase;letter-spacing:.06em}
-.pfoot{display:flex;gap:.25in;padding-top:.08in}
-.pfoot>div{flex:1;display:flex;gap:.08in;border-bottom:.5pt solid #000;align-items:baseline;min-height:.28in}
-.pfoot label{font:700 9pt "Saira Condensed";text-transform:uppercase}
+.pcard{width:4in;height:4in;box-sizing:border-box;padding:.2in .3in .28in;color:#000;font-family:Arial,"Helvetica Neue",Helvetica,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+.pcorners{display:flex;justify-content:space-between;align-items:flex-start;min-height:.38in}
+.pcv{font:600 11pt "IBM Plex Mono",monospace}
+.pcv.pday{transform:rotate(-4deg);transform-origin:left top}
+.pcv.pmh{transform:rotate(4deg);transform-origin:right top}
+.pwm{text-align:center;margin:0 0 .22in}
+.pwm img{height:.5in;width:auto;vertical-align:top}
+.pbody{flex:1;display:flex;flex-direction:column;gap:.12in;min-height:0}
+.pbody>div{display:flex;gap:.12in;align-items:baseline}
+.pbody>div.pitem{flex:1;align-items:flex-start}
+.pbody>div.pitem span{padding-top:.03in}
+.pbody label{font-weight:700;font-size:12.5pt;letter-spacing:.01em;flex:none}
+.pbody span{font:500 10.5pt "IBM Plex Mono",monospace;flex:1;min-width:0;overflow-wrap:anywhere}
+.psp{flex:.55}
+.pfoot{display:flex;padding-top:.05in}
+.pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
+.pfoot label{font-weight:700;font-size:12.5pt}
+.pfoot span{font:500 10.5pt "IBM Plex Mono",monospace;overflow-wrap:anywhere}
 .swatchrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px}
 .swatch{border:2px solid transparent;border-radius:9px;padding:7px 12px;font:700 13px "Saira Condensed";cursor:pointer;letter-spacing:.04em}
 .swatch.on{border-color:var(--tx);box-shadow:0 0 0 2px var(--acc)}
