@@ -293,6 +293,14 @@ function dayRunFor(weekTasks,t){
   const idx=sib.findIndex(x=>x.id===t.id);
   return {idx:idx+1, total:sib.length};
 }
+/* A "run" = one multi-day operation: same crew + same catalog item + same location.
+   Runs have no stored id; this key identifies one and is stable across the date moves the
+   auto-scheduler makes (only day/wk change, never res/ci/loc). */
+const runKey = t => t.res+"|"+t.ci+"|"+(t.loc||"");
+/* Global Monday–Friday ordinal (WK0 = the Monday epoch, defined above): lets a run be shifted
+   by whole working days and roll across weeks/weekends cleanly. */
+const wdi = (wk,day) => Math.round((new Date(wk+"T12:00:00")-new Date(WK0+"T12:00:00"))/6048e5)*5 + Math.min(Math.max(day|0,0),4);
+const fromWdi = n => ({ wk: addDays(WK0, Math.floor(n/5)*7), day: ((n%5)+5)%5 });
 const fmt$ = (n,d=0) => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmtN = (n,d=0) => Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct  = n => Math.round(n*100)+"%";
@@ -396,6 +404,7 @@ function LookAhead(){
   const [baseline, setBaseline] = useState(null);        // {takenAt, byTask:{id:{qty,day,wk}}}
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
+  const [deps, setDeps] = useState({});                  // predecessors: { dependentRunKey: [predRunKey,...] } — dependent auto-starts after latest pred finishes
   const [boardView, setBoardView] = useState("Ops");     // board cards: Ops (default) | Field | HQ (sticky note)
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
@@ -446,6 +455,7 @@ function LookAhead(){
     if (s.ctc) setCtc(s.ctc);
     if (s.baseline) setBaseline(s.baseline);
     if (s.milestones) setMilestones(s.milestones);
+    if (s.deps) setDeps(s.deps);
     if (s.truckDay) setTruckDay(s.truckDay);
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
@@ -471,8 +481,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -484,8 +494,51 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
+  /* Auto-reschedule: each dependent run starts the working day after its LATEST predecessor
+     finishes; moving or lengthening a predecessor pushes/pulls the dependent (and cascades down
+     the chain). Runs are processed predecessors-first; cycles are detected and left in place; the
+     pass is idempotent (integer working-day math) so it settles in one extra render. */
+  useEffect(()=>{
+    if(!loaded) return;
+    const depKeys = Object.keys(deps).filter(k=>(deps[k]||[]).length);
+    if(!depKeys.length) return;
+    const byKey={}; tasks.forEach(t=>{ (byKey[runKey(t)]||(byKey[runKey(t)]=[])).push(t); });
+    const present = k => !!(byKey[k] && byKey[k].length);
+    const order=[], stt={}, stack=[], cyclic=new Set();
+    const visit = k => {
+      if(stt[k]===2) return;
+      if(stt[k]===1){ const i=stack.indexOf(k); if(i>=0) for(let j=i;j<stack.length;j++) cyclic.add(stack[j]); return; }
+      stt[k]=1; stack.push(k);
+      (deps[k]||[]).forEach(p=>{ if(deps[p]&&deps[p].length) visit(p); });
+      stack.pop(); stt[k]=2; order.push(k);
+    };
+    depKeys.forEach(visit);
+    const finishOf = k => Math.max(...byKey[k].map(t=>wdi(t.wk,t.day)));
+    const startOf  = k => Math.min(...byKey[k].map(t=>wdi(t.wk,t.day)));
+    const curFinish={}, shift={};
+    order.forEach(k=>{
+      if(!present(k) || cyclic.has(k)) return;
+      const preds=(deps[k]||[]).filter(present);
+      if(!preds.length) return;
+      const target = Math.max(...preds.map(p=> (curFinish[p]!=null?curFinish[p]:finishOf(p)) + 1));
+      const delta = target - startOf(k);
+      if(delta!==0) byKey[k].forEach(t=>{ shift[t.id]=delta; });
+      curFinish[k]=finishOf(k)+delta;
+    });
+    if(!Object.keys(shift).length) return;
+    setTasks(ts=>ts.map(t=>{ const d=shift[t.id]; if(d==null) return t; const w=fromWdi(wdi(t.wk,t.day)+d); return {...t, day:w.day, wk:w.wk}; }));
+  },[tasks,deps,loaded]);
+  // Board dependency badge lookup: dependent runKey -> {active, broken, predecessor label}.
+  const depMap = useMemo(()=>{
+    const has=k=>tasks.some(x=>runKey(x)===k), m={};
+    Object.keys(deps).forEach(k=>{ const preds=deps[k]||[]; if(!preds.length||!has(k)) return;
+      const present=preds.filter(has);
+      const label=present.map(pk=>{ const pt=tasks.find(x=>runKey(x)===pk); return pt?itemFor(pt)[CI.TASK]:""; }).filter(Boolean).join(", ");
+      m[k]={active:present.length>0, broken:present.length<preds.length, label}; });
+    return m;
+  },[tasks,deps]);
 
   /* ---- Netlify Blobs sync engine: push after local saves; pull on boot, focus,
      and a 60s visible-tab poll. Whole-state last-write-wins. Missing endpoint
@@ -685,6 +738,15 @@ function LookAhead(){
     if(multi) setSel(new Set());
   };
   const rmTask = id => { setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
+  const rmRun = t => {                                    // delete an entire multi-day run (same crew + item + location, across weeks)
+    const k=runKey(t); const ids=new Set(tasks.filter(x=>runKey(x)===k).map(x=>x.id));
+    setTasks(ts=>ts.filter(x=>!ids.has(x.id)));
+    setLogs(l=>{const c={...l}; ids.forEach(id=>delete c[id]); return c;});
+    setDeps(d=>{ const c={...d}; delete c[k]; Object.keys(c).forEach(dk=>{ const f=c[dk].filter(p=>p!==k); if(f.length) c[dk]=f; else delete c[dk]; }); return c; });
+    setModal(null);
+  };
+  const addDep = (depKey,predKey)=> setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; });
+  const rmDep  = (depKey,predKey)=> setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; });
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
@@ -832,7 +894,7 @@ function LookAhead(){
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
       </div>
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -850,11 +912,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -874,7 +936,7 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
@@ -929,7 +991,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -950,7 +1012,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -1049,7 +1111,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -1064,7 +1126,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <button className={"mqlog"+(taskCalc(t).done?" done":"")} onClick={()=>setModal({type:"qlog",id:t.id})}>{taskCalc(t).done?"✓ Logged — edit":"Log actuals"}</button>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
@@ -1152,8 +1214,9 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep}){
   const it=c.it, view=boardView||"Ops";
+  const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
   const skey = (t.ov && t.ov.scope) ? t.ov.scope : (resKind==="sub" ? "sub" : scopeKeyOf(it[CI.CC]));
   const scope = SCOPES[skey] || SCOPES.gen;
   const cat = cardVisual(scope, cardStyle);
@@ -1168,8 +1231,8 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const multi = run && run.total>1;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
-    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")} draggable={!!canDrag}
-      onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
+    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")} draggable={!!canDrag && !linked}
+      onDragStart={(canDrag && !linked)?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
       style={cat.css}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
@@ -1190,6 +1253,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
       </> : <>
         <div className="cardtop">
           <span className="ctleft">{chip}<span className="ct" style={{color:cat.titleColor}}>{name}</span></span>
+          {linked && <span className={"cdep"+(dep.broken?" bad":"")} title={dep.broken?"A predecessor run is missing":("Auto-starts after: "+dep.label)}>↝</span>}
           {c.done && <span className="ck">✓</span>}
         </div>
         {view==="Ops" ? <>
@@ -1200,6 +1264,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
           <div className="cnums"><b className={bad?"cbad":""}>{qtyStr}</b><span className={bad?"cbad":""}>{mhStr}{bad?" ▲":""}</span></div>
         </>}
         {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
+        {linked && !dep.broken && <div className="csub2" style={{opacity:.8}}>after: {dep.label}</div>}
       </>}
     </button>
   );
@@ -1231,11 +1296,25 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close}){
   const [tab,setTab]=useState("log");
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
+  const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
   const it = itemFor(t), ecfg = cfgFor(t,cfg), bit = CATALOG[t.ci];
+  // Run (multi-day operation) this card belongs to, and its predecessors.
+  const myKey = runKey(t);
+  const runN = tasks.filter(x=>runKey(x)===myKey).length;
+  const myPreds = deps[myKey]||[];
+  const crewName = id => (crews.find(c=>c.id===id)||{}).name || id;
+  const reachesKey = (from,to,seen)=>{ if(from===to) return true; if(seen.has(from)) return false; seen.add(from); return (deps[from]||[]).some(p=>reachesKey(p,to,seen)); };
+  const runInfo = key => { const rep=tasks.find(x=>runKey(x)===key); if(!rep) return null;
+    const rit=itemFor(rep), mem=tasks.filter(x=>runKey(x)===key).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day)), s0=mem[0];
+    return { key, item:rit[CI.TASK], crew:crewName(rep.res), loc:rep.loc||"", cc:rit[CI.CC], bg:SCOPES[scopeKeyOf(rit[CI.CC])].bg, days:mem.length, start:DAYS[s0.day]+" "+dLabel(s0.wk,s0.day) }; };
+  const candidateRuns = useMemo(()=>{
+    const keys=[...new Set(tasks.map(runKey))].filter(k=> k!==myKey && !myPreds.includes(k) && !reachesKey(k,myKey,new Set()));
+    return keys.map(runInfo).filter(Boolean).map(r=>({...r, search:(r.item+" "+r.crew+" "+r.loc+" "+r.cc).toLowerCase()}));
+  },[tasks,deps,myKey]);
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
   const [mh,setMh]=useState(lg.mh??"");
@@ -1308,6 +1387,7 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,
         <button className="cta" onClick={()=>{saveLog(t.id,qty,mh,true); close();}}>Save</button>
         <button className="ghost" onClick={()=>{saveLog(t.id,qty,mh,false); close();}}>Save as in-progress</button>
         <span className="sp"/>
+        {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
         <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
       </div>
       </> : <>
@@ -1369,6 +1449,29 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,
       </div>
       {t.wk!==wk && <div className="ovnote">This card is now on the week of {t.wk} — it will leave the current board view.</div>}
 
+      <div className="loghdr">Predecessors — this run waits on</div>
+      <div className="ovnote">Auto-starts the working day after its latest predecessor finishes. Move or lengthen a predecessor and this run follows.</div>
+      <div className="chiprow">
+        {myPreds.length===0 && <span className="ovnote" style={{margin:0}}>None — this run keeps its own dates.</span>}
+        {myPreds.map(pk=>{ const info=runInfo(pk); return (
+          <span key={pk} className={"predchip"+(info?"":" bad")}>{info? info.item+" · "+info.crew : "(missing run)"}<button onClick={()=>rmDep(myKey,pk)} title="Remove predecessor">✕</button></span>); })}
+      </div>
+      {!predAdd ?
+        <div className="btnrow" style={{marginTop:6}}><button className="ghost sm" onClick={()=>setPredAdd(true)}>+ Add predecessor</button></div> :
+        <>
+          <input autoFocus className="search" placeholder="Search a run to wait on — crew, item, or location…" value={predQ} onChange={e=>setPredQ(e.target.value)}/>
+          <div className="results">
+            {candidateRuns.filter(r=>!predQ.trim()||r.search.includes(predQ.trim().toLowerCase())).slice(0,20).map(r=>
+              <button key={r.key} onClick={()=>{ addDep(myKey,r.key); setPredAdd(false); setPredQ(""); }}>
+                <i style={{background:r.bg}}/>
+                <span>{r.item}</span>
+                <em>{r.crew} · {r.loc||"—"} · {r.start} · {r.days}d</em>
+              </button>)}
+            {candidateRuns.length===0 && <div className="empty">No other runs on the board to wait on.</div>}
+          </div>
+          <div className="btnrow"><button className="ghost sm" onClick={()=>{setPredAdd(false); setPredQ("");}}>Cancel</button></div>
+        </>}
+
       <div className="loghdr">Overrides — this card only</div>
       <div className="ovnote">Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
       <div className="logrow">
@@ -1405,6 +1508,7 @@ function TaskModal({t,logs,saveLog,rmTask,upTask,cfg,installedFor,fcstFor,crews,
         <button className="cta" onClick={close}>Done</button>
         {hasOv && <button className="ghost" onClick={()=>upTask(t.id,{ov:null})}>Reset all overrides</button>}
         <span className="sp"/>
+        {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
         <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
       </div>
       </>}
@@ -2978,6 +3082,12 @@ thead .rescol{z-index:12}
 .modal .x{position:absolute;top:10px;right:12px;background:none;border:0;color:var(--dm);font-size:15px;cursor:pointer}
 .chiprow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .pill{border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
+.predchip{display:inline-flex;align-items:center;gap:6px;background:var(--pn2);border:1px solid var(--ln);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;font-weight:700;color:var(--tx)}
+.predchip.bad{border-color:var(--bad);color:var(--bad)}
+.predchip button{background:none;border:none;color:var(--dm);cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:999px}
+.predchip button:hover{color:var(--bad)}
+.cdep{font:800 10px "Saira Condensed";letter-spacing:.03em;color:var(--dm);border:1px solid var(--ln);border-radius:4px;padding:0 4px;margin-left:4px}
+.cdep.bad{color:var(--bad);border-color:var(--bad)}
 .pill.dim{background:var(--pn2);color:var(--dm);border:1px solid var(--ln)}
 .pill.pgood{background:var(--pillGoodBg);color:var(--good)}.pill.pbad{background:var(--pillBadBg);color:var(--bad)}
 .dt{width:100%;border-collapse:collapse;margin:10px 0;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;overflow:hidden}
