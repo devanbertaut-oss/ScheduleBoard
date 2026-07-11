@@ -4,7 +4,7 @@
    - Cross-origin runtime deps (unpkg React/ReactDOM/Babel, Google Fonts) are
      cached stale-while-revalidate on first successful online load, so the app
      fully boots offline afterwards. */
-const VERSION = "rngd-v4";
+const VERSION = "rngd-v5";
 const SHELL = VERSION + "-shell";
 const RUNTIME = VERSION + "-runtime";
 const SHELL_ASSETS = [
@@ -37,6 +37,8 @@ self.addEventListener("fetch", e => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+  // Sync endpoint: never cache, and never let the index.html fallback answer it.
+  if (url.pathname.startsWith("/api/")) return;
   const sameOrigin = url.origin === self.location.origin;
 
   // App shell / navigations: cache-first, fall back to network, then cached index.

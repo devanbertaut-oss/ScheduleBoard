@@ -49,6 +49,15 @@ const store = {
   async get(k){ if(!_LS) return null; const v = localStorage.getItem(k); return v==null? null : { value:v }; },
   async set(k,v){ if(_LS) localStorage.setItem(k, v); return { value:v }; }
 };
+/* ---- Netlify Blobs sync (shared board) — endpoint + tiny persisted sync metadata ---- */
+const SYNC_URL = "/api/state";
+const syncLS = {
+  meta(){ try{ return JSON.parse(localStorage.getItem("lafable-sync")||"{}"); }catch(e){ return {}; } },
+  setMeta(p){ try{ localStorage.setItem("lafable-sync", JSON.stringify({...syncLS.meta(),...p})); }catch(e){} },
+  key(){ try{ return localStorage.getItem("lafable-boardkey")||""; }catch(e){ return ""; } },
+  setKey(k){ try{ localStorage.setItem("lafable-boardkey", k); }catch(e){} },
+  device(){ try{ let d=localStorage.getItem("lafable-device"); if(!d){ d=Math.random().toString(36).slice(2,10); localStorage.setItem("lafable-device", d); } return d; }catch(e){ return "mem"; } }
+};
 
 /* ============================================================
    DPW547 LOOK-AHEAD — Fable build v3
@@ -333,6 +342,13 @@ function LookAhead(){
   const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [installEvt, setInstallEvt] = useState(null); // PWA install prompt
   const [digest, setDigest] = useState(null); // once-a-day standup banner
+  const [sync, setSync] = useState({status:"boot", at:null, detail:""}); // blobs sync pill state
+  const [syncPop, setSyncPop] = useState(false); // sync pill popover
+  const syncRef = useRef({rev:null, lastSyncedJson:null, latestJson:null, inflight:false, dirty:false,
+                          fail:0, pollMs:60000, nextPollAt:0, pendingRemote:null, keyPrompted:false, appliedRemote:false,
+                          bootPulled:false}); // no pushes until the boot pull resolves — else fresh seeds could overwrite the shared board
+  const hadLocalRef = useRef(false); // did localStorage have data at boot (vs fresh seeds)
+  const busyRef = useRef(false);     // modal open / row-add input showing — defer remote applies
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
     try{ return localStorage.getItem("lafable-theme") || "system"; }catch(e){ return "system"; }
   });
@@ -352,28 +368,32 @@ function LookAhead(){
     if(theme==="system" && mq){ mq.addEventListener?.("change", apply); return ()=>mq.removeEventListener?.("change", apply); }
   },[theme]);
 
-  /* persistence */
+  /* persistence — applyState is shared by boot hydration and remote sync pulls.
+     skipView keeps per-device view prefs (week on screen, card style, equipment
+     toggles) from being yanked by another device's poll. */
+  const applyState = (s, opts) => {
+    if (s.crews) setCrews(s.crews); if (s.siteRows) setSiteRows(s.siteRows);
+    if (s.tasks) setTasks(s.tasks); if (s.logs) setLogs(s.logs);
+    if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
+    if (s.eosMeta) setEosMeta(s.eosMeta);
+    if (s.umOverrides) setUmOverrides(s.umOverrides);
+    if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
+    if (s.ctc) setCtc(s.ctc);
+    if (s.baseline) setBaseline(s.baseline);
+    if (s.milestones) setMilestones(s.milestones);
+    if (s.truckDay) setTruckDay(s.truckDay);
+    if (s.savings) setSavings(s.savings);
+    if (opts && opts.skipView) return;
+    if (s.wk) setWk(s.wk);
+    if (s.boardView) setBoardView(s.boardView);
+    if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
+    if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
+    if (typeof s.showRental==="boolean") setShowRental(s.showRental);
+  };
   useEffect(()=>{ (async()=>{
     try{
       const r = await store.get("lafable-v3");
-      if (r && r.value){
-        const s = JSON.parse(r.value);
-        if (s.crews) setCrews(s.crews); if (s.siteRows) setSiteRows(s.siteRows);
-        if (s.tasks) setTasks(s.tasks); if (s.logs) setLogs(s.logs);
-        if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
-        if (s.eosMeta) setEosMeta(s.eosMeta); if (s.wk) setWk(s.wk);
-        if (s.umOverrides) setUmOverrides(s.umOverrides);
-        if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
-        if (s.ctc) setCtc(s.ctc);
-        if (s.baseline) setBaseline(s.baseline);
-        if (s.milestones) setMilestones(s.milestones);
-        if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
-        if (s.boardView) setBoardView(s.boardView);
-        if (s.truckDay) setTruckDay(s.truckDay);
-        if (s.savings) setSavings(s.savings);
-        if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
-        if (typeof s.showRental==="boolean") setShowRental(s.showRental);
-      }
+      if (r && r.value){ hadLocalRef.current = true; applyState(JSON.parse(r.value)); }
     }catch(e){ /* first run — seeds stand */ }
     setLoaded(true);
   })(); },[]);
@@ -382,9 +402,121 @@ function LookAhead(){
     if(!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async()=>{
-      try{ await store.set("lafable-v3", JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings})); }catch(e){}
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings});
+      try{ await store.set("lafable-v3", json); }catch(e){}
+      const S = syncRef.current;
+      S.latestJson = json;
+      syncLS.setMeta({localSavedAt: Date.now()});
+      if (S.appliedRemote){ S.appliedRemote = false; S.lastSyncedJson = json; } // this run only re-serialized a pull — no echo push
+      else if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
     }, 600);
   },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,reflowOn,boardView,truckDay,savings,loaded]);
+  useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
+
+  /* ---- Netlify Blobs sync engine: push after local saves; pull on boot, focus,
+     and a 60s visible-tab poll. Whole-state last-write-wins. Missing endpoint
+     (file://, non-Netlify hosting) or no network degrades to local-only with
+     backoff — the board itself always keeps working off localStorage. ---- */
+  const setSyncStatus = (status, detail) => setSync({status, at: Date.now(), detail: detail||""});
+  const syncHdrs = (hasBody) => { const h = hasBody? {"content-type":"application/json"} : {}; const k = syncLS.key(); if(k) h["x-board-key"]=k; return h; };
+  const isBusy = () => busyRef.current || /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||"");
+  const needKey = () => { const S=syncRef.current; setSyncStatus("key","This board requires a sync key"); if(!S.keyPrompted){ S.keyPrompted=true; setModal({type:"boardkey"}); } };
+  const applyRemote = (env) => {
+    const S = syncRef.current;
+    if (isBusy()){ // don't clobber a form mid-edit — hold the pull until idle
+      S.pendingRemote = env;
+      setTimeout(()=>{ const p=syncRef.current.pendingRemote; if(p && !isBusy()){ syncRef.current.pendingRemote=null; applyRemote(p); } }, 5000);
+      return;
+    }
+    S.pendingRemote = null;
+    try{ if(_LS && !localStorage.getItem("lafable-v3-preSync") && localStorage.getItem("lafable-v3"))
+      localStorage.setItem("lafable-v3-preSync", localStorage.getItem("lafable-v3")); }catch(e){} // one-time backup before the first remote apply
+    S.appliedRemote = true; S.rev = env.rev;
+    applyState(env.state, {skipView:true});
+    syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt});
+    setSyncStatus("synced");
+  };
+  const pushNow = async () => {
+    const S = syncRef.current;
+    if (S.inflight){ S.dirty = true; return; }
+    if (!S.latestJson) return;
+    S.inflight = true; S.dirty = false;
+    setSyncStatus("syncing");
+    try{
+      const body = '{"savedAt":'+Date.now()+',"device":"'+syncLS.device()+'","state":'+S.latestJson+'}';
+      const res = await fetch(SYNC_URL, {method:"PUT", headers: syncHdrs(true), body});
+      S.inflight = false;
+      if (!res.headers.get("x-board")){ setSyncStatus("local","No sync endpoint on this hosting — changes stay on this device"); return; }
+      if (res.status===200){
+        const jr = await res.json();
+        S.rev = jr.rev; S.lastSyncedJson = S.latestJson; S.fail = 0;
+        syncLS.setMeta({syncedRev: jr.rev, syncedSavedAt: jr.savedAt});
+        setSyncStatus("synced");
+        if (S.dirty) pushNow();
+      }
+      else if (res.status===401) needKey();
+      else if (res.status===409){ const env = await res.json(); S.lastSyncedJson = S.latestJson; applyRemote(env); }
+      else throw new Error("HTTP "+res.status);
+    }catch(err){
+      S.inflight = false; S.fail++;
+      setSyncStatus("offline","Will retry — changes are saved on this device");
+      const wait = [2000,5000,15000][Math.min(S.fail-1,2)] || 60000;
+      setTimeout(()=>{ const s=syncRef.current; if(s.latestJson !== s.lastSyncedJson) pushNow(); }, wait);
+    }
+  };
+  const pullNow = async (force) => {
+    const S = syncRef.current;
+    try{
+      const h = syncHdrs(false);
+      if (S.rev && !force) h["if-none-match"] = '"'+S.rev+'"';
+      const res = await fetch(SYNC_URL, {method:"GET", headers:h, cache:"no-store"});
+      if (!res.headers.get("x-board")){ // Netlify 404 page / anything that isn't our function
+        S.pollMs = Math.min((S.pollMs||60000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
+        setSyncStatus("local","No sync endpoint on this hosting — changes stay on this device"); return;
+      }
+      S.pollMs = 60000; S.nextPollAt = 0;
+      if (res.status===401){ needKey(); return; }
+      if (res.status===304){ setSyncStatus("synced"); return; }
+      if (res.status===204){ // endpoint alive, board empty — seed it with this device's data
+        const push = ()=>{ if(syncRef.current.latestJson) pushNow(); };
+        if (S.latestJson) push(); else setTimeout(push, 1500); // boot pull can beat the first debounced save
+        return;
+      }
+      if (res.status===200){
+        const env = await res.json();
+        if (env.rev === S.rev){ setSyncStatus("synced"); return; }
+        const meta = syncLS.meta();
+        // First-contact matrix: fresh install or undatable local → take remote;
+        // both dated → newer savedAt wins (older side gets overwritten).
+        if (!hadLocalRef.current || !meta.localSavedAt || env.savedAt >= meta.localSavedAt) applyRemote(env);
+        else { S.rev = env.rev; pushNow(); }
+      }
+    }catch(err){
+      S.pollMs = Math.min((S.pollMs||60000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
+      setSyncStatus("offline","Will retry — changes are saved on this device");
+    }finally{ S.bootPulled = true; }
+  };
+  useEffect(()=>{ if(loaded) pullNow(true); },[loaded]); // boot pull (after local hydration)
+  useEffect(()=>{ // poll while visible + lifecycle pulls/flushes (all closures are ref-based — safe on mount)
+    const tick = () => { const S=syncRef.current;
+      if (document.visibilityState!=="visible") return;
+      if (S.nextPollAt && Date.now() < S.nextPollAt) return;
+      pullNow(); };
+    const iv = setInterval(tick, 60000);
+    const flushPush = () => { const S=syncRef.current; if(S.latestJson && S.latestJson!==S.lastSyncedJson && !S.inflight) pushNow(); };
+    const onFocus = () => { syncRef.current.nextPollAt = 0; pullNow(); };
+    const onVis = () => { if(document.visibilityState==="visible") onFocus(); else flushPush(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flushPush);
+    return ()=>{ clearInterval(iv); window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", flushPush); };
+  },[]);
+  useEffect(()=>{ const S=syncRef.current; // apply a deferred pull once the modal closes
+    if(modal===null && S.pendingRemote && !isBusy()){ const e=S.pendingRemote; S.pendingRemote=null; applyRemote(e); } },[modal]);
+  const SYNC_LABEL = {synced:"Synced to cloud", syncing:"Syncing…", boot:"Starting…",
+    offline:"Offline — changes saved locally, retrying", local:"Local only — no sync endpoint on this hosting",
+    key:"Board key required", error:"Sync error"};
 
   /* command palette hotkey */
   useEffect(()=>{ const on=e=>{ if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p);} else if(e.key==="Escape") setPalette(false); }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[]);
@@ -527,6 +659,21 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"data"})}>Data</button>
           <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
+          <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
+            onClick={()=>setSyncPop(v=>!v)}
+            title={SYNC_LABEL[sync.status]+(sync.at? " · "+new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"")}>
+            {sync.status==="synced"?"✓ Sync":(sync.status==="syncing"||sync.status==="boot")?"… Sync":sync.status==="offline"?"⌁ Offline":sync.status==="local"?"Local":sync.status==="key"?"Key…":"! Sync"}
+          </button>
+          {syncPop && <div className="syncpop" onMouseLeave={()=>setSyncPop(false)}>
+            <div className="sphead">{SYNC_LABEL[sync.status]}</div>
+            <div className="spline">Last contact: {sync.at? new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) : "—"}</div>
+            <div className="spline">Device {syncLS.device()}</div>
+            {sync.detail && <div className="spline">{sync.detail}</div>}
+            <div className="btnrow" style={{marginTop:8}}>
+              <button className="ghost sm" onClick={()=>{ syncRef.current.nextPollAt=0; pullNow(true); const S=syncRef.current; if(S.latestJson && S.latestJson!==S.lastSyncedJson) pushNow(); }}>Sync now</button>
+              <button className="ghost sm" onClick={()=>{ setSyncPop(false); setModal({type:"boardkey"}); }}>Board key</button>
+            </div>
+          </div>}
           <button className="themebtn" title={"Theme: "+theme+" — click to change"}
             onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
             {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
@@ -617,6 +764,8 @@ function LookAhead(){
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
+      {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
+          onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
       {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
@@ -2241,6 +2390,23 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     </div>
   );
 }
+/* Board key prompt — shown when the sync endpoint answers 401 (BOARD_KEY set on the site). */
+function BoardKeyModal({close,onSet}){
+  const [v,setV]=useState(syncLS.key());
+  const go=()=>{ onSet(v.trim()); close(); };
+  return (
+    <Modal close={close} w={400}>
+      <h3>Board sync key</h3>
+      <p className="dim2" style={{fontSize:13,margin:"0 0 10px"}}>This board requires a key to sync (the BOARD_KEY set on the Netlify site). Enter it once — it's remembered on this device.</p>
+      <input className="search" type="password" autoFocus placeholder="Board key" value={v}
+        onChange={e=>setV(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") go(); }}/>
+      <div className="btnrow">
+        <button className="cta" onClick={go}>Save &amp; sync</button>
+        <button className="ghost" onClick={close}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
 function Modal({children,close,w=520}){
   return (
     <div className="ovl" onMouseDown={e=>{if(e.target===e.currentTarget) close();}}>
@@ -2518,6 +2684,10 @@ thead .rescol{z-index:12}
 .logrow input.ovon,.logrow select.ovon{border-color:var(--lime)}
 .ovnote{font-size:11.5px;color:var(--dm2);margin:2px 0 8px}
 .pill.ovpill{background:var(--lime);color:#22240a}
+.syncpill{cursor:pointer;align-self:center;border:1px solid var(--ln);background:var(--pn2);font-family:"Saira Condensed"}
+.syncpop{position:fixed;top:56px;right:16px;z-index:80;background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;min-width:215px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.syncpop .sphead{font-family:"Saira Condensed";font-weight:700;font-size:14px;margin-bottom:4px}
+.syncpop .spline{font-size:12px;color:var(--dm);margin:2px 0;font-family:"IBM Plex Mono"}
 .gen{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;font-weight:600;justify-content:flex-end}
 .gen b{font:600 16px "IBM Plex Mono";color:var(--good);text-transform:none}
 .dim2{color:var(--dm2);font-style:normal}
@@ -2677,6 +2847,7 @@ thead .rescol{z-index:12}
  .weeknav button,.actions button,.btn{min-height:40px}
  .actions{order:4;width:100%;flex-wrap:wrap}
  .actions button{flex:1 1 auto}
+ .actions .syncpill{flex:0 0 auto}
  .kpis{flex-wrap:nowrap;overflow-x:auto;scroll-snap-type:x mandatory;padding:10px 12px 6px;-webkit-overflow-scrolling:touch}
  .kpi{flex:0 0 auto;scroll-snap-align:start}
  .legend{padding:8px 12px;gap:10px}
