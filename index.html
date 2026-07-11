@@ -116,6 +116,26 @@ function scopeFor(cc,resId,crews){
   return scopeKeyOf(cc);
 }
 const unitCost = it => it[CI.UL]+it[CI.UE]+it[CI.UM$]+it[CI.US]+it[CI.UT]+it[CI.UX];
+/* Unit taxonomy for station-to-station takeoff. A station range yields a length in feet.
+   - LF quantifies directly (run length = qty).
+   - area/volume/weight pay items need extra dimensions to turn that run length into their unit.
+   - everything else (EACH counts, VF vertical feet, LS, ...) is a "callout": the station is a
+     location reference only and does NOT quantify the pay item — qty is entered manually.
+   Width & depth are entered in feet; density in TON/CY (matches STONE_TON_PER_CY / TON_PER_CY). */
+const UNIT_KIND = { LF:"lin", SY:"area", SF:"area", CY:"vol", CF:"vol", TON:"wt", TN:"wt" };
+const unitKind  = um => UNIT_KIND[String(um||"").toUpperCase()] || "callout";
+// Convert station length (feet) + dimensions to a quantity in the item's unit.
+// Returns null when a required dimension is missing (so the UI shows "—" and blocks Add) or when
+// the unit is a callout (station never sets the quantity for EACH/VF/LS/etc.).
+function staGenQty(um, len, w, d, dens){
+  if(len==null) return null;
+  const k = unitKind(um), U = String(um||"").toUpperCase();
+  if(k==="lin") return len;                                                       // LF: run length = qty
+  if(k==="area"){ if(!(w>0)) return null; return len*w/(U==="SY"?9:1); }          // ft² → SY (÷9) or SF
+  if(k==="vol"){  if(!(w>0&&d>0)) return null; return len*w*d/(U==="CY"?27:1); }   // ft³ → CY (÷27) or CF
+  if(k==="wt"){   if(!(w>0&&d>0&&dens>0)) return null; return len*w*d/27*dens; }    // ft³ → CY → TON
+  return null; // callout units: station is a location callout, not a quantity
+}
 /* Per-task overrides (t.ov, sparse) — layered on the catalog row for ONE card only.
    ov keys → catalog columns below; plus cfg keys crewSize/laborRate handled in cfgFor.
    EST/REP are pay-item-level facts and deliberately not overridable. */
@@ -1429,6 +1449,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
   const [mode,setMode]=useState("qty");
   const [qty,setQty]=useState("");
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
+  const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
   const [daysOv,setDaysOv]=useState("");
 
   const results = useMemo(()=>{
@@ -1440,7 +1461,12 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
 
   const it = ci!=null ? CATALOG[ci] : null;
   const a=parseSTA(s0), b=parseSTA(s1);
-  const staQty = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ assume 1
+  const staLen = a!=null ? (b!=null ? Math.abs(b-a) : 1) : null; // one station given ⇒ length 1
+  const kind = it ? unitKind(it[CI.UM]) : "lin";                 // lin/area/vol/wt quantify; callout does not
+  const genQty = it ? staGenQty(it[CI.UM], staLen, +width, +depth, +dens) : null; // LF/area/vol/wt
+  const staQty = kind==="callout"
+    ? ((a!=null || (qty!=="" && +qty>0)) ? (+qty||1) : null)     // manual count; station is a callout
+    : genQty;
   const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
   const dayRate = it && it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : useQty||1;
   const nDays = daysOv? Math.max(1,+daysOv) : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
@@ -1487,11 +1513,28 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
         </div>
         {mode==="qty" ?
           <div className="logrow"><label>Quantity ({it[CI.UM]})<input type="number" autoFocus value={qty} onChange={e=>setQty(e.target.value)}/></label></div> :
+          <>
           <div className="logrow">
-            <label>Start STA<input placeholder="115+15.66" value={s0} onChange={e=>setS0(e.target.value)}/></label>
-            <label>End STA<input placeholder="118+40 (blank ⇒ qty 1)" value={s1} onChange={e=>setS1(e.target.value)}/></label>
-            <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>
+            <label>{kind==="callout"?"Start STA (callout)":"Start STA"}<input placeholder="115+15.66" value={s0} onChange={e=>setS0(e.target.value)}/></label>
+            <label>End STA<input placeholder={kind==="callout"?"118+40 (optional)":"118+40 (blank ⇒ qty 1)"} value={s1} onChange={e=>setS1(e.target.value)}/></label>
+            {kind==="lin" && <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>}
+          </div>
+          {(kind==="area"||kind==="vol"||kind==="wt") &&
+          <div className="logrow">
+            <label>Width (ft)<input type="number" placeholder="e.g. 12" value={width} onChange={e=>setWidth(e.target.value)}/></label>
+            {(kind==="vol"||kind==="wt") &&
+              <label>Depth (ft)<input type="number" placeholder="e.g. 0.5" value={depth} onChange={e=>setDepth(e.target.value)}/></label>}
+            {kind==="wt" &&
+              <label>Density (TON/CY)<input type="number" placeholder="e.g. 1.4" value={dens} onChange={e=>setDens(e.target.value)}/></label>}
+            <div className="gen">Generated qty<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b>
+              {staLen!=null && <em className="dim2"> from {fmtN(staLen,staLen%1?2:0)} ft</em>}</div>
           </div>}
+          {kind==="callout" &&
+          <div className="logrow">
+            <label>Quantity ({it[CI.UM]})<input type="number" placeholder="1" value={qty} onChange={e=>setQty(e.target.value)}/></label>
+            <div className="gen">Station is a callout<b>{staQty!=null?fmtN(staQty,staQty%1?2:0):"—"} {staQty!=null?it[CI.UM]:""}</b></div>
+          </div>}
+          </>}
 
         <div className="logrow">
           <label>Location<input list="loclist" placeholder="Pick or type a location…" value={loc} onChange={e=>setLoc(e.target.value)}/>
@@ -1517,10 +1560,13 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
         <div className="btnrow">
           <button className="cta" disabled={!useQty} onClick={()=>{
             const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?Math.min(a,b):null;
+            const isCallout = kind==="callout";
+            const staStep = (!isCallout && cursor!=null) ? Math.abs(b-a)/nDays : null;   // quantifying units: slice range by feet/day, not by qty
+            const calloutSta = (mode==="sta" && a!=null) ? [Math.min(a, b??a), Math.max(a, b??a)] : null; // callout: full location range, same on each day
             let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
             for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
               const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
-              const sta = cursor!=null? [cursor, cursor+dq] : null; if(cursor!=null) cursor+=dq;
+              const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staStep] : null); if(cursor!=null && !isCallout) cursor+=staStep;
               list.push({ id:tid(), res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
@@ -2070,25 +2116,31 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
    Only the filled-in values render as computer (mono) text; the corner numbers land
    where the pad convention writes them — day count top-left, total MH top-right. */
 function PCard({cd}){
-  const {t,it,run,mh,loads,code,scopeName} = cd;
-  const trucksStr = (t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (loads>=0.05?fmtN(loads,1)+" loads":"");
+  const {t,mh,loads} = cd;
+  const merged = !!cd.merged;
+  // One or more (item, qty, station) lines — stations stay separate on a merged card.
+  const lines = merged ? cd.lines : [{it:cd.it, qty:t.qty, sta:t.sta}];
+  const loc   = merged ? cd.loc   : (t.loc||"");
+  const equip = merged ? cd.equip : (t.equip||"");
+  // Trucks: explicit per-task override (single cards only), else the summed computed loads.
+  const trucksStr = (!merged && t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (loads>=0.05?fmtN(loads,1)+" loads":"");
   return (
-    <div className="pcard">
+    <div className={"pcard"+(merged?" merged":"")}>
       <div className="pcorners">
-        <span className="pcv pday">{code?<span className="pscope">{code}</span>:null}{run.total>1?` Day ${run.idx}/${run.total}`:""}</span>
+        <span className="pcv pday">{!merged && cd.run.total>1?`Day ${cd.run.idx}/${cd.run.total}`:""}</span>
         <span className="pcv pmh">{fmtN(mh,mh%1?1:0)} MH</span>
       </div>
       <div className="pwm"><img src="assets/rngd-black.png" alt="RNGD"/></div>
       <div className="pbody">
-        <div><label>Location:</label><span>{t.loc||""}</span></div>
+        <div><label>Location:</label><span>{loc}</span></div>
         <div><label>Job #:</label><span>{JOB_NO}</span></div>
-        <div className="pitem"><label>Item:</label><span>{it[CI.TASK]}</span></div>
-        <div><label>Goal:</label><span>{fmtN(t.qty,t.qty%1?1:0)} {it[CI.UM]}</span></div>
-        {t.sta && <div className="psta"><span>STA {staFmt(t.sta[0])} – {staFmt(t.sta[1])}</span></div>}
+        <div className="pitem"><label>Item:</label><span>{lines.map((ln,i)=><span key={i} className="pline">{ln.it[CI.TASK]}</span>)}</span></div>
+        <div><label>Goal:</label><span>{lines.map((ln,i)=><span key={i} className="pline">{fmtN(ln.qty,ln.qty%1?1:0)} {ln.it[CI.UM]}</span>)}</span></div>
+        {lines.some(ln=>ln.sta) && <div className="psta"><span>{lines.filter(ln=>ln.sta).map((ln,i)=><span key={i} className="pline">STA {staFmt(ln.sta[0])}{ln.sta[0]!==ln.sta[1]?" – "+staFmt(ln.sta[1]):""}</span>)}</span></div>}
         <i className="psp"/>
       </div>
       <div className="pfoot">
-        <div><label>Equipt.:</label><span>{t.equip||""}</span></div>
+        <div><label>Equipt.:</label><span>{equip}</span></div>
         <div><label>Trucks:</label><span>{trucksStr}</span></div>
       </div>
     </div>
@@ -2118,11 +2170,25 @@ function CardExportModal({weekTasks,crews,taskCalc,cfg,wk,close}){
   // Body class routes @media print to the card-sheet path while this modal is open.
   useEffect(()=>{ document.body.classList.add("print-cards"); return ()=>document.body.classList.remove("print-cards"); },[]);
   const scope = SCOPES[sck];
-  const cards = useMemo(()=> weekTasks
-    .filter(t=> scopeOf(t,crews)===sck && (crewF==="all"||t.res===crewF))
-    .sort((a,b)=> a.day-b.day || String(a.res).localeCompare(String(b.res)))
-    .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:dayRunFor(weekTasks,t), mh:c.planMH, loads:c.loads, code:SCOPES[scopeOf(t,crews)].code, scopeName:SCOPES[scopeOf(t,crews)].name}; })
-  ,[weekTasks,sck,crewF,crews]);
+  const cards = useMemo(()=>{
+    const base = weekTasks
+      .filter(t=> scopeOf(t,crews)===sck && (crewF==="all"||t.res===crewF))
+      .sort((a,b)=> a.day-b.day || String(a.res).localeCompare(String(b.res)))
+      .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:dayRunFor(weekTasks,t), mh:c.planMH, loads:c.loads, code:SCOPES[scopeOf(t,crews)].code, scopeName:SCOPES[scopeOf(t,crews)].name}; });
+    // Merge same crew (res) + same day onto one card: stations stay separate (one line each),
+    // MH and loads are summed. Sort keeps groups day-ordered; Map preserves that order.
+    const groups = new Map();
+    for(const cd of base){ const k=cd.t.res+"|"+cd.t.day; (groups.get(k) ?? groups.set(k,[]).get(k)).push(cd); }
+    const same=(g,f)=> g.every(x=>f(x)===f(g[0]));
+    return [...groups.values()].map(g=> g.length===1 ? g[0] : {
+      merged:true, t:g[0].t, code:g[0].code,
+      mh:    g.reduce((s,x)=>s+x.mh,0),
+      loads: g.reduce((s,x)=>s+x.loads,0),
+      loc:   same(g,x=>x.t.loc||"")   ? (g[0].t.loc||"")   : "",  // shared value or blank
+      equip: same(g,x=>x.t.equip||"") ? (g[0].t.equip||"") : "",
+      lines: g.map(x=>({ it:x.it, qty:x.t.qty, sta:x.t.sta })),
+    });
+  },[weekTasks,sck,crewF,crews]);
   const per = paper==="tabloid"?8:4;
   const pages=[]; for(let i=0;i<cards.length;i+=per) pages.push(cards.slice(i,i+per));
   const paperName = paper==="tabloid"?"11×17 (Tabloid)":"Letter 8.5×11";
@@ -3151,6 +3217,14 @@ thead .rescol{z-index:12}
 .pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
 .pfoot label{font-weight:700;font-size:12.5pt}
 .pfoot span{font:500 10.5pt "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+/* Merged card values stack one code/goal/station per line under a single label. */
+.pline{display:block;overflow-wrap:anywhere}
+.pline+.pline{margin-top:.03in}
+/* Merged card (same crew+day): tighten so multiple item/station lines fit the fixed 4x4 box. */
+.pcard.merged .pbody{gap:.06in}
+.pcard.merged .pbody label{font-size:11pt}
+.pcard.merged .pbody span{font-size:9pt}
+.pcard.merged .psp{display:none}
 .swatchrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px}
 .swatch{border:2px solid transparent;border-radius:9px;padding:7px 12px;font:700 13px "Saira Condensed";cursor:pointer;letter-spacing:.04em}
 .swatch.on{border-color:var(--tx);box-shadow:0 0 0 2px var(--acc)}
