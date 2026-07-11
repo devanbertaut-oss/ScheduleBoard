@@ -2,6 +2,9 @@
   "name": "scheduleboard",
   "private": true,
   "description": "RNGD Look-Ahead board - static app + Netlify Blobs sync function",
+  "scripts": {
+    "build": "echo \"No build step required - static site published as-is\""
+  },
   "dependencies": {
     "@netlify/blobs": "^10.0.0"
   }
