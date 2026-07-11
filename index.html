@@ -2134,11 +2134,9 @@ function PCard({cd}){
       <div className="pbody">
         <div><label>Location:</label><span>{loc}</span></div>
         <div><label>Job #:</label><span>{JOB_NO}</span></div>
-        {lines.map((ln,i)=><React.Fragment key={i}>
-          <div className="pitem"><label>Item:</label><span>{ln.it[CI.TASK]}</span></div>
-          <div><label>Goal:</label><span>{fmtN(ln.qty,ln.qty%1?1:0)} {ln.it[CI.UM]}</span></div>
-          {ln.sta && <div className="psta"><span>STA {staFmt(ln.sta[0])}{ln.sta[0]!==ln.sta[1]?" – "+staFmt(ln.sta[1]):""}</span></div>}
-        </React.Fragment>)}
+        <div className="pitem"><label>Item:</label><span>{lines.map((ln,i)=><span key={i} className="pline">{ln.it[CI.TASK]}</span>)}</span></div>
+        <div><label>Goal:</label><span>{lines.map((ln,i)=><span key={i} className="pline">{fmtN(ln.qty,ln.qty%1?1:0)} {ln.it[CI.UM]}</span>)}</span></div>
+        {lines.some(ln=>ln.sta) && <div className="psta"><span>{lines.filter(ln=>ln.sta).map((ln,i)=><span key={i} className="pline">STA {staFmt(ln.sta[0])}{ln.sta[0]!==ln.sta[1]?" – "+staFmt(ln.sta[1]):""}</span>)}</span></div>}
         <i className="psp"/>
       </div>
       <div className="pfoot">
@@ -3219,6 +3217,9 @@ thead .rescol{z-index:12}
 .pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
 .pfoot label{font-weight:700;font-size:12.5pt}
 .pfoot span{font:500 10.5pt "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+/* Merged card values stack one code/goal/station per line under a single label. */
+.pline{display:block;overflow-wrap:anywhere}
+.pline+.pline{margin-top:.03in}
 /* Merged card (same crew+day): tighten so multiple item/station lines fit the fixed 4x4 box. */
 .pcard.merged .pbody{gap:.06in}
 .pcard.merged .pbody label{font-size:11pt}
