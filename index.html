@@ -761,6 +761,29 @@ function LookAhead(){
   };
   const addDep = (depKey,predKey)=> setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; });
   const rmDep  = (depKey,predKey)=> setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; });
+  /* Drag-to-link controller (desktop board corner handles → DepLayer rubber band).
+     A top-left handle picks a predecessor for this run; a bottom-right handle picks a
+     successor. linkRef holds the in-flight drag; depLayerRef draws the rubber imperatively. */
+  const linkRef = useRef(null), depLayerRef = useRef(null);
+  const depReaches = (from,to,seen)=>{ if(from===to) return true; if(seen.has(from)) return false; seen.add(from); return (deps[from]||[]).some(p=>depReaches(p,to,seen)); };
+  const linkApi = {
+    active: ()=> !!linkRef.current,
+    start: info => { linkRef.current = info; },
+    move:  (x,y)=> { const api=depLayerRef.current; if(api && linkRef.current) api.rubber(linkRef.current,x,y); },
+    end:   (x,y)=> {
+      const L=linkRef.current; linkRef.current=null;
+      const api=depLayerRef.current; if(api) api.rubber(null);
+      if(!L) return;
+      const el=document.elementFromPoint(x,y);
+      const card=el && el.closest ? el.closest(".card[data-run]") : null;
+      if(!card) return;
+      const target=card.getAttribute("data-run"); if(!target || target===L.fromRun) return;
+      const depKey = L.mode==="pred" ? L.fromRun : target;
+      const predKey= L.mode==="pred" ? target : L.fromRun;
+      if(depReaches(predKey,depKey,new Set())) return;   // would create a cycle — ignore
+      addDep(depKey,predKey);
+    }
+  };
   /* Re-slice a whole run when its plan changes. edit = {end} (extend/shrink stations at constant
      rate), {perDay} or {days} (change avg production, same total). Completed (logged) days are kept
      byte-for-byte; only the open tail re-slices. The run START (min working-day) never moves — so it
@@ -998,17 +1021,18 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
             {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
           </tbody>
         </table>
+        <DepLayer {...{deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef:depLayerRef}}/>
       </div>
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}}/>
       </div>}
@@ -1077,7 +1101,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap}){
+function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -1098,7 +1122,7 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
         return <td key={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -1300,7 +1324,7 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep,linkApi}){
   const it=c.it, view=boardView||"Ops";
   const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
   const skey = (t.ov && t.ov.scope) ? t.ov.scope : (resKind==="sub" ? "sub" : scopeKeyOf(it[CI.CC]));
@@ -1318,10 +1342,23 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
     <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")} draggable={!!canDrag}
-      onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
+      data-run={runKey(t)} data-task={t.id} data-wdi={wdi(t.wk,t.day)}
+      onDragStart={canDrag?(e=>{ if(linkApi && linkApi.active()){ e.preventDefault(); return; } e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
       style={cat.css}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
+      {linkApi && <>
+        <span className="lh tl" title="Drag to a predecessor — a run this one waits on" draggable={false}
+          onPointerDown={e=>{ e.stopPropagation(); e.preventDefault(); try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){} linkApi.start({fromRun:runKey(t),mode:"pred",ox:e.clientX,oy:e.clientY}); }}
+          onPointerMove={e=>{ if(linkApi.active()) linkApi.move(e.clientX,e.clientY); }}
+          onPointerUp={e=>{ e.stopPropagation(); linkApi.end(e.clientX,e.clientY); }}
+          onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>
+        <span className="lh br" title="Drag to a successor — a run that waits on this one" draggable={false}
+          onPointerDown={e=>{ e.stopPropagation(); e.preventDefault(); try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){} linkApi.start({fromRun:runKey(t),mode:"succ",ox:e.clientX,oy:e.clientY}); }}
+          onPointerMove={e=>{ if(linkApi.active()) linkApi.move(e.clientX,e.clientY); }}
+          onPointerUp={e=>{ e.stopPropagation(); linkApi.end(e.clientX,e.clientY); }}
+          onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>
+      </>}
       {view==="HQ" ? <>
         <div className="hqcorners">
           <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
@@ -1353,6 +1390,74 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
         {linked && !dep.broken && <div className="csub2" style={{opacity:.8}}>after: {dep.label}</div>}
       </>}
     </button>
+  );
+}
+/* ============ DEPENDENCY ARROWS + DRAG-TO-LINK OVERLAY (desktop board) ============
+   Absolutely-positioned SVG inside the scrolling .boardwrap, sized to the full scroll
+   area so it pans with the board. For each dependency whose predecessor AND successor
+   both have cards on the visible week, draws a bezier from the predecessor's latest-day
+   card (right edge) to the successor's earliest-day card (left edge) — red on conflict.
+   apiRef exposes an imperative rubber-band used while dragging a corner link handle. */
+function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}){
+  const svgRef=useRef(null), rubberRef=useRef(null);
+  const [st,setSt]=useState({W:0,H:0,paths:[]});
+  const compute=React.useCallback(()=>{
+    const svg=svgRef.current; if(!svg) return; const wrap=svg.parentNode; if(!wrap) return;
+    const base=svg.getBoundingClientRect();
+    const byRun={};
+    wrap.querySelectorAll(".card[data-run]").forEach(n=>{
+      const k=n.getAttribute("data-run"), w=+n.getAttribute("data-wdi");
+      (byRun[k]||(byRun[k]=[])).push({n,w});
+    });
+    const arr=[];
+    Object.keys(deps).forEach(depK=>{
+      const sc=byRun[depK]; if(!sc) return;
+      const succ=sc.reduce((a,b)=> b.w<a.w?b:a);          // successor's earliest-day card
+      const conflict=!!(depMap && depMap[depK] && depMap[depK].conflict);
+      (deps[depK]||[]).forEach(predK=>{
+        const pc=byRun[predK]; if(!pc) return;
+        const pred=pc.reduce((a,b)=> b.w>a.w?b:a);         // predecessor's latest-day card
+        const pr=pred.n.getBoundingClientRect(), sr=succ.n.getBoundingClientRect();
+        arr.push({ key:predK+"→"+depK, conflict,
+          x1:pr.right-base.left, y1:pr.top+pr.height/2-base.top,
+          x2:sr.left -base.left, y2:sr.top+sr.height/2-base.top });
+      });
+    });
+    setSt({W:wrap.scrollWidth, H:wrap.scrollHeight, paths:arr});
+  },[deps,depMap]);
+  React.useLayoutEffect(()=>{ compute(); },[compute,weekTasks,wk,boardView,cardStyle,reflowOn]);
+  useEffect(()=>{
+    const svg=svgRef.current; if(!svg) return; const wrap=svg.parentNode;
+    const ro=new ResizeObserver(()=>compute());
+    if(wrap){ ro.observe(wrap); const tbl=wrap.querySelector(".board"); if(tbl) ro.observe(tbl); }
+    window.addEventListener("resize",compute);
+    let live=true;
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(live) compute(); });
+    return ()=>{ live=false; ro.disconnect(); window.removeEventListener("resize",compute); };
+  },[compute]);
+  useEffect(()=>{ if(!apiRef) return;
+    apiRef.current={ rubber:(link,x,y)=>{
+      const svg=svgRef.current, rb=rubberRef.current; if(!svg||!rb) return;
+      if(!link){ rb.setAttribute("d",""); return; }
+      const base=svg.getBoundingClientRect();
+      const ox=link.ox-base.left, oy=link.oy-base.top, tx=x-base.left, ty=y-base.top;
+      const dx=Math.max(28,Math.abs(tx-ox)*0.4);
+      rb.setAttribute("d", link.mode==="succ"
+        ? `M${ox},${oy} C${ox+dx},${oy} ${tx-dx},${ty} ${tx},${ty}`
+        : `M${tx},${ty} C${tx+dx},${ty} ${ox-dx},${oy} ${ox},${oy}`);
+    }};
+    return ()=>{ if(apiRef) apiRef.current=null; };
+  },[apiRef]);
+  const dpath=(x1,y1,x2,y2)=>{ const dx=Math.max(28,Math.abs(x2-x1)*0.42); return `M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`; };
+  return (
+    <svg ref={svgRef} className="deparrows" width={st.W} height={st.H} style={{width:st.W,height:st.H}}>
+      <defs>
+        <marker id="depah" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--lime)"/></marker>
+        <marker id="depahbad" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--bad)"/></marker>
+      </defs>
+      {st.paths.map(p=><path key={p.key} className={"deparrow"+(p.conflict?" bad":"")} d={dpath(p.x1,p.y1,p.x2,p.y2)} markerEnd={p.conflict?"url(#depahbad)":"url(#depah)"}/>)}
+      <path ref={rubberRef} className="deprubber" d="" markerEnd="url(#depah)"/>
+    </svg>
   );
 }
 function SiteRow({row,notes,setNotes,setModal}){
@@ -3062,7 +3167,17 @@ const CSS = `
 .legendbtn:hover{border-color:var(--brand);color:var(--brand)}
 .tagswitch{display:inline-flex;align-items:center;gap:8px}
 .tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
-.boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0}
+.boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0;position:relative}
+/* dependency arrows (SVG overlay, scrolls with the board) + drag-to-link handles */
+.deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
+.deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.8;stroke-linecap:round}
+.deparrow.bad{stroke:var(--bad);opacity:.95}
+.deprubber{fill:none;stroke:var(--lime);stroke-width:2.5;stroke-dasharray:5 4;opacity:.95;stroke-linecap:round}
+.lh{position:absolute;width:15px;height:15px;border-radius:50%;background:var(--lime);border:2px solid rgba(0,0,0,.4);box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:0;transition:opacity .12s,transform .1s;cursor:crosshair;z-index:5;touch-action:none}
+.card:hover .lh,.lh:active{opacity:.92}
+.lh:hover{opacity:1;transform:scale(1.18)}
+.lh.tl{top:-8px;left:-8px}
+.lh.br{right:-8px;bottom:-8px}
 .boardmain{display:flex;gap:14px;align-items:flex-start}
 .crewrail{width:236px;flex:none;padding:0 16px 30px 0;display:flex;flex-direction:column;gap:8px}
 .rlhead{font:700 11px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);margin:2px 0 2px}
@@ -3200,7 +3315,7 @@ thead .rescol{z-index:12}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
 .chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
-.card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono"}
+.card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono";position:relative}
 .cardtop{display:flex;justify-content:space-between;gap:4px}
 .ctleft{display:flex;align-items:baseline;gap:5px;min-width:0}
 .cscope{flex:none;font:800 8.5px "Saira Condensed";letter-spacing:.06em;padding:1px 4px;border-radius:3px;align-self:flex-start;print-color-adjust:exact;-webkit-print-color-adjust:exact}
