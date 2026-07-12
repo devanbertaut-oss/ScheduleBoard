@@ -1418,6 +1418,9 @@ function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}
         const pc=byRun[predK]; if(!pc) return;
         const pred=pc.reduce((a,b)=> b.w>a.w?b:a);         // predecessor's latest-day card
         const pr=pred.n.getBoundingClientRect(), sr=succ.n.getBoundingClientRect();
+        // Finish-to-start: the tail leaves the predecessor's END (right edge) and the
+        // arrowhead lands on the successor's BEGINNING (left edge), at each card's
+        // mid-height — always, regardless of which side the cards fall on.
         arr.push({ key:predK+"→"+depK, conflict,
           x1:pr.right-base.left, y1:pr.top+pr.height/2-base.top,
           x2:sr.left -base.left, y2:sr.top+sr.height/2-base.top });
@@ -3170,8 +3173,8 @@ const CSS = `
 .boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0;position:relative}
 /* dependency arrows (SVG overlay, scrolls with the board) + drag-to-link handles */
 .deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
-.deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.8;stroke-linecap:round}
-.deparrow.bad{stroke:var(--bad);opacity:.95}
+.deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.6;stroke-linecap:round}
+.deparrow.bad{stroke:var(--bad);opacity:.6}
 .deprubber{fill:none;stroke:var(--lime);stroke-width:2.5;stroke-dasharray:5 4;opacity:.95;stroke-linecap:round}
 .lh{position:absolute;width:15px;height:15px;border-radius:50%;background:var(--lime);border:2px solid rgba(0,0,0,.4);box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:0;transition:opacity .12s,transform .1s;cursor:crosshair;z-index:5;touch-action:none}
 .card:hover .lh,.lh:active{opacity:.92}
