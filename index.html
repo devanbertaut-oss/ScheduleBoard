@@ -735,6 +735,13 @@ function LookAhead(){
   },[weekTasks,crews,milestones,wk]);
 
   /* mutations */
+  /* Single-level undo: snapshot tasks/logs/deps before a destructive/bulk action and show an
+     undo bar. Snapshots capture the immutable state references at call time (cheap). */
+  const [undo, setUndo] = useState(null);       // {label, tasks, logs, deps}
+  const undoSuppress = useRef(false);           // suppress nested snapshots (e.g. commitReflow's loop)
+  const pushUndo = label => { if(undoSuppress.current) return; setUndo({label, tasks, logs, deps}); };
+  const doUndo = () => { if(!undo) return; setTasks(undo.tasks); setLogs(undo.logs); setDeps(undo.deps); setUndo(null); flash("Undone — "+undo.label.toLowerCase()); };
+  useEffect(()=>{ if(!undo) return; const id=setTimeout(()=>setUndo(null), 9000); return ()=>clearTimeout(id); },[undo]);
   const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
   const moveTask = (id,res,day)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,res,day}:t)); // drag / nudge to another day or crew
   const toggleSel = id => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
@@ -743,6 +750,7 @@ function LookAhead(){
   const rescheduleDrop = (draggedId,targetRes,targetDay)=>{
     const clamp=v=>Math.max(0,Math.min(6,v));
     const multi = sel.has(draggedId) && sel.size>1;
+    pushUndo(multi?"Moved tasks":"Moved task");
     setTasks(ts=>{ const drag=ts.find(t=>t.id===draggedId); if(!drag) return ts;
       const group = multi ? sel : new Set([draggedId]); const delta = targetDay - drag.day;
       return ts.map(t=>{ if(!group.has(t.id)) return t;
@@ -751,16 +759,17 @@ function LookAhead(){
     });
     if(multi) setSel(new Set());
   };
-  const rmTask = id => { setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
+  const rmTask = id => { pushUndo("Deleted task"); setTasks(ts=>ts.filter(t=>t.id!==id)); setLogs(l=>{const c={...l}; delete c[id]; return c;}); setModal(null); };
   const rmRun = t => {                                    // delete an entire multi-day run (same crew + item + location, across weeks)
+    pushUndo("Deleted run");
     const k=runKey(t); const ids=new Set(tasks.filter(x=>runKey(x)===k).map(x=>x.id));
     setTasks(ts=>ts.filter(x=>!ids.has(x.id)));
     setLogs(l=>{const c={...l}; ids.forEach(id=>delete c[id]); return c;});
     setDeps(d=>{ const c={...d}; delete c[k]; Object.keys(c).forEach(dk=>{ const f=c[dk].filter(p=>p!==k); if(f.length) c[dk]=f; else delete c[dk]; }); return c; });
     setModal(null);
   };
-  const addDep = (depKey,predKey)=> setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; });
-  const rmDep  = (depKey,predKey)=> setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; });
+  const addDep = (depKey,predKey)=> { pushUndo("Added link"); setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; }); };
+  const rmDep  = (depKey,predKey)=> { pushUndo("Removed link"); setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; }); };
   /* Drag-to-link controller (desktop board corner handles → DepLayer rubber band).
      A top-left handle picks a predecessor for this run; a bottom-right handle picks a
      successor. linkRef holds the in-flight drag; depLayerRef draws the rubber imperatively. */
@@ -790,6 +799,7 @@ function LookAhead(){
      composes with the predecessor auto-reschedule pinning. Mirrors SchedModal's rounding + Fri→Mon roll. */
   const resliceRun = (t, edit) => {
     const k = runKey(t), EPS = 1e-6;
+    pushUndo("Re-sliced run");
     setTasks(ts => {
       const members = ts.filter(x=>runKey(x)===k).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
       if(!members.length) return ts;
@@ -853,6 +863,7 @@ function LookAhead(){
   };
   const asapRun = t => {                                  // one-shot "schedule as soon as possible": snap the run's start to its latest predecessor's finish + 1
     const k=runKey(t), preds=(deps[k]||[]); if(!preds.length) return;
+    pushUndo("Scheduled ASAP");
     setTasks(ts=>{
       const byKey={}; ts.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
       const present=preds.filter(p=>byKey[p]&&byKey[p].length), mem=byKey[k];
@@ -868,20 +879,22 @@ function LookAhead(){
      via the forward-push effect). Returns how many runs were adjusted. */
   const commitReflow = () => {
     const byKey={}; tasks.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
-    let n=0;
-    Object.keys(byKey).forEach(k=>{
+    const targets = Object.keys(byKey).filter(k=>{
       const mem=byKey[k], logged=mem.filter(m=>logs[m.id]!=null), open=mem.filter(m=>logs[m.id]==null);
-      if(!logged.length || !open.length) return;
+      if(!logged.length || !open.length) return false;
       const planLogged=logged.reduce((s,m)=>s+(+m.qty||0),0);
       const actLogged=logged.reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
-      if(Math.abs(actLogged-planLogged) < 0.01) return;   // no variance — nothing to commit
-      resliceRun(mem[0], {fromActuals:true}); n++;
+      return Math.abs(actLogged-planLogged) >= 0.01;   // has an over/under-run
     });
-    return n;
+    if(!targets.length) return 0;
+    pushUndo("Re-flowed to plan"); undoSuppress.current=true;               // one snapshot for the whole batch
+    try { targets.forEach(k=>resliceRun(byKey[k][0], {fromActuals:true})); }
+    finally { undoSuppress.current=false; }
+    return targets.length;
   };
   /* Batch C — fast plan edits. */
   // Shift every selected task by dw working days (no week clamp); used by the selection-bar buttons.
-  const shiftSelected = dw => { if(!sel.size||!dw) return; setTasks(ts=>ts.map(t=>{ if(!sel.has(t.id)) return t; const w=fromWdi(Math.max(0,wdi(t.wk,t.day)+dw)); return {...t,day:w.day,wk:w.wk}; })); };
+  const shiftSelected = dw => { if(!sel.size||!dw) return; pushUndo("Shifted "+sel.size+" task"+(sel.size>1?"s":"")); setTasks(ts=>ts.map(t=>{ if(!sel.has(t.id)) return t; const w=fromWdi(Math.max(0,wdi(t.wk,t.day)+dw)); return {...t,day:w.day,wk:w.wk}; })); };
   // Resize a run to a target working-day count, holding the daily rate (drag-the-edge / stepper).
   const resizeRun = (t, targetDays) => {
     const k=runKey(t), mem=tasks.filter(x=>runKey(x)===k).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
@@ -896,6 +909,7 @@ function LookAhead(){
   const rollForward = () => {
     const movers = tasks.filter(t=>t.wk===wk && !logs[t.id]);
     if(!movers.length) return 0;
+    pushUndo("Rolled forward");
     setTasks(ts=>ts.map(t=>{ if(t.wk===wk && !logs[t.id]){ const w=fromWdi(wdi(t.wk,t.day)+5); return {...t,day:w.day,wk:w.wk}; } return t; }));
     return movers.length;
   };
@@ -978,7 +992,7 @@ function LookAhead(){
           <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
             onClick={()=>setSyncPop(v=>!v)}
             title={SYNC_LABEL[sync.status]+(sync.at? " · "+new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"")}>
-            {sync.status==="synced"?"✓ Sync":(sync.status==="syncing"||sync.status==="boot")?"… Sync":sync.status==="offline"?"⌁ Offline":sync.status==="local"?"Local":sync.status==="key"?"Key…":"! Sync"}
+            {sync.status==="synced"?("✓ Saved"+(sync.at?" "+new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"")):(sync.status==="syncing"||sync.status==="boot")?"⟳ Saving…":sync.status==="offline"?"⌁ Offline":sync.status==="local"?"Local":sync.status==="key"?"Key…":"! Error"}
           </button>
           {syncPop && <div className="syncpop" onMouseLeave={()=>setSyncPop(false)}>
             <div className="sphead">{SYNC_LABEL[sync.status]}</div>
@@ -1095,6 +1109,9 @@ function LookAhead(){
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
+
+      {/* one-level undo bar for moves / links / deletes / re-slices / bulk shifts */}
+      {undo && <div className="undobar no-print"><span className="udtag">↶</span><span>{undo.label}</span><button className="udbtn" onClick={doUndo}>Undo</button><button className="udx" onClick={()=>setUndo(null)} aria-label="Dismiss">✕</button></div>}
 
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
@@ -3610,6 +3627,12 @@ thead .rescol{z-index:12}
 .reflowbox{background:var(--pn2);border:1px solid var(--acc);border-radius:10px;padding:9px 11px;margin:6px 0 4px}
 .reflowbox .ovnote{color:var(--dm)}
 .toast.plain{border-color:var(--acc);font-size:14px}
+/* one-level undo bar */
+.undobar{position:fixed;left:50%;bottom:8vh;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--pn);border:1px solid var(--lime);color:var(--tx);padding:9px 10px 9px 14px;border-radius:12px;z-index:201;font:600 13.5px "Saira Condensed";letter-spacing:.02em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .25s ease}
+.undobar .udtag{font-size:16px;color:var(--lime)}
+.undobar .udbtn{background:var(--lime);color:#0c0d0c;border:0;border-radius:8px;padding:5px 14px;font:700 12px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;cursor:pointer}
+.undobar .udbtn:hover{filter:brightness(1.08)}
+.undobar .udx{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:7px;padding:4px 8px;cursor:pointer;font-size:11px}
 /* inline avg/day stepper + selection-bar bulk shift */
 .stepper{display:flex;align-items:stretch;gap:0}
 .stepper .stepbtn{flex:none;width:30px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);font:700 16px "IBM Plex Mono";cursor:pointer;line-height:1}
