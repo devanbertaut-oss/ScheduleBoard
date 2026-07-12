@@ -822,10 +822,14 @@ function LookAhead(){
         if(nOpen===0 && !locked.length) nOpen=1;
         if(nOpen===0) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // shrank to locked only
         targetOpenQty = rho*openLen; stepA = stepFt;
-      } else if(edit.perDay!=null || edit.days!=null){
-        const openQty = Qtot - lockedQty;
-        if(openQty<=EPS) return ts;
-        if(edit.perDay!=null){ const p=+edit.perDay; if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p)); }
+      } else if(edit.perDay!=null || edit.days!=null || edit.fromActuals){
+        // fromActuals: remaining = contract total − what was ACTUALLY installed on logged days,
+        // re-sliced over the open tail at the planned rate (absorbs an over/under-run into the plan).
+        const lockedActualQty = locked.reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
+        const openQty = edit.fromActuals ? Math.max(0, Qtot - lockedActualQty) : (Qtot - lockedQty);
+        if(openQty<=EPS) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // remaining installed → drop open days
+        const p = edit.perDay!=null ? +edit.perDay : (edit.fromActuals ? perDayQ : null);
+        if(p!=null){ if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p - EPS)); }
         else { const dd=Math.round(+edit.days); if(!(dd>0)) return ts; nOpen=Math.max(1, dd-locked.length); }
         targetOpenQty = openQty; endAlong = isSta ? along(Ecur) : null;
         stepA = isSta ? (endAlong-openStartAlong)/nOpen : null;
@@ -857,6 +861,22 @@ function LookAhead(){
     });
   };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
+  /* Bake the re-flow forecast into the plan: for every run that has an over/under-run on its
+     logged days, re-slice the open tail from today's actuals (adds/drops days; pushes successors
+     via the forward-push effect). Returns how many runs were adjusted. */
+  const commitReflow = () => {
+    const byKey={}; tasks.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
+    let n=0;
+    Object.keys(byKey).forEach(k=>{
+      const mem=byKey[k], logged=mem.filter(m=>logs[m.id]!=null), open=mem.filter(m=>logs[m.id]==null);
+      if(!logged.length || !open.length) return;
+      const planLogged=logged.reduce((s,m)=>s+(+m.qty||0),0);
+      const actLogged=logged.reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
+      if(Math.abs(actLogged-planLogged) < 0.01) return;   // no variance — nothing to commit
+      resliceRun(mem[0], {fromActuals:true}); n++;
+    });
+    return n;
+  };
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
     if(type==="site") setSiteRows(r=>[...r,{id,name}]);
@@ -985,6 +1005,7 @@ function LookAhead(){
         <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
+        {reflowOn && <button className="snapbtn" title="Re-slice every run with a logged over/under-run from its actuals, and push linked successors" onClick={()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}>Commit → plan</button>}
         <span className="viewseg" title="Card view — HQ: labor $ vs pay · Field: qty & MH · Ops: loads & bedding tons">
           {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView(v)}>{v}</button>)}
         </span>
@@ -1526,6 +1547,20 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   const runLocked = runMem.filter(m=>logs[m.id]!=null).length;
   const runAvgVal = runN ? Math.round((runQtot/runN)*100)/100 : 0;
   const runFirst = runMem[0];
+  // Batch B — actuals → plan. Achieved rate + over/under-run over the logged days; live impact.
+  const runLoggedMem = runMem.filter(m=>logs[m.id]!=null);
+  const runActual = runLoggedMem.reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
+  const runPlanLogged = runLoggedMem.reduce((s,m)=>s+(+m.qty||0),0);
+  const achievedRate = runLoggedMem.length ? Math.round((runActual/runLoggedMem.length)*100)/100 : null;
+  const runVar = runLoggedMem.length ? Math.round((runActual-runPlanLogged)*100)/100 : 0;   // + ahead, − behind
+  const runOpenDays = runN - runLocked;
+  const crewOf = crews.find(c=>c.id===t.res);
+  const capMH = (crewOf && crewOf.capMH>0) ? crewOf.capMH : 68;
+  const perDayMH = runAvgVal*it[CI.MH];
+  const perDayLoads = ecfg.truckRate>0 ? (runAvgVal*it[CI.UT])/ecfg.truckRate : 0;
+  const runFinishWdi = runMem.length ? Math.max(...runMem.map(m=>wdi(m.wk,m.day))) : null;
+  const runFinish = runFinishWdi!=null ? fromWdi(runFinishWdi) : null;
+  const succCount = Object.keys(deps).filter(dk=>(deps[dk]||[]).includes(myKey)).length;
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -1662,6 +1697,22 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
         <label>Days<BlurInput type="number" value={runN} onCommit={v=>{const d=Math.round(+v); if(d>0) resliceRun(t,{days:d});}}/></label>
         <div className="gen">Total<b>{fmtN(runQtot,runQtot%1?1:0)} {it[CI.UM]}</b>{runSta&&runS0!=null&&runEnd!=null && <em className="dim2"> · {staFmt(runS0)}→{staFmt(runEnd)}</em>}</div>
       </div>
+      {/* Live impact — updates as the run is re-sliced above */}
+      <div className="impact">
+        <div className="impact-i"><label>Finish</label><b>{runFinish?DAYS[runFinish.day]+" "+dLabel(runFinish.wk,runFinish.day):"—"}</b></div>
+        <div className={"impact-i"+(perDayMH>capMH+1e-6?" over":"")}><label>MH / day</label><b>{fmtN(perDayMH,perDayMH<10?1:0)}<em> / {capMH} cap</em></b></div>
+        <div className="impact-i"><label>Loads / day</label><b>{perDayLoads>=0.05?fmtN(perDayLoads,1):"—"}</b></div>
+        <div className="impact-i"><label>Successors</label><b>{succCount||"—"}</b></div>
+      </div>
+      {runLoggedMem.length>0 && runOpenDays>0 && (()=>{ const um=it[CI.UM]; return (
+        <div className="reflowbox">
+          <div className="ovnote" style={{margin:"0 0 6px"}}>Achieved <b>{fmtN(achievedRate,achievedRate%1?1:0)} {um}/day</b> so far vs plan {fmtN(runAvgVal,runAvgVal%1?1:0)}
+            {runVar!==0 && <> · logged actuals ran <b style={{color:runVar<0?"var(--bad)":"var(--good)"}}>{runVar<0?"behind":"ahead"} {fmtN(Math.abs(runVar),Math.abs(runVar)%1?1:0)} {um}</b></>}.</div>
+          <div className="btnrow" style={{marginTop:0}}>
+            {achievedRate>0 && Math.abs(achievedRate-runAvgVal)>0.05 && <button className="ghost sm" onClick={()=>resliceRun(t,{perDay:achievedRate})} title="Re-slice the remaining days at the crew's real achieved rate">Apply achieved rate to remaining</button>}
+            {runVar!==0 && <button className="ghost sm" onClick={()=>resliceRun(t,{fromActuals:true})} title="Re-slice the remaining work from today's actuals (absorbs the over/under-run)">Commit actuals → re-slice remaining</button>}
+          </div>
+        </div>); })()}
       {runLocked>=runN && <div className="ovnote">All {runN} day(s) logged — run plan is locked.</div>}
       </>}
       {kind==="callout" &&
@@ -2994,6 +3045,12 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
     </div>
   );
 }
+function flash(msg){   // lightweight informational toast (no confetti)
+  try{
+    const t=document.createElement("div"); t.className="toast plain"; t.textContent=msg; document.body.appendChild(t);
+    setTimeout(()=>t.remove(),2200);
+  }catch(e){}
+}
 function celebrate(msg){
   try{
     const layer=document.createElement("div"); layer.className="confetti";
@@ -3493,6 +3550,17 @@ thead .rescol{z-index:12}
 .eosldone input{accent-color:var(--acc)}
 .eosltag{font:700 11px "IBM Plex Mono";color:var(--bad);text-align:right}
 .eoslogrow.on .eosltag{color:var(--good)}
+/* Run-plan live impact panel + actuals→plan re-flow box */
+.impact{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 4px}
+.impact-i{background:var(--pn2);border:1px solid var(--ln);border-radius:9px;padding:7px 9px}
+.impact-i label{display:block;font:700 9.5px "Saira Condensed";letter-spacing:.09em;text-transform:uppercase;color:var(--dm2);margin-bottom:2px}
+.impact-i b{font:700 15px "Saira Condensed";color:var(--tx)}
+.impact-i b em{font:600 10px "IBM Plex Mono";color:var(--dm2);font-style:normal}
+.impact-i.over{border-color:var(--bad)}
+.impact-i.over b{color:var(--bad)}
+.reflowbox{background:var(--pn2);border:1px solid var(--acc);border-radius:10px;padding:9px 11px;margin:6px 0 4px}
+.reflowbox .ovnote{color:var(--dm)}
+.toast.plain{border-color:var(--acc);font-size:14px}
 .eosprev{background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;white-space:pre-wrap;font:12.5px/1.55 "IBM Plex Mono";max-height:320px;overflow:auto;color:#cfd4e0}
 .page{padding:16px 22px}
 .page h2{font-size:24px;margin:6px 0 14px}
