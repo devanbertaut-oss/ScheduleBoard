@@ -301,6 +301,21 @@ const runKey = t => t.res+"|"+t.ci+"|"+(t.loc||"");
    by whole working days and roll across weeks/weekends cleanly. */
 const wdi = (wk,day) => Math.round((new Date(wk+"T12:00:00")-new Date(WK0+"T12:00:00"))/6048e5)*5 + Math.min(Math.max(day|0,0),4);
 const fromWdi = n => ({ wk: addDays(WK0, Math.floor(n/5)*7), day: ((n%5)+5)%5 });
+/* Predecessor-candidate ordering: prioritise the SAME foreman's closest PREVIOUS run (a crew's
+   next operation most often follows its own last one), then any run by proximity. cands carry
+   {res, finishWdi}. */
+const rankRuns = (cands,newRes,newStartWdi) => cands.slice().sort((a,b)=>{
+  const fa=a.res===newRes?0:1, fb=b.res===newRes?0:1; if(fa!==fb) return fa-fb;
+  const pa=a.finishWdi<=newStartWdi?0:1, pb=b.finishWdi<=newStartWdi?0:1; if(pa!==pb) return pa-pb;
+  return Math.abs(a.finishWdi-newStartWdi)-Math.abs(b.finishWdi-newStartWdi);
+});
+/* Summary of one run for predecessor pickers/chips: representative item, crew, location, scope
+   color, day span, start label, and finish working-day (for ranking). */
+const runInfoFor = (tasks,crews,key) => { const rep=tasks.find(x=>runKey(x)===key); if(!rep) return null;
+  const rit=itemFor(rep), mem=tasks.filter(x=>runKey(x)===key).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day)), s0=mem[0];
+  const crew=(crews.find(c=>c.id===rep.res)||{}).name||rep.res;
+  return { key, res:rep.res, item:rit[CI.TASK], crew, loc:rep.loc||"", cc:rit[CI.CC], bg:SCOPES[scopeKeyOf(rit[CI.CC])].bg,
+    days:mem.length, start:DAYS[s0.day]+" "+dLabel(s0.wk,s0.day), finishWdi:Math.max(...mem.map(m=>wdi(m.wk,m.day))) }; };
 const fmt$ = (n,d=0) => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmtN = (n,d=0) => Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct  = n => Math.round(n*100)+"%";
@@ -747,6 +762,67 @@ function LookAhead(){
   };
   const addDep = (depKey,predKey)=> setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; });
   const rmDep  = (depKey,predKey)=> setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; });
+  /* Re-slice a whole run when its plan changes. edit = {end} (extend/shrink stations at constant
+     rate), {perDay} or {days} (change avg production, same total). Completed (logged) days are kept
+     byte-for-byte; only the open tail re-slices. The run START (min working-day) never moves — so it
+     composes with the predecessor auto-reschedule pinning. Mirrors SchedModal's rounding + Fri→Mon roll. */
+  const resliceRun = (t, edit) => {
+    const k = runKey(t), EPS = 1e-6;
+    setTasks(ts => {
+      const members = ts.filter(x=>runKey(x)===k).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+      if(!members.length) return ts;
+      const it = itemFor(members[0]), kindL = unitKind(it[CI.UM]);
+      const isSta = kindL!=="callout" && members.every(m=>m.sta);
+      const S0 = members[0].sta ? members[0].sta[0] : null;
+      const last = members[members.length-1], Ecur = last.sta ? last.sta[1] : null;
+      const dir = (Ecur!=null && S0!=null) ? (Math.sign(Ecur-S0)||1) : 0;
+      const Ltot = (Ecur!=null && S0!=null) ? Math.abs(Ecur-S0) : 0;
+      const Qtot = members.reduce((s,m)=>s+(+m.qty||0),0), N = members.length;
+      const runStartWdi = wdi(members[0].wk, members[0].day);
+      const along = x => (x-S0)*dir, staAt = a => S0 + dir*a;
+      const rho = (isSta && Ltot>EPS) ? Qtot/Ltot : null;
+      const stepFt = (isSta && Ltot>EPS) ? Ltot/N : null, perDayQ = Qtot/N;
+      const locked = members.filter(m=>logs[m.id]!=null), open = members.filter(m=>logs[m.id]==null);
+      if(!open.length) return ts;                                   // all logged → no-op
+      const lockedWdis = new Set(locked.map(m=>wdi(m.wk,m.day)));
+      const lockedQty = locked.reduce((s,m)=>s+(+m.qty||0),0);
+      const lastLocked = locked.length ? locked.reduce((a,b)=>wdi(a.wk,a.day)>wdi(b.wk,b.day)?a:b) : null;
+      const openStartSta = (lastLocked && lastLocked.sta) ? lastLocked.sta[1] : S0;
+      const openStartAlong = isSta ? along(openStartSta) : 0;
+      const freeSlots = count => { const out=[]; let n=runStartWdi; while(out.length<count){ if(!lockedWdis.has(n)) out.push(n); n++; } return out; };
+      let nOpen, targetOpenQty, endAlong, stepA, isEnd=false;
+      if(edit.end!=null && isSta && rho!=null){
+        isEnd=true;
+        endAlong = Math.max(along(edit.end), openStartAlong);       // never trim locked / cross start
+        const openLen = endAlong - openStartAlong;
+        const nFull = Math.floor(openLen/stepFt + EPS), rem = openLen - nFull*stepFt;
+        nOpen = nFull + (rem>EPS?1:0);
+        if(nOpen===0 && !locked.length) nOpen=1;
+        if(nOpen===0) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // shrank to locked only
+        targetOpenQty = rho*openLen; stepA = stepFt;
+      } else if(edit.perDay!=null || edit.days!=null){
+        const openQty = Qtot - lockedQty;
+        if(openQty<=EPS) return ts;
+        if(edit.perDay!=null){ const p=+edit.perDay; if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p)); }
+        else { const dd=Math.round(+edit.days); if(!(dd>0)) return ts; nOpen=Math.max(1, dd-locked.length); }
+        targetOpenQty = openQty; endAlong = isSta ? along(Ecur) : null;
+        stepA = isSta ? (endAlong-openStartAlong)/nOpen : null;
+      } else return ts;
+      const slots = freeSlots(nOpen), rate = isEnd ? perDayQ : targetOpenQty/nOpen;
+      let cursorA = openStartAlong, left = Math.round(targetOpenQty*100)/100;
+      const newOpen = [];
+      for(let i=0;i<nOpen;i++){
+        let sta=null;
+        if(isSta){ const nextA = isEnd ? Math.min(cursorA+stepA, endAlong) : (i===nOpen-1?endAlong:cursorA+stepA);
+          sta=[staAt(cursorA), staAt(nextA)]; cursorA=nextA; }
+        else if(kindL==="callout" && members[0].sta){ sta = members[0].sta.slice(); }
+        const dq = Math.min(left, Math.round(rate*100)/100); left = Math.round((left-dq)*100)/100;
+        const reuse = open[i], base = reuse || open[open.length-1] || lastLocked || members[0], w = fromWdi(slots[i]);
+        newOpen.push({ ...base, id: reuse?reuse.id:tid(), day:w.day, wk:w.wk, qty:dq, sta });
+      }
+      return [...ts.filter(x=>runKey(x)!==k), ...locked, ...newOpen];
+    });
+  };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
@@ -936,9 +1012,9 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
-      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
+      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
@@ -1296,7 +1372,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close}){
   const [tab,setTab]=useState("log");
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
@@ -1308,12 +1384,11 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
   const myPreds = deps[myKey]||[];
   const crewName = id => (crews.find(c=>c.id===id)||{}).name || id;
   const reachesKey = (from,to,seen)=>{ if(from===to) return true; if(seen.has(from)) return false; seen.add(from); return (deps[from]||[]).some(p=>reachesKey(p,to,seen)); };
-  const runInfo = key => { const rep=tasks.find(x=>runKey(x)===key); if(!rep) return null;
-    const rit=itemFor(rep), mem=tasks.filter(x=>runKey(x)===key).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day)), s0=mem[0];
-    return { key, item:rit[CI.TASK], crew:crewName(rep.res), loc:rep.loc||"", cc:rit[CI.CC], bg:SCOPES[scopeKeyOf(rit[CI.CC])].bg, days:mem.length, start:DAYS[s0.day]+" "+dLabel(s0.wk,s0.day) }; };
+  const myStartWdi = Math.min(...tasks.filter(x=>runKey(x)===myKey).map(x=>wdi(x.wk,x.day)));
   const candidateRuns = useMemo(()=>{
     const keys=[...new Set(tasks.map(runKey))].filter(k=> k!==myKey && !myPreds.includes(k) && !reachesKey(k,myKey,new Set()));
-    return keys.map(runInfo).filter(Boolean).map(r=>({...r, search:(r.item+" "+r.crew+" "+r.loc+" "+r.cc).toLowerCase()}));
+    const cands=keys.map(key=>runInfoFor(tasks,crews,key)).filter(Boolean).map(r=>({...r, search:(r.item+" "+r.crew+" "+r.loc+" "+r.cc).toLowerCase()}));
+    return rankRuns(cands, t.res, myStartWdi);
   },[tasks,deps,myKey]);
   const lg = logs[t.id]||{};
   const [qty,setQty]=useState(lg.qty??"");
@@ -1324,6 +1399,15 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
   const kind = unitKind(it[CI.UM]);
   const staLen = t.sta ? Math.abs(t.sta[1]-t.sta[0]) : null;
   const genQty = staGenQty(it[CI.UM], staLen, +width, +depth, +dens);
+  // Run-plan measurements (whole-run re-slice controls).
+  const runMem = tasks.filter(x=>runKey(x)===myKey).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+  const runSta = kind!=="callout" && runMem.length>0 && runMem.every(m=>m.sta);
+  const runS0 = runMem[0]&&runMem[0].sta ? runMem[0].sta[0] : null;
+  const runEnd = runMem.length&&runMem[runMem.length-1].sta ? runMem[runMem.length-1].sta[1] : null;
+  const runQtot = runMem.reduce((s,m)=>s+(+m.qty||0),0);
+  const runLocked = runMem.filter(m=>logs[m.id]!=null).length;
+  const runAvgVal = runN ? Math.round((runQtot/runN)*100)/100 : 0;
+  const runFirst = runMem[0];
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -1419,9 +1503,13 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
         <label>Week (snaps to Mon)<input type="date" value={t.wk} onChange={e=>{ if(e.target.value) upTask(t.id,{wk:mondayOf(e.target.value)}); }}/></label>
       </div>
       <div className="logrow">
-        <label>Planned qty ({it[CI.UM]})<BlurInput type="number" value={t.qty} onCommit={v=>upTask(t.id,{qty:+v||(kind==="callout"?1:0)})}/></label>
-        <label>Start STA<BlurInput placeholder="115+15.66" value={t.sta?staFmt(t.sta[0]):""} onCommit={v=>{const a=parseSTA(v), b=t.sta?t.sta[1]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
-        <label>End STA<BlurInput placeholder="118+40" value={t.sta?staFmt(t.sta[1]):""} onCommit={v=>{const b=parseSTA(v), a=t.sta?t.sta[0]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
+        <label>Planned qty{runN>1?" · this day":""} ({it[CI.UM]})<BlurInput type="number" value={t.qty} onCommit={v=>upTask(t.id,{qty:+v||(kind==="callout"?1:0)})}/></label>
+        {runN>1
+          ? <label>This day's STA<input readOnly value={t.sta?staFmt(t.sta[0])+(t.sta[0]!==t.sta[1]?" – "+staFmt(t.sta[1]):""):"—"}/></label>
+          : <>
+            <label>Start STA<BlurInput placeholder="115+15.66" value={t.sta?staFmt(t.sta[0]):""} onCommit={v=>{const a=parseSTA(v), b=t.sta?t.sta[1]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
+            <label>End STA<BlurInput placeholder="118+40" value={t.sta?staFmt(t.sta[1]):""} onCommit={v=>{const b=parseSTA(v), a=t.sta?t.sta[0]:null; upTask(t.id,{sta:(a!=null&&b!=null)?[a,b]:null});}}/></label>
+          </>}
       </div>
       {(kind==="area"||kind==="vol"||kind==="wt") &&
       <div className="logrow">
@@ -1439,6 +1527,20 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
         <div className="gen">Generated qty<b>{fmtN(genQty,genQty%1?2:0)} {it[CI.UM]}</b><em className="dim2"> = {fmtN(staLen,staLen%1?2:0)} ft run</em></div>
         <button className="ghost sm" disabled={genQty==null} onClick={()=>upTask(t.id,{qty:genQty})}>Apply to qty</button>
       </div>}
+      {(runN>1 || runSta) && <>
+      <div className="loghdr">Run plan · {runN} day{runN>1?"s":""}{runLocked?` · ${runLocked} logged`:""}</div>
+      <div className="ovnote">Edit the run's end station or its avg/day and the whole run re-slices — extend picks up where it left off, shrink drops days. The start stays put{runLocked?"; logged days are kept":""}.</div>
+      <div className="logrow">
+        <label>Run start (fixed)<input readOnly value={(runS0!=null?"STA "+staFmt(runS0):"—")+(runFirst?" · "+DAYS[runFirst.day]+" "+dLabel(runFirst.wk,runFirst.day):"")}/></label>
+        {runSta && <label>Run END STA<BlurInput placeholder="118+40" value={runEnd!=null?staFmt(runEnd):""} onCommit={v=>{const e=parseSTA(v); if(e!=null) resliceRun(t,{end:e});}}/></label>}
+      </div>
+      <div className="logrow">
+        <label>Avg {it[CI.UM]}/day<BlurInput type="number" value={runAvgVal} onCommit={v=>{const p=+v; if(p>0) resliceRun(t,{perDay:p});}}/></label>
+        <label>Days<BlurInput type="number" value={runN} onCommit={v=>{const d=Math.round(+v); if(d>0) resliceRun(t,{days:d});}}/></label>
+        <div className="gen">Total<b>{fmtN(runQtot,runQtot%1?1:0)} {it[CI.UM]}</b>{runSta&&runS0!=null&&runEnd!=null && <em className="dim2"> · {staFmt(runS0)}→{staFmt(runEnd)}</em>}</div>
+      </div>
+      {runLocked>=runN && <div className="ovnote">All {runN} day(s) logged — run plan is locked.</div>}
+      </>}
       {kind==="callout" &&
       <div className="ovnote">Station is a location callout for {it[CI.UM]} items — it doesn't set the quantity. Enter qty manually (defaults to 1).</div>}
       <div className="logrow">
@@ -1453,7 +1555,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
       <div className="ovnote">Auto-starts the working day after its latest predecessor finishes. Move or lengthen a predecessor and this run follows.</div>
       <div className="chiprow">
         {myPreds.length===0 && <span className="ovnote" style={{margin:0}}>None — this run keeps its own dates.</span>}
-        {myPreds.map(pk=>{ const info=runInfo(pk); return (
+        {myPreds.map(pk=>{ const info=runInfoFor(tasks,crews,pk); return (
           <span key={pk} className={"predchip"+(info?"":" bad")}>{info? info.item+" · "+info.crew : "(missing run)"}<button onClick={()=>rmDep(myKey,pk)} title="Remove predecessor">✕</button></span>); })}
       </div>
       {!predAdd ?
@@ -1461,12 +1563,15 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,upTask,cfg,installedFor,fcstFor,
         <>
           <input autoFocus className="search" placeholder="Search a run to wait on — crew, item, or location…" value={predQ} onChange={e=>setPredQ(e.target.value)}/>
           <div className="results">
-            {candidateRuns.filter(r=>!predQ.trim()||r.search.includes(predQ.trim().toLowerCase())).slice(0,20).map(r=>
-              <button key={r.key} onClick={()=>{ addDep(myKey,r.key); setPredAdd(false); setPredQ(""); }}>
+            {candidateRuns.filter(r=>!predQ.trim()||r.search.includes(predQ.trim().toLowerCase())).slice(0,20).map((r,i)=>{
+              const top=i===0 && r.res===t.res && r.finishWdi<=myStartWdi;
+              return (
+              <button key={r.key} className={top?"top":""} onClick={()=>{ addDep(myKey,r.key); setPredAdd(false); setPredQ(""); }}>
                 <i style={{background:r.bg}}/>
                 <span>{r.item}</span>
+                {top && <span className="rtag">closest prev</span>}
                 <em>{r.crew} · {r.loc||"—"} · {r.start} · {r.days}d</em>
-              </button>)}
+              </button>);})}
             {candidateRuns.length===0 && <div className="empty">No other runs on the board to wait on.</div>}
           </div>
           <div className="btnrow"><button className="ghost sm" onClick={()=>{setPredAdd(false); setPredQ("");}}>Cancel</button></div>
@@ -1564,7 +1669,7 @@ function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
 }
 
 /* ============ SCHEDULE MODAL — search + station→qty (PPC logic) ============ */
-function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
+function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close,add}){
   const [q,setQ]=useState("");
   const [ci,setCi]=useState(preset.ci ?? null);
   // Smart defaults: reuse the last-scheduled crew and default to today's weekday.
@@ -1579,6 +1684,13 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
   const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
   const [daysOv,setDaysOv]=useState("");
+  const [predSel,setPredSel]=useState([]); const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
+  const predCands = useMemo(()=>{
+    const newKey = res+"|"+ci+"|"+((loc||"").trim());
+    const keys=[...new Set((tasks||[]).map(runKey))].filter(k=> k!==newKey && !predSel.includes(k));
+    const cands=keys.map(k=>runInfoFor(tasks,crews,k)).filter(Boolean).map(r=>({...r, search:(r.item+" "+r.crew+" "+r.loc+" "+r.cc).toLowerCase()}));
+    return rankRuns(cands, res, wdi(wk,day));
+  },[tasks,crews,res,ci,loc,day,wk,predSel]);
 
   const results = useMemo(()=>{
     const s=q.trim().toLowerCase(); if(!s) return [];
@@ -1681,6 +1793,25 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
           <label>Days ({fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/d)<input type="number" placeholder={String(nDays)} value={daysOv} onChange={e=>setDaysOv(e.target.value)}/></label>
         </div>
+        <div className="chiprow" style={{margin:"2px 0 4px"}}>
+          <span className="ovnote" style={{margin:"0 4px 0 0"}}>Predecessors:</span>
+          {predSel.length===0 && <span className="ovnote" style={{margin:0}}>none</span>}
+          {predSel.map(pk=>{ const info=runInfoFor(tasks,crews,pk); return <span key={pk} className="predchip">{info?info.item+" · "+info.crew:"(run)"}<button onClick={()=>setPredSel(s=>s.filter(x=>x!==pk))} title="Remove">✕</button></span>; })}
+        </div>
+        {!predAdd
+          ? <div className="btnrow" style={{marginTop:0}}><button className="ghost sm" onClick={()=>setPredAdd(true)}>+ Add predecessor</button></div>
+          : <>
+            <input autoFocus className="search" placeholder="Search a run to wait on — crew, item, or location…" value={predQ} onChange={e=>setPredQ(e.target.value)}/>
+            <div className="results">
+              {predCands.filter(r=>!predQ.trim()||r.search.includes(predQ.trim().toLowerCase())).slice(0,20).map((r,i)=>{
+                const top=i===0 && r.res===res && r.finishWdi<=wdi(wk,day);
+                return (
+                <button key={r.key} className={top?"top":""} onClick={()=>{ setPredSel(s=>[...s,r.key]); setPredAdd(false); setPredQ(""); }}>
+                  <i style={{background:r.bg}}/><span>{r.item}</span>{top && <span className="rtag">closest prev</span>}<em>{r.crew} · {r.loc||"—"} · {r.start} · {r.days}d</em></button>);})}
+              {predCands.length===0 && <div className="empty">No other runs on the board to wait on.</div>}
+            </div>
+            <div className="btnrow"><button className="ghost sm" onClick={()=>{setPredAdd(false); setPredQ("");}}>Cancel</button></div>
+          </>}
 
         {useQty>0 && <table className="dt">
           <tbody>
@@ -1705,6 +1836,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,close,add}){
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
             }
+            if(predSel.length){ const newKey = res+"|"+ci+"|"+(loc.trim()||""); predSel.forEach(pk=>addDep(newKey,pk)); }
             add(list);
           }}>Add {nDays>1?nDays+" days":"to board"}</button>
           <button className="ghost" onClick={close}>Cancel</button>
@@ -3088,6 +3220,8 @@ thead .rescol{z-index:12}
 .predchip button:hover{color:var(--bad)}
 .cdep{font:800 10px "Saira Condensed";letter-spacing:.03em;color:var(--dm);border:1px solid var(--ln);border-radius:4px;padding:0 4px;margin-left:4px}
 .cdep.bad{color:var(--bad);border-color:var(--bad)}
+.results button.top{border-color:var(--acc)}
+.rtag{font:800 9px "Saira Condensed";letter-spacing:.04em;color:var(--acc);border:1px solid var(--acc);border-radius:3px;padding:0 4px;margin-left:6px;white-space:nowrap}
 .pill.dim{background:var(--pn2);color:var(--dm);border:1px solid var(--ln)}
 .pill.pgood{background:var(--pillGoodBg);color:var(--good)}.pill.pbad{background:var(--pillBadBg);color:var(--bad)}
 .dt{width:100%;border-collapse:collapse;margin:10px 0;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;overflow:hidden}
