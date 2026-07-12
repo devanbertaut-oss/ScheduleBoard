@@ -831,7 +831,9 @@ function LookAhead(){
         const p = edit.perDay!=null ? +edit.perDay : (edit.fromActuals ? perDayQ : null);
         if(p!=null){ if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p - EPS)); }
         else { const dd=Math.round(+edit.days); if(!(dd>0)) return ts; nOpen=Math.max(1, dd-locked.length); }
-        targetOpenQty = openQty; endAlong = isSta ? along(Ecur) : null;
+        // keepRate (drag-resize): hold the daily rate and let the TOTAL grow/shrink with the day count.
+        targetOpenQty = edit.keepRate ? perDayQ*nOpen : openQty;
+        endAlong = isSta ? along(Ecur) : null;
         stepA = isSta ? (endAlong-openStartAlong)/nOpen : null;
       } else return ts;
       const slots = freeSlots(nOpen), rate = isEnd ? perDayQ : targetOpenQty/nOpen;
@@ -876,6 +878,26 @@ function LookAhead(){
       resliceRun(mem[0], {fromActuals:true}); n++;
     });
     return n;
+  };
+  /* Batch C — fast plan edits. */
+  // Shift every selected task by dw working days (no week clamp); used by the selection-bar buttons.
+  const shiftSelected = dw => { if(!sel.size||!dw) return; setTasks(ts=>ts.map(t=>{ if(!sel.has(t.id)) return t; const w=fromWdi(Math.max(0,wdi(t.wk,t.day)+dw)); return {...t,day:w.day,wk:w.wk}; })); };
+  // Resize a run to a target working-day count, holding the daily rate (drag-the-edge / stepper).
+  const resizeRun = (t, targetDays) => {
+    const k=runKey(t), mem=tasks.filter(x=>runKey(x)===k).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+    if(!mem.length) return; const lockedN=mem.filter(m=>logs[m.id]!=null).length;
+    const N=Math.max(lockedN+1, Math.round(targetDays)); if(N===mem.length) return;
+    const it=itemFor(mem[0]), isSta=unitKind(it[CI.UM])!=="callout" && mem.every(m=>m.sta);
+    if(isSta){ const S0=mem[0].sta[0], E=mem[mem.length-1].sta[1], dir=Math.sign(E-S0)||1, stepFt=Math.abs(E-S0)/mem.length; resliceRun(mem[0],{end:S0+dir*stepFt*N}); }
+    else resliceRun(mem[0],{days:N,keepRate:true});
+  };
+  const resizeRunToEnd = (t, endWdi) => { const k=runKey(t), mem=tasks.filter(x=>runKey(x)===k); if(!mem.length) return; const startWdi=Math.min(...mem.map(m=>wdi(m.wk,m.day))); resizeRun(t, endWdi-startWdi+1); };
+  // Roll incomplete (unlogged) work in the current week forward one week; logged days stay put.
+  const rollForward = () => {
+    const movers = tasks.filter(t=>t.wk===wk && !logs[t.id]);
+    if(!movers.length) return 0;
+    setTasks(ts=>ts.map(t=>{ if(t.wk===wk && !logs[t.id]){ const w=fromWdi(wdi(t.wk,t.day)+5); return {...t,day:w.day,wk:w.wk}; } return t; }));
+    return movers.length;
   };
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
@@ -1015,10 +1037,18 @@ function LookAhead(){
           </span>
         </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
+        <button className="snapbtn" title="Move every unlogged task in this week to the same day next week (finished work stays put)" onClick={()=>{ const open=tasks.filter(t=>t.wk===wk&&!logs[t.id]).length; if(open && window.confirm(`Roll ${open} unfinished task${open>1?"s":""} from this week into next week?`)){ const n=rollForward(); flash(`Rolled ${n} task${n>1?"s":""} into next week`); } else if(!open){ flash("Nothing unfinished to roll forward"); } }}>Roll forward ⤳</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
 
-      {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag any selected card to move the group (same day shift); drop on a day. <button onClick={()=>setSel(new Set())}>Clear</button></div>}
+      {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag to move, or bulk-shift:
+        <span className="shiftgrp">
+          <button onClick={()=>shiftSelected(-5)} title="Back one week">⟪ wk</button>
+          <button onClick={()=>shiftSelected(-1)} title="Back one working day">◀ day</button>
+          <button onClick={()=>shiftSelected(1)} title="Forward one working day">day ▶</button>
+          <button onClick={()=>shiftSelected(5)} title="Forward one week">wk ⟫</button>
+        </span>
+        <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       <div className="boardprinthdr print-only">
         <div className="bphtitle">DPW547 · Job 2124013 — Look-Ahead Board · {wkTitle(wk)}</div>
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
@@ -1042,11 +1072,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -1122,7 +1152,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi}){
+function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -1140,10 +1170,10 @@ function ResRow({res,kind,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggl
       </td>
       {DAYS.map((_,d)=>{
         const list = mine(d);
-        return <td key={d} className={"cell"+(d>4?" wknd":"")}
+        return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
         </td>;
       })}
     </tr>
@@ -1345,9 +1375,11 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep,linkApi}){
+function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
   const it=c.it, view=boardView||"Ops";
+  const [resizing,setResizing]=useState(false);
   const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
+  const resizable = !!resizeApi && run && run.idx===run.total && (run.total>1 || !!t.sta);  // last day of a re-sliceable run
   const skey = (t.ov && t.ov.scope) ? t.ov.scope : (resKind==="sub" ? "sub" : scopeKeyOf(it[CI.CC]));
   const scope = SCOPES[skey] || SCOPES.gen;
   const cat = cardVisual(scope, cardStyle);
@@ -1362,7 +1394,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const multi = run && run.total>1;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
-    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")} draggable={!!canDrag}
+    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
       data-run={runKey(t)} data-task={t.id} data-wdi={wdi(t.wk,t.day)}
       onDragStart={canDrag?(e=>{ if(linkApi && linkApi.active()){ e.preventDefault(); return; } e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
@@ -1380,6 +1412,12 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
           onPointerUp={e=>{ e.stopPropagation(); linkApi.end(e.clientX,e.clientY); }}
           onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>
       </>}
+      {resizable && <span className={"rh"+(resizing?" on":"")} title="Drag to resize the run — add or drop days (holds the daily rate)" draggable={false}
+        onPointerDown={e=>{ e.stopPropagation(); e.preventDefault(); setResizing(true); try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){} }}
+        onPointerUp={e=>{ e.stopPropagation(); setResizing(false);
+          const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
+          if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
+        onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
       {view==="HQ" ? <>
         <div className="hqcorners">
           <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
@@ -1693,7 +1731,13 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
         {runSta && <label>Run END STA<BlurInput placeholder="118+40" value={runEnd!=null?staFmt(runEnd):""} onCommit={v=>{const e=parseSTA(v); if(e!=null) resliceRun(t,{end:e});}}/></label>}
       </div>
       <div className="logrow">
-        <label>Avg {it[CI.UM]}/day<BlurInput type="number" value={runAvgVal} onCommit={v=>{const p=+v; if(p>0) resliceRun(t,{perDay:p});}}/></label>
+        <label>Avg {it[CI.UM]}/day
+          <div className="stepper">
+            <button type="button" className="stepbtn" title="Slower — spread over more days" onClick={()=>{ const s=Math.max(1,Math.round(runAvgVal*0.1)); const p=runAvgVal-s; if(p>0) resliceRun(t,{perDay:p}); }}>−</button>
+            <BlurInput type="number" value={runAvgVal} onCommit={v=>{const p=+v; if(p>0) resliceRun(t,{perDay:p});}}/>
+            <button type="button" className="stepbtn" title="Faster — fewer days" onClick={()=>{ const s=Math.max(1,Math.round(runAvgVal*0.1)); resliceRun(t,{perDay:runAvgVal+s}); }}>+</button>
+          </div>
+        </label>
         <label>Days<BlurInput type="number" value={runN} onCommit={v=>{const d=Math.round(+v); if(d>0) resliceRun(t,{days:d});}}/></label>
         <div className="gen">Total<b>{fmtN(runQtot,runQtot%1?1:0)} {it[CI.UM]}</b>{runSta&&runS0!=null&&runEnd!=null && <em className="dim2"> · {staFmt(runS0)}→{staFmt(runEnd)}</em>}</div>
       </div>
@@ -3302,6 +3346,11 @@ const CSS = `
 .lh:hover{opacity:1;transform:scale(1.18)}
 .lh.tl{top:-8px;left:-8px}
 .lh.br{right:-8px;bottom:-8px}
+/* run resize grip (right edge of a run's last card) */
+.rh{position:absolute;right:-4px;top:50%;transform:translateY(-50%);width:9px;height:34px;max-height:70%;border-radius:5px;background:var(--lime);border:1.5px solid rgba(0,0,0,.4);box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:0;transition:opacity .12s;cursor:ew-resize;z-index:5;touch-action:none}
+.card:hover .rh,.rh.on{opacity:.92}
+.rh:hover,.rh.on{opacity:1}
+.card.resizing{outline:2px dashed var(--lime);outline-offset:-1px}
 .boardmain{display:flex;gap:14px;align-items:flex-start}
 .crewrail{width:236px;flex:none;padding:0 16px 30px 0;display:flex;flex-direction:column;gap:8px}
 .rlhead{font:700 11px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);margin:2px 0 2px}
@@ -3561,6 +3610,16 @@ thead .rescol{z-index:12}
 .reflowbox{background:var(--pn2);border:1px solid var(--acc);border-radius:10px;padding:9px 11px;margin:6px 0 4px}
 .reflowbox .ovnote{color:var(--dm)}
 .toast.plain{border-color:var(--acc);font-size:14px}
+/* inline avg/day stepper + selection-bar bulk shift */
+.stepper{display:flex;align-items:stretch;gap:0}
+.stepper .stepbtn{flex:none;width:30px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);font:700 16px "IBM Plex Mono";cursor:pointer;line-height:1}
+.stepper .stepbtn:first-child{border-radius:8px 0 0 8px;border-right:0}
+.stepper .stepbtn:last-child{border-radius:0 8px 8px 0;border-left:0}
+.stepper .stepbtn:hover{border-color:var(--acc);color:var(--acc)}
+.stepper input{border-radius:0!important;text-align:center}
+.shiftgrp{display:inline-flex;gap:4px;margin:0 4px}
+.shiftgrp button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:7px;padding:4px 9px;font:700 11px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.shiftgrp button:hover{border-color:var(--lime);color:var(--lime)}
 .eosprev{background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;white-space:pre-wrap;font:12.5px/1.55 "IBM Plex Mono";max-height:320px;overflow:auto;color:#cfd4e0}
 .page{padding:16px 22px}
 .page h2{font-size:24px;margin:6px 0 14px}
