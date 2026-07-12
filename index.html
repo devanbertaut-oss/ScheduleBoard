@@ -511,47 +511,46 @@ function LookAhead(){
     }, 600);
   },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
-  /* Auto-reschedule: each dependent run starts the working day after its LATEST predecessor
-     finishes; moving or lengthening a predecessor pushes/pulls the dependent (and cascades down
-     the chain). Runs are processed predecessors-first; cycles are detected and left in place; the
-     pass is idempotent (integer working-day math) so it settles in one extra render. */
+  const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
+  /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
+     When a predecessor is DELAYED (its finish working-day moves later than last settle), each
+     successor that would now start on/before that finish is pushed forward to finish+1, cascading
+     down the chain. Pulling a predecessor in, or dragging a successor early, moves nothing (the
+     conflict is flagged in depMap; "Schedule as soon as possible" resolves it on demand). */
   useEffect(()=>{
     if(!loaded) return;
-    const depKeys = Object.keys(deps).filter(k=>(deps[k]||[]).length);
-    if(!depKeys.length) return;
     const byKey={}; tasks.forEach(t=>{ (byKey[runKey(t)]||(byKey[runKey(t)]=[])).push(t); });
-    const present = k => !!(byKey[k] && byKey[k].length);
-    const order=[], stt={}, stack=[], cyclic=new Set();
-    const visit = k => {
-      if(stt[k]===2) return;
-      if(stt[k]===1){ const i=stack.indexOf(k); if(i>=0) for(let j=i;j<stack.length;j++) cyclic.add(stack[j]); return; }
-      stt[k]=1; stack.push(k);
-      (deps[k]||[]).forEach(p=>{ if(deps[p]&&deps[p].length) visit(p); });
-      stack.pop(); stt[k]=2; order.push(k);
-    };
-    depKeys.forEach(visit);
-    const finishOf = k => Math.max(...byKey[k].map(t=>wdi(t.wk,t.day)));
-    const startOf  = k => Math.min(...byKey[k].map(t=>wdi(t.wk,t.day)));
-    const curFinish={}, shift={};
-    order.forEach(k=>{
-      if(!present(k) || cyclic.has(k)) return;
-      const preds=(deps[k]||[]).filter(present);
-      if(!preds.length) return;
-      const target = Math.max(...preds.map(p=> (curFinish[p]!=null?curFinish[p]:finishOf(p)) + 1));
-      const delta = target - startOf(k);
-      if(delta!==0) byKey[k].forEach(t=>{ shift[t.id]=delta; });
-      curFinish[k]=finishOf(k)+delta;
-    });
-    if(!Object.keys(shift).length) return;
-    setTasks(ts=>ts.map(t=>{ const d=shift[t.id]; if(d==null) return t; const w=fromWdi(wdi(t.wk,t.day)+d); return {...t, day:w.day, wk:w.wk}; }));
+    const finish={}, start={};
+    Object.keys(byKey).forEach(k=>{ finish[k]=Math.max(...byKey[k].map(t=>wdi(t.wk,t.day))); start[k]=Math.min(...byKey[k].map(t=>wdi(t.wk,t.day))); });
+    const prev=finishRef.current;
+    const delayed=Object.keys(finish).filter(k=> prev[k]!=null && finish[k]>prev[k]);   // finish moved later
+    if(delayed.length){
+      const succ={}; Object.keys(deps).forEach(dep=>{ (deps[dep]||[]).forEach(p=>{ (succ[p]||(succ[p]=[])).push(dep); }); });
+      const vStart={...start}, vFinish={...finish}, shift={};
+      const queue=[...delayed]; const cap=(Object.keys(byKey).length+delayed.length)*4+16; let guard=0;
+      while(queue.length && guard++<cap){
+        const p=queue.shift(), need=vFinish[p]+1;
+        (succ[p]||[]).forEach(s=>{ if(!byKey[s]) return;
+          if(vStart[s]<need){ const d=need-vStart[s]; byKey[s].forEach(m=>{ shift[m.id]=(shift[m.id]||0)+d; }); vStart[s]+=d; vFinish[s]+=d; queue.push(s); } });
+      }
+      if(Object.keys(shift).length){
+        finishRef.current=vFinish;   // record post-shift finishes so the next render settles
+        setTasks(ts=>ts.map(t=>{ const d=shift[t.id]; if(!d) return t; const w=fromWdi(wdi(t.wk,t.day)+d); return {...t, day:w.day, wk:w.wk}; }));
+        return;
+      }
+    }
+    finishRef.current=finish;
   },[tasks,deps,loaded]);
-  // Board dependency badge lookup: dependent runKey -> {active, broken, predecessor label}.
+  // Board dependency badge lookup: dependent runKey -> {active, broken, conflict, predecessor label}.
   const depMap = useMemo(()=>{
     const has=k=>tasks.some(x=>runKey(x)===k), m={};
+    const startOf=k=>Math.min(...tasks.filter(x=>runKey(x)===k).map(x=>wdi(x.wk,x.day)));
+    const finishOf=k=>Math.max(...tasks.filter(x=>runKey(x)===k).map(x=>wdi(x.wk,x.day)));
     Object.keys(deps).forEach(k=>{ const preds=deps[k]||[]; if(!preds.length||!has(k)) return;
       const present=preds.filter(has);
       const label=present.map(pk=>{ const pt=tasks.find(x=>runKey(x)===pk); return pt?itemFor(pt)[CI.TASK]:""; }).filter(Boolean).join(", ");
-      m[k]={active:present.length>0, broken:present.length<preds.length, label}; });
+      const conflict=present.length>0 && startOf(k) <= Math.max(...present.map(finishOf));  // starts on/before a predecessor finishes
+      m[k]={active:present.length>0, broken:present.length<preds.length, conflict, label}; });
     return m;
   },[tasks,deps]);
 
@@ -823,6 +822,17 @@ function LookAhead(){
       return [...ts.filter(x=>runKey(x)!==k), ...locked, ...newOpen];
     });
   };
+  const asapRun = t => {                                  // one-shot "schedule as soon as possible": snap the run's start to its latest predecessor's finish + 1
+    const k=runKey(t), preds=(deps[k]||[]); if(!preds.length) return;
+    setTasks(ts=>{
+      const byKey={}; ts.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
+      const present=preds.filter(p=>byKey[p]&&byKey[p].length), mem=byKey[k];
+      if(!present.length||!mem||!mem.length) return ts;
+      const target=Math.max(...present.map(p=>Math.max(...byKey[p].map(m=>wdi(m.wk,m.day)))+1));
+      const delta=target-Math.min(...mem.map(m=>wdi(m.wk,m.day))); if(delta===0) return ts;
+      return ts.map(x=>{ if(runKey(x)!==k) return x; const w=fromWdi(wdi(x.wk,x.day)+delta); return {...x,day:w.day,wk:w.wk}; });
+    });
+  };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
@@ -1012,7 +1022,7 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
@@ -1307,8 +1317,8 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const multi = run && run.total>1;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
-    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")} draggable={!!canDrag && !linked}
-      onDragStart={(canDrag && !linked)?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
+    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")} draggable={!!canDrag}
+      onDragStart={canDrag?(e=>{ e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
       style={cat.css}
       onClick={e=>{ if(onSelect && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); onSelect(t.id); } else onOpen(); }}>
@@ -1329,7 +1339,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
       </> : <>
         <div className="cardtop">
           <span className="ctleft">{chip}<span className="ct" style={{color:cat.titleColor}}>{name}</span></span>
-          {linked && <span className={"cdep"+(dep.broken?" bad":"")} title={dep.broken?"A predecessor run is missing":("Auto-starts after: "+dep.label)}>↝</span>}
+          {linked && <span className={"cdep"+(dep.broken||dep.conflict?" bad":"")} title={dep.broken?"A predecessor run is missing":dep.conflict?("Starts before a predecessor finishes — "+dep.label):("After: "+dep.label)}>↝</span>}
           {c.done && <span className="ck">✓</span>}
         </div>
         {view==="Ops" ? <>
@@ -1372,7 +1382,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,addDep,rmDep,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
   const [tab,setTab]=useState("log");
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
@@ -1552,7 +1562,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedF
       {t.wk!==wk && <div className="ovnote">This card is now on the week of {t.wk} — it will leave the current board view.</div>}
 
       <div className="loghdr">Predecessors — this run waits on</div>
-      <div className="ovnote">Auto-starts the working day after its latest predecessor finishes. Move or lengthen a predecessor and this run follows.</div>
+      <div className="ovnote">This run holds its own dates. If a predecessor is delayed it gets pushed later; a predecessor finishing earlier won't pull it in. Use "Schedule as soon as possible" to snap it right after its predecessors.</div>
       <div className="chiprow">
         {myPreds.length===0 && <span className="ovnote" style={{margin:0}}>None — this run keeps its own dates.</span>}
         {myPreds.map(pk=>{ const info=runInfoFor(tasks,crews,pk); return (
@@ -1576,6 +1586,11 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,upTask,cfg,installedF
           </div>
           <div className="btnrow"><button className="ghost sm" onClick={()=>{setPredAdd(false); setPredQ("");}}>Cancel</button></div>
         </>}
+      {myPreds.length>0 && <div className="btnrow" style={{marginTop:6}}>
+        {depMap && depMap[myKey] && depMap[myKey].conflict && <span className="ovnote" style={{margin:0,color:"var(--bad)"}}>⚠ Starts before a predecessor finishes</span>}
+        <span className="sp"/>
+        <button className="ghost sm" onClick={()=>asapRun(t)}>Schedule as soon as possible</button>
+      </div>}
 
       <div className="loghdr">Overrides — this card only</div>
       <div className="ovnote">Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
