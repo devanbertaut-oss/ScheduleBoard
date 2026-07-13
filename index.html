@@ -752,10 +752,21 @@ function LookAhead(){
     const multi = sel.has(draggedId) && sel.size>1;
     pushUndo(multi?"Moved tasks":"Moved task");
     setTasks(ts=>{ const drag=ts.find(t=>t.id===draggedId); if(!drag) return ts;
-      const group = multi ? sel : new Set([draggedId]); const delta = targetDay - drag.day;
-      return ts.map(t=>{ if(!group.has(t.id)) return t;
-        if(multi) return {...t, day:clamp(t.day+delta)};
-        return {...t, day:targetDay, ...(targetRes!=null?{res:targetRes}:{})}; });
+      if(multi){ const delta = targetDay - drag.day;
+        return ts.map(t=> sel.has(t.id) ? {...t, day:clamp(t.day+delta)} : t); }
+      // Slip-cascade: a single card of a multi-day run moved within its crew re-packs this day and
+      // every LATER day of the run into consecutive working days from the drop; earlier days hold and
+      // the drop can't cross before the previous day. Keys on runKey/wdi → interleave-safe.
+      const k=runKey(drag), mem=ts.filter(x=>runKey(x)===k), sameCrew=targetRes==null||targetRes===drag.res;
+      if(sameCrew && mem.length>1){
+        const sorted=mem.slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+        const j=sorted.findIndex(x=>x.id===draggedId);
+        let targetWdi=wdi(wk,targetDay);
+        if(j>0) targetWdi=Math.max(targetWdi, wdi(sorted[j-1].wk,sorted[j-1].day)+1);
+        const move={}; for(let i=j;i<sorted.length;i++){ const w=fromWdi(targetWdi+(i-j)); move[sorted[i].id]={day:w.day,wk:w.wk}; }
+        return ts.map(t=> move[t.id] ? {...t, ...move[t.id]} : t);
+      }
+      return ts.map(t=> t.id===draggedId ? {...t, day:targetDay, ...(targetRes!=null?{res:targetRes}:{})} : t);
     });
     if(multi) setSel(new Set());
   };
@@ -822,7 +833,7 @@ function LookAhead(){
       const openStartSta = (lastLocked && lastLocked.sta) ? lastLocked.sta[1] : S0;
       const openStartAlong = isSta ? along(openStartSta) : 0;
       const freeSlots = count => { const out=[]; let n=runStartWdi; while(out.length<count){ if(!lockedWdis.has(n)) out.push(n); n++; } return out; };
-      let nOpen, targetOpenQty, endAlong, stepA, isEnd=false;
+      let nOpen, targetOpenQty, endAlong, stepA, isEnd=false, rateOverride=null;
       if(edit.end!=null && isSta && rho!=null){
         isEnd=true;
         endAlong = Math.max(along(edit.end), openStartAlong);       // never trim locked / cross start
@@ -839,14 +850,25 @@ function LookAhead(){
         const openQty = edit.fromActuals ? Math.max(0, Qtot - lockedActualQty) : (Qtot - lockedQty);
         if(openQty<=EPS) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // remaining installed → drop open days
         const p = edit.perDay!=null ? +edit.perDay : (edit.fromActuals ? perDayQ : null);
-        if(p!=null){ if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p - EPS)); }
-        else { const dd=Math.round(+edit.days); if(!(dd>0)) return ts; nOpen=Math.max(1, dd-locked.length); }
-        // keepRate (drag-resize): hold the daily rate and let the TOTAL grow/shrink with the day count.
-        targetOpenQty = edit.keepRate ? perDayQ*nOpen : openQty;
-        endAlong = isSta ? along(Ecur) : null;
-        stepA = isSta ? (endAlong-openStartAlong)/nOpen : null;
+        // avg/day (plain {perDay}) = the ACTUAL daily rate: each open day makes p, last day = the
+        // remainder, total/end-station held fixed. keepRate (drag) & fromActuals keep even fill.
+        const rateEdit = edit.perDay!=null && !edit.keepRate && !edit.fromActuals;
+        if(rateEdit && isSta && rho!=null && rho>EPS){
+          if(!(p>0)) return ts;
+          isEnd=true; rateOverride=p; endAlong=along(Ecur); stepA=p/rho;
+          nOpen=Math.max(1, Math.ceil((endAlong-openStartAlong)/stepA - EPS));
+          targetOpenQty=openQty;
+        } else {
+          if(p!=null){ if(!(p>0)) return ts; nOpen=Math.max(1,Math.ceil(openQty/p - EPS)); }
+          else { const dd=Math.round(+edit.days); if(!(dd>0)) return ts; nOpen=Math.max(1, dd-locked.length); }
+          if(rateEdit) rateOverride=p;                    // qty run: each day = p, last = remainder
+          // keepRate (drag-resize): hold the daily rate and let the TOTAL grow/shrink with the day count.
+          targetOpenQty = edit.keepRate ? perDayQ*nOpen : openQty;
+          endAlong = isSta ? along(Ecur) : null;
+          stepA = isSta ? (endAlong-openStartAlong)/nOpen : null;
+        }
       } else return ts;
-      const slots = freeSlots(nOpen), rate = isEnd ? perDayQ : targetOpenQty/nOpen;
+      const slots = freeSlots(nOpen), rate = rateOverride!=null ? rateOverride : (isEnd ? perDayQ : targetOpenQty/nOpen);
       let cursorA = openStartAlong, left = Math.round(targetOpenQty*100)/100;
       const newOpen = [];
       for(let i=0;i<nOpen;i++){
@@ -1502,6 +1524,18 @@ function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}
           x2:sr.left -base.left, y2:sr.top+sr.height/2-base.top });
       });
     });
+    // Intra-run day chain: connect each run's consecutive day-cards in working-day order,
+    // skipping any foreign task scheduled between them (grouped by data-run → interleave-safe).
+    Object.keys(byRun).forEach(k=>{
+      const cards=byRun[k]; if(cards.length<2) return;
+      const sorted=cards.slice().sort((a,b)=>a.w-b.w);
+      for(let i=0;i<sorted.length-1;i++){
+        const pr=sorted[i].n.getBoundingClientRect(), sr=sorted[i+1].n.getBoundingClientRect();
+        arr.push({ key:"chain:"+k+":"+sorted[i].w+"-"+sorted[i+1].w, chain:true,
+          x1:pr.right-base.left, y1:pr.top+pr.height/2-base.top,
+          x2:sr.left -base.left, y2:sr.top+sr.height/2-base.top });
+      }
+    });
     setSt({W:wrap.scrollWidth, H:wrap.scrollHeight, paths:arr});
   },[deps,depMap]);
   React.useLayoutEffect(()=>{ compute(); },[compute,weekTasks,wk,boardView,cardStyle,reflowOn]);
@@ -1533,8 +1567,9 @@ function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}
       <defs>
         <marker id="depah" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--lime)"/></marker>
         <marker id="depahbad" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--bad)"/></marker>
+        <marker id="depahchain" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--dm)"/></marker>
       </defs>
-      {st.paths.map(p=><path key={p.key} className={"deparrow"+(p.conflict?" bad":"")} d={dpath(p.x1,p.y1,p.x2,p.y2)} markerEnd={p.conflict?"url(#depahbad)":"url(#depah)"}/>)}
+      {st.paths.map(p=><path key={p.key} className={"deparrow"+(p.chain?" chain":"")+(p.conflict?" bad":"")} d={dpath(p.x1,p.y1,p.x2,p.y2)} markerEnd={p.conflict?"url(#depahbad)":p.chain?"url(#depahchain)":"url(#depah)"}/>)}
       <path ref={rubberRef} className="deprubber" d="" markerEnd="url(#depah)"/>
     </svg>
   );
@@ -1601,6 +1636,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   const runQtot = runMem.reduce((s,m)=>s+(+m.qty||0),0);
   const runLocked = runMem.filter(m=>logs[m.id]!=null).length;
   const runAvgVal = runN ? Math.round((runQtot/runN)*100)/100 : 0;
+  const runRate = runMem.length ? Math.round(Math.max(...runMem.map(m=>+m.qty||0))*100)/100 : 0;  // daily production rate = a full day's qty
   const runFirst = runMem[0];
   // Batch B — actuals → plan. Achieved rate + over/under-run over the logged days; live impact.
   const runLoggedMem = runMem.filter(m=>logs[m.id]!=null);
@@ -1617,13 +1653,13 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   // Live reciprocal Days ⇄ avg/day: the run total is the pivot (avg = total/days). Typing in one
   // field previews the other instantly; the actual re-slice commits on blur / Enter / step.
   const [pDays,setPDays]=useState(runN);
-  const [pAvg,setPAvg]=useState(runAvgVal);
-  useEffect(()=>{ setPDays(runN); setPAvg(runAvgVal); },[runN,runAvgVal]);
+  const [pAvg,setPAvg]=useState(runRate);
+  useEffect(()=>{ setPDays(runN); setPAvg(runRate); },[runN,runRate]);
   const pMH = (+pAvg||0)*it[CI.MH];
   const pLoads = ecfg.truckRate>0 ? ((+pAvg||0)*it[CI.UT])/ecfg.truckRate : 0;
-  const commitAvg = () => { const p=+pAvg; if(p>0 && Math.abs(p-runAvgVal)>1e-9) resliceRun(t,{perDay:p}); };
+  const commitAvg = () => { const p=+pAvg; if(p>0 && Math.abs(p-runRate)>1e-9) resliceRun(t,{perDay:p}); };
   const commitDays = () => { const d=Math.round(+pDays); if(d>0 && d!==runN) resliceRun(t,{days:d}); };
-  const stepAvg = dir => { const s=Math.max(1,Math.round((+pAvg||runAvgVal)*0.1)); const p=(+pAvg||runAvgVal)+dir*s; if(p>0){ setPAvg(p); if(runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); resliceRun(t,{perDay:p}); } };
+  const stepAvg = dir => { const s=Math.max(1,Math.round((+pAvg||runRate)*0.1)); const p=(+pAvg||runRate)+dir*s; if(p>0){ setPAvg(p); if(runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); resliceRun(t,{perDay:p}); } };
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -1777,10 +1813,10 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
       </div>
       {runLoggedMem.length>0 && runOpenDays>0 && (()=>{ const um=it[CI.UM]; return (
         <div className="reflowbox">
-          <div className="ovnote" style={{margin:"0 0 6px"}}>Achieved <b>{fmtN(achievedRate,achievedRate%1?1:0)} {um}/day</b> so far vs plan {fmtN(runAvgVal,runAvgVal%1?1:0)}
+          <div className="ovnote" style={{margin:"0 0 6px"}}>Achieved <b>{fmtN(achievedRate,achievedRate%1?1:0)} {um}/day</b> so far vs plan {fmtN(runRate,runRate%1?1:0)}
             {runVar!==0 && <> · logged actuals ran <b style={{color:runVar<0?"var(--bad)":"var(--good)"}}>{runVar<0?"behind":"ahead"} {fmtN(Math.abs(runVar),Math.abs(runVar)%1?1:0)} {um}</b></>}.</div>
           <div className="btnrow" style={{marginTop:0}}>
-            {achievedRate>0 && Math.abs(achievedRate-runAvgVal)>0.05 && <button className="ghost sm" onClick={()=>resliceRun(t,{perDay:achievedRate})} title="Re-slice the remaining days at the crew's real achieved rate">Apply achieved rate to remaining</button>}
+            {achievedRate>0 && Math.abs(achievedRate-runRate)>0.05 && <button className="ghost sm" onClick={()=>resliceRun(t,{perDay:achievedRate})} title="Re-slice the remaining days at the crew's real achieved rate">Apply achieved rate to remaining</button>}
             {runVar!==0 && <button className="ghost sm" onClick={()=>resliceRun(t,{fromActuals:true})} title="Re-slice the remaining work from today's actuals (absorbs the over/under-run)">Commit actuals → re-slice remaining</button>}
           </div>
         </div>); })()}
@@ -2087,12 +2123,15 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
           <button className="cta" disabled={!useQty} onClick={()=>{
             const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?a:null;   // start at the entered Start station — preserves direction, incl. descending (110+00 → 103+00)
             const isCallout = kind==="callout" || endIsQty;   // endIsQty: qty punched, Start is a location callout
-            const staStep = (!isCallout && cursor!=null) ? (b-a)/nDays : null;   // signed step: slice the run by feet/day in the entered direction
+            // entered avg/day is the actual daily RATE: each day makes sliceRate, last = remainder;
+            // station span is proportional to the day's qty so it lands exactly on the End station.
+            const sliceRate = (prodOv!==""&&+prodOv>0) ? +prodOv : perDay;
             const calloutSta = (mode==="sta" && a!=null) ? [a, b??a] : null; // callout: location range kept in entered order, same on each day
             let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
             for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
-              const dq=Math.min(left, Math.round(perDay*100)/100); left-=dq;
-              const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staStep] : null); if(cursor!=null && !isCallout) cursor+=staStep;
+              const dq=Math.min(left, Math.round(sliceRate*100)/100); left=Math.round((left-dq)*100)/100;
+              const staSpan = (!isCallout && cursor!=null && useQty>0) ? (b-a)*(dq/useQty) : null;
+              const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staSpan] : null); if(cursor!=null && !isCallout) cursor+=staSpan;
               list.push({ id:tid(), res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
@@ -3378,6 +3417,7 @@ const CSS = `
 .deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
 .deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.6;stroke-linecap:round}
 .deparrow.bad{stroke:var(--bad);opacity:.6}
+.deparrow.chain{stroke:var(--dm);stroke-width:1.6;opacity:.45;stroke-dasharray:4 3}
 .deprubber{fill:none;stroke:var(--lime);stroke-width:2.5;stroke-dasharray:5 4;opacity:.95;stroke-linecap:round}
 .lh{position:absolute;width:15px;height:15px;border-radius:50%;background:var(--lime);border:2px solid rgba(0,0,0,.4);box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:0;transition:opacity .12s,transform .1s;cursor:crosshair;z-index:5;touch-action:none}
 .card:hover .lh,.lh:active{opacity:.92}
