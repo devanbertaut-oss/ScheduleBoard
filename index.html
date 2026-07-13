@@ -2267,23 +2267,25 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
   },[wk,day,crews,weekTasks,logs,eosMeta,truckLine]);
 
   const active = crews.filter(c=>dayTasks(c.id).length>0);
+  // Editable email body: a per-day override on eosMeta wins once the user types; otherwise the
+  // generated `text` shows through (and "Rebuild from board" clears the override).
+  const body = (eosMeta.bodies && eosMeta.bodies[day]!=null) ? eosMeta.bodies[day] : text;
   return (
     <Modal close={close} w={720}>
       <div className="crewhead">
         <h3 style={{margin:0}}>End of Shift — {longDate(addDays(wk,day))}</h3>
         <select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((x,i)=><option key={x} value={i}>{x} {dLabel(wk,i)}</option>)}</select>
       </div>
-      <div className="eosgrid">
-        <label>Safety<input value={eosMeta.safety} onChange={e=>setEosMeta(m=>({...m,safety:e.target.value}))}/></label>
-        <label>Quality<input value={eosMeta.quality} onChange={e=>setEosMeta(m=>({...m,quality:e.target.value}))}/></label>
-        <label className="full">Weather<input value={eosMeta.weather} onChange={e=>setEosMeta(m=>({...m,weather:e.target.value}))}/></label>
-        {active.map(c=>
-          <label key={c.id} className="full">{c.name} — description
-            <textarea rows={2} placeholder="Auto-generated from the board — type to override"
-              value={eosMeta.descs[c.id+"_"+day]??""}
-              onChange={e=>setEosMeta(m=>({...m,descs:{...m.descs,[c.id+"_"+day]:e.target.value}}))}/>
-          </label>)}
-        <label className="full">Send to<input value={eosMeta.to} onChange={e=>setEosMeta(m=>({...m,to:e.target.value}))}/></label>
+      <div className="loghdr eoslhdr">Email body
+        <button className="ghost sm" onClick={()=>setEosMeta(m=>{ const bd={...(m.bodies||{})}; delete bd[day]; return {...m,bodies:bd}; })} title="Discard edits and re-generate this day's summary from the board">↻ Rebuild from board</button>
+      </div>
+      <textarea className="eosbody" value={body} spellCheck={false}
+        onChange={e=>setEosMeta(m=>({...m, bodies:{...(m.bodies||{}), [day]:e.target.value}}))}/>
+      <div className="eosgrid"><label className="full">Send to<input value={eosMeta.to} onChange={e=>setEosMeta(m=>({...m,to:e.target.value}))}/></label></div>
+      <div className="btnrow">
+        <button className="cta" onClick={()=>{navigator.clipboard?.writeText(body); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy summary"}</button>
+        <a className="btn ghost" href={`mailto:${encodeURIComponent(eosMeta.to)}?subject=${encodeURIComponent(`2124013 DPS 01 Watershed - EOS - ${addDays(wk,day).slice(5).replace("-",".")}.${addDays(wk,day).slice(0,4)}`)}&body=${encodeURIComponent(body)}`}>Open in email</a>
+        <span className="sp"/><em className="dim2">Cost data is deliberately excluded.</em>
       </div>
 
       <div className="loghdr eoslhdr">Log production
@@ -2295,13 +2297,6 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
           <div className="eoslghd"><b>{c.name}</b><span className="eoslcols">qty · MH · done</span><button className="ghost sm" onClick={()=>logPlanned(ts)}>All planned</button></div>
           {ts.map(t=><EosLogRow key={c.id+"_"+t.id+"_"+ver} t={t} it={taskCalc(t).it} saveLog={saveLog} logged={logs[t.id]}/>)}
         </div>); })}
-
-      <pre className="eosprev">{text}</pre>
-      <div className="btnrow">
-        <button className="cta" onClick={()=>{navigator.clipboard?.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy summary"}</button>
-        <a className="btn ghost" href={`mailto:${encodeURIComponent(eosMeta.to)}?subject=${encodeURIComponent(`2124013 DPS 01 Watershed - EOS - ${addDays(wk,day).slice(5).replace("-",".")}.${addDays(wk,day).slice(0,4)}`)}&body=${encodeURIComponent(text)}`}>Open in email</a>
-        <span className="sp"/><em className="dim2">Cost data is deliberately excluded.</em>
-      </div>
     </Modal>
   );
 }
@@ -3744,6 +3739,8 @@ thead .rescol{z-index:12}
 .shiftgrp button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:7px;padding:4px 9px;font:700 11px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .shiftgrp button:hover{border-color:var(--lime);color:var(--lime)}
 .eosprev{background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;white-space:pre-wrap;font:12.5px/1.55 "IBM Plex Mono";max-height:320px;overflow:auto;color:#cfd4e0}
+.eosbody{width:100%;background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:14px;font:12.5px/1.55 "IBM Plex Mono";color:#e7ebf2;min-height:220px;max-height:360px;resize:vertical;margin-bottom:8px}
+.eosbody:focus{outline:none;border-color:var(--acc)}
 .page{padding:16px 22px}
 .page h2{font-size:24px;margin:6px 0 14px}
 .panel{background:var(--pn);border:1px solid var(--ln);border-radius:12px;padding:12px 14px;margin-bottom:14px}
