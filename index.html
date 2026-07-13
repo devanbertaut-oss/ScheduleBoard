@@ -257,6 +257,7 @@ const seedEquip = [
   { id:"e5", res:"c5", name:"Crane 40T",         kind:"rental" },
 ];
 let _t = 0; const tid = () => "t" + (++_t) + "_" + Math.random().toString(36).slice(2,6);
+const rid = () => "r" + (++_t) + "_" + Math.random().toString(36).slice(2,6);   // run id — assigned once per created operation
 const mk = (res, cc, day, qty, sta) => ({ id:tid(), res, ci:find(cc), day, qty, sta:sta||null, wk:WK0 });
 const seedTasks = [
   mk("c1","32.07.13.00",0,410), mk("c1","32.07.13.00",1,400), mk("c1","32.07.13.00",2,400), mk("c1","32.07.13.00",3,390),
@@ -288,19 +289,35 @@ const LOCATIONS = ["Orange Street","Magazine","Annunciation St (Race - Euterpe)"
 const JOB_NO = "2124013";
 /* Multi-day operation position: which day of a same-crew/item/location run a task is,
    across the week (used by the HQ sticky-note "Day X/Y" corner). */
-function dayRunFor(weekTasks,t){
-  const sib=weekTasks.filter(x=>x.res===t.res&&x.ci===t.ci&&(x.loc||"")===(t.loc||"")).sort((a,b)=>a.day-b.day);
-  const idx=sib.findIndex(x=>x.id===t.id);
-  return {idx:idx+1, total:sib.length};
-}
-/* A "run" = one multi-day operation: same crew + same catalog item + same location.
-   Runs have no stored id; this key identifies one and is stable across the date moves the
-   auto-scheduler makes (only day/wk change, never res/ci/loc). */
-const runKey = t => t.res+"|"+t.ci+"|"+(t.loc||"");
+/* A "run" = one multi-day operation created together. Identity is a stored run id (rid); the
+   res|ci|loc fallback keeps any legacy card without a rid working (rids carry no "|", so no
+   collision). Two separately-placed cards of the same item are independent runs. */
+const runKey = t => t.rid || (t.res+"|"+t.ci+"|"+(t.loc||""));
 /* Global Monday–Friday ordinal (WK0 = the Monday epoch, defined above): lets a run be shifted
    by whole working days and roll across weeks/weekends cleanly. */
 const wdi = (wk,day) => Math.round((new Date(wk+"T12:00:00")-new Date(WK0+"T12:00:00"))/6048e5)*5 + Math.min(Math.max(day|0,0),4);
 const fromWdi = n => ({ wk: addDays(WK0, Math.floor(n/5)*7), day: ((n%5)+5)%5 });
+/* One-time migration for legacy boards: give every card a run id. Cards without a rid are grouped
+   by res|ci|loc and split into contiguous runs (a working-day gap > 1 starts a new run), so genuine
+   multi-day runs keep one id while separately-placed same-item cards become independent. Dep keys
+   (old res|ci|loc) remap to the first rid of their group. Idempotent — a no-op once all have rids. */
+function migrateRuns(tasks, deps){
+  tasks = tasks || []; deps = deps || {};
+  if(tasks.every(t=>t.rid)) return {tasks, deps};
+  const byOld={};
+  tasks.forEach(t=>{ if(t.rid) return; const k=t.res+"|"+t.ci+"|"+(t.loc||""); (byOld[k]||(byOld[k]=[])).push(t); });
+  const assign={}, oldKeyToRid={};
+  Object.keys(byOld).forEach(k=>{
+    const arr=byOld[k].slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+    let cur=rid(), prevW=null; oldKeyToRid[k]=cur;
+    arr.forEach(t=>{ const w=wdi(t.wk,t.day); if(prevW!=null && w-prevW>1) cur=rid(); assign[t.id]=cur; prevW=w; });
+  });
+  const outTasks=tasks.map(t=> t.rid ? t : {...t, rid:assign[t.id]});
+  const remap=key=> (oldKeyToRid[key]!=null ? oldKeyToRid[key] : key);   // rid keys pass through
+  const outDeps={};
+  Object.keys(deps).forEach(dk=>{ const nk=remap(dk); const preds=[...new Set((deps[dk]||[]).map(remap))].filter(p=>p!==nk); if(preds.length) outDeps[nk]=preds; });
+  return {tasks:outTasks, deps:outDeps};
+}
 /* Predecessor-candidate ordering: prioritise the SAME foreman's closest PREVIOUS run (a crew's
    next operation most often follows its own last one), then any run by proximity. cands carry
    {res, finishWdi}. */
@@ -401,7 +418,7 @@ function LookAhead(){
   const [wk, setWk] = useState(WK0);
   const [crews, setCrews] = useState(seedCrews);
   const [siteRows, setSiteRows] = useState(seedSite);
-  const [tasks, setTasks] = useState(seedTasks);
+  const [tasks, setTasks] = useState(()=>migrateRuns(seedTasks,{}).tasks);
   const [logs, setLogs] = useState(seedLogs);
   const [notes, setNotes] = useState(seedNotes);
   const [cfg, setCfg] = useState({ crewSize:6, shiftHrs:8, laborRate:58, truckRate:220 });
@@ -462,7 +479,8 @@ function LookAhead(){
      toggles) from being yanked by another device's poll. */
   const applyState = (s, opts) => {
     if (s.crews) setCrews(s.crews); if (s.siteRows) setSiteRows(s.siteRows);
-    if (s.tasks) setTasks(s.tasks); if (s.logs) setLogs(s.logs);
+    const _mig = s.tasks ? migrateRuns(s.tasks, s.deps||{}) : null;   // assign run ids to legacy cards + remap dep keys
+    if (_mig) setTasks(_mig.tasks); if (s.logs) setLogs(s.logs);
     if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
     if (s.eosMeta) setEosMeta(s.eosMeta);
     if (s.umOverrides) setUmOverrides(s.umOverrides);
@@ -470,7 +488,7 @@ function LookAhead(){
     if (s.ctc) setCtc(s.ctc);
     if (s.baseline) setBaseline(s.baseline);
     if (s.milestones) setMilestones(s.milestones);
-    if (s.deps) setDeps(s.deps);
+    if (s.deps) setDeps(_mig ? _mig.deps : s.deps);
     if (s.truckDay) setTruckDay(s.truckDay);
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
@@ -553,6 +571,12 @@ function LookAhead(){
       m[k]={active:present.length>0, broken:present.length<preds.length, conflict, label}; });
     return m;
   },[tasks,deps]);
+  // Day X/Y for every card, counted across the WHOLE run (all weeks) by run id — never restarts at a week boundary.
+  const runDayMap = useMemo(()=>{
+    const by={}; tasks.forEach(t=>{ (by[runKey(t)]||(by[runKey(t)]=[])).push(t); });
+    const m={}; Object.values(by).forEach(arr=>{ arr.sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day)); arr.forEach((t,i)=>{ m[t.id]={idx:i+1,total:arr.length}; }); });
+    return m;
+  },[tasks]);
 
   /* ---- Netlify Blobs sync engine: push after local saves; pull on boot, focus,
      and a 60s visible-tab poll. Whole-state last-write-wins. Missing endpoint
@@ -1108,7 +1132,7 @@ function LookAhead(){
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
       </div>
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap,runDayMap}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -1126,11 +1150,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -1158,7 +1182,7 @@ function LookAhead(){
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
-      {modal?.type==="cards"   && <CardExportModal {...{weekTasks,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
       {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
@@ -1207,7 +1231,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,linkApi,resizeApi}){
+function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
@@ -1228,7 +1252,7 @@ function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,to
         return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=><Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} prev={weekTasks.some(x=>x.res===res.id&&x.ci===t.ci&&x.day===t.day-1)} onOpen={()=>setModal({type:"task",id:t.id})}/>)}
+          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} prev={!!(rdm && rdm.idx>1)} onOpen={()=>setModal({type:"task",id:t.id})}/>; })}
         </td>;
       })}
     </tr>
@@ -1327,7 +1351,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap,runDayMap}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -1342,7 +1366,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={dayRunFor(weekTasks,t)} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <button className={"mqlog"+(taskCalc(t).done?" done":"")} onClick={()=>setModal({type:"qlog",id:t.id})}>{taskCalc(t).done?"✓ Logged — edit":"Log actuals"}</button>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
@@ -1988,9 +2012,9 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const [daysOv,setDaysOv]=useState("");
   const [prodOv,setProdOv]=useState("");   // avg-per-day override — reciprocal with Days via the total qty
   const [predSel,setPredSel]=useState([]); const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
+  const [runId]=useState(()=>rid());       // this new run's id — all its day-cards share it
   const predCands = useMemo(()=>{
-    const newKey = res+"|"+ci+"|"+((loc||"").trim());
-    const keys=[...new Set((tasks||[]).map(runKey))].filter(k=> k!==newKey && !predSel.includes(k));
+    const keys=[...new Set((tasks||[]).map(runKey))].filter(k=> !predSel.includes(k));   // any existing run (incl. same item) can be a predecessor
     const cands=keys.map(k=>runInfoFor(tasks,crews,k)).filter(Boolean).map(r=>({...r, search:(r.item+" "+r.crew+" "+r.loc+" "+r.cc).toLowerCase()}));
     return rankRuns(cands, res, wdi(wk,day));
   },[tasks,crews,res,ci,loc,day,wk,predSel]);
@@ -2148,11 +2172,11 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
               const dq=Math.min(left, Math.round(sliceRate*100)/100); left=Math.round((left-dq)*100)/100;
               const staSpan = (!isCallout && cursor!=null && useQty>0) ? (b-a)*(dq/useQty) : null;
               const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staSpan] : null); if(cursor!=null && !isCallout) cursor+=staSpan;
-              list.push({ id:tid(), res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
+              list.push({ id:tid(), rid:runId, res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
             }
-            if(predSel.length){ const newKey = res+"|"+ci+"|"+(loc.trim()||""); predSel.forEach(pk=>addDep(newKey,pk)); }
+            if(predSel.length){ predSel.forEach(pk=>addDep(runId,pk)); }
             add(list);
           }}>Add {nDays>1?nDays+" days":"to board"}</button>
           <button className="ghost" onClick={close}>Cancel</button>
@@ -2779,7 +2803,7 @@ function CardSheets({pages,paper,paperBg,preview}){
     </div>
   );
 }
-function CardExportModal({weekTasks,crews,taskCalc,cfg,wk,close}){
+function CardExportModal({weekTasks,runDayMap,crews,taskCalc,cfg,wk,close}){
   const countByScope = useMemo(()=>{ const m={}; weekTasks.forEach(t=>{ const k=scopeOf(t,crews); m[k]=(m[k]||0)+1; }); return m; },[weekTasks,crews]);
   const [sck,setSck]=useState(()=>{ const f=Object.keys(SCOPES).find(k=>countByScope[k]); return f||"drainage"; });
   const [paper,setPaper]=useState("letter");
@@ -2791,7 +2815,7 @@ function CardExportModal({weekTasks,crews,taskCalc,cfg,wk,close}){
     const base = weekTasks
       .filter(t=> scopeOf(t,crews)===sck && (crewF==="all"||t.res===crewF))
       .sort((a,b)=> a.day-b.day || String(a.res).localeCompare(String(b.res)))
-      .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:dayRunFor(weekTasks,t), mh:c.planMH, loads:c.loads}; });
+      .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:(runDayMap&&runDayMap[t.id])||{idx:1,total:1}, mh:c.planMH, loads:c.loads}; });
     // Merge same crew (res) + same day onto one card: stations stay separate (one line each),
     // MH and loads are summed. Sort keeps groups day-ordered; Map preserves that order.
     const groups = new Map();
