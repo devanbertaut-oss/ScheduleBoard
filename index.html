@@ -437,6 +437,7 @@ function LookAhead(){
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [deps, setDeps] = useState({});                  // predecessors: { dependentRunKey: [predRunKey,...] } — dependent auto-starts after latest pred finishes
+  const [rainDays, setRainDays] = useState({});          // rain-outs: { 'YYYY-MM-DD': true } — the day is lost; all work from it pushes one working day
   const [boardView, setBoardView] = useState("Ops");     // board cards: Ops (default) | Field | HQ (sticky note)
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
@@ -489,6 +490,7 @@ function LookAhead(){
     if (s.baseline) setBaseline(s.baseline);
     if (s.milestones) setMilestones(s.milestones);
     if (s.deps) setDeps(_mig ? _mig.deps : s.deps);
+    if (s.rainDays) setRainDays(s.rainDays);
     if (s.truckDay) setTruckDay(s.truckDay);
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
@@ -514,8 +516,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -527,7 +529,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -764,13 +766,13 @@ function LookAhead(){
   const [undoStack, setUndoStack] = useState([]);   // [{label, tasks, logs, deps}]
   const [redoStack, setRedoStack] = useState([]);
   const undoSuppress = useRef(false);               // suppress nested snapshots (e.g. commitReflow's loop)
-  const pushUndo = label => { if(undoSuppress.current) return; setUndoStack(s=>[...s.slice(-29),{label,tasks,logs,deps}]); setRedoStack([]); };
+  const pushUndo = label => { if(undoSuppress.current) return; setUndoStack(s=>[...s.slice(-29),{label,tasks,logs,deps,rainDays}]); setRedoStack([]); };
   const doUndo = () => { if(!undoStack.length) return; const snap=undoStack[undoStack.length-1];
-    setRedoStack(r=>[...r.slice(-29),{label:snap.label, tasks, logs, deps}]); setUndoStack(s=>s.slice(0,-1));
-    setTasks(snap.tasks); setLogs(snap.logs); setDeps(snap.deps); flash("Undone — "+snap.label.toLowerCase()); };
+    setRedoStack(r=>[...r.slice(-29),{label:snap.label, tasks, logs, deps, rainDays}]); setUndoStack(s=>s.slice(0,-1));
+    setTasks(snap.tasks); setLogs(snap.logs); setDeps(snap.deps); if(snap.rainDays) setRainDays(snap.rainDays); flash("Undone — "+snap.label.toLowerCase()); };
   const doRedo = () => { if(!redoStack.length) return; const snap=redoStack[redoStack.length-1];
-    setUndoStack(s=>[...s.slice(-29),{label:snap.label, tasks, logs, deps}]); setRedoStack(r=>r.slice(0,-1));
-    setTasks(snap.tasks); setLogs(snap.logs); setDeps(snap.deps); flash("Redone — "+snap.label.toLowerCase()); };
+    setUndoStack(s=>[...s.slice(-29),{label:snap.label, tasks, logs, deps, rainDays}]); setRedoStack(r=>r.slice(0,-1));
+    setTasks(snap.tasks); setLogs(snap.logs); setDeps(snap.deps); if(snap.rainDays) setRainDays(snap.rainDays); flash("Redone — "+snap.label.toLowerCase()); };
   useEffect(()=>{ const on=e=>{
     if(!(e.metaKey||e.ctrlKey)) return;
     if(/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||"")) return;  // let text fields keep their own undo
@@ -971,6 +973,12 @@ function LookAhead(){
     setTasks(ts=>ts.map(t=>{ if(t.wk===wk && !logs[t.id]){ const w=fromWdi(wdi(t.wk,t.day)+5); return {...t,day:w.day,wk:w.wk}; } return t; }));
     return movers.length;
   };
+  /* Rain-out: a lost working day. The whole schedule from that day slides one working day later
+     (every crew), the day is recorded so its EOS reads a rain-out. Clearing pulls the schedule back. */
+  const rainWdiOf = date => { const mw=mondayOf(date); const off=Math.round((new Date(date+"T12:00:00")-new Date(mw+"T12:00:00"))/864e5); return wdi(mw, Math.min(Math.max(off,0),4)); };
+  const shiftFrom = (rw,dir) => setTasks(ts=>ts.map(t=>{ const w0=wdi(t.wk,t.day); if(dir>0? w0>=rw : w0>rw){ const w=fromWdi(w0+dir); return {...t,day:w.day,wk:w.wk}; } return t; }));
+  const applyRainout = date => { if(rainDays[date]) return 0; const affected=tasks.filter(t=>wdi(t.wk,t.day)>=rainWdiOf(date)).length; pushUndo("Rain-out "+date); setRainDays(r=>({...r,[date]:true})); shiftFrom(rainWdiOf(date),+1); return affected; };
+  const clearRainout = date => { if(!rainDays[date]) return; pushUndo("Cleared rain-out "+date); setRainDays(r=>{ const c={...r}; delete c[date]; return c; }); shiftFrom(rainWdiOf(date),-1); };
   const addResource = (type,name,extra)=>{
     const id=(type==="site"?"n":type==="sub"?"s":"c")+Math.random().toString(36).slice(2,7);
     if(type==="site") setSiteRows(r=>[...r,{id,name}]);
@@ -1116,6 +1124,7 @@ function LookAhead(){
         </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
         <button className="snapbtn" title="Move every unlogged task in this week to the same day next week (finished work stays put)" onClick={()=>{ const open=tasks.filter(t=>t.wk===wk&&!logs[t.id]).length; if(open && window.confirm(`Roll ${open} unfinished task${open>1?"s":""} from this week into next week?`)){ const n=rollForward(); flash(`Rolled ${n} task${n>1?"s":""} into next week`); } else if(!open){ flash("Nothing unfinished to roll forward"); } }}>Roll forward ⤳</button>
+        <button className="snapbtn" title="Mark a day rained out — every crew's work from that day pushes one working day, and the day's EOS records a rain-out" onClick={()=>setModal({type:"rainout"})}>⛈ Rain-out</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
 
@@ -1141,8 +1150,9 @@ function LookAhead(){
               <th className="rescol">Resource</th>
               {DAYS.map((d,i)=>{
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
-                const ms = milestones.filter(m=>m.date===date);
-                return <th key={d} className={(i>4?"wknd ":"")+(today?"today":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date];
+                return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                  {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
                   {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
             </tr>
@@ -1179,7 +1189,8 @@ function LookAhead(){
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
-      {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,cfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
@@ -2209,7 +2220,32 @@ function EosLogRow({t,it,saveLog,logged}){
     </div>
   );
 }
-function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,cfg,close}){
+function RainoutModal({wk,tasks,rainDays,applyRainout,clearRainout,close}){
+  const [date,setDate]=useState(()=>new Date().toISOString().slice(0,10));
+  const rw = d => { const mw=mondayOf(d); const off=Math.round((new Date(d+"T12:00:00")-new Date(mw+"T12:00:00"))/864e5); return wdi(mw,Math.min(Math.max(off,0),4)); };
+  const affected = date ? tasks.filter(t=>wdi(t.wk,t.day)>=rw(date)).length : 0;
+  const days = Object.keys(rainDays).filter(d=>rainDays[d]).sort();
+  return (
+    <Modal close={close} w={480}>
+      <h3>⛈ Rain-out day</h3>
+      <p className="dim2" style={{fontSize:13,margin:"0 0 12px"}}>Mark a working day as rained out. Every crew's work on or after that day pushes one working day later, and the day's EOS records a rain-out. Undo with ⌘Z.</p>
+      <div className="logrow">
+        <label>Rain-out date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+        <div className="gen">Pushes<b>{affected} task{affected!==1?"s":""}</b></div>
+      </div>
+      <div className="btnrow" style={{marginTop:6}}>
+        <button className="cta" disabled={!date||!!rainDays[date]} onClick={()=>{ const n=applyRainout(date); close(); flash(`Rained out ${date} — pushed ${n} task${n!==1?"s":""}`); }}>{date&&rainDays[date]?"Already rained out":"Mark rained out"}</button>
+      </div>
+      {days.length>0 && <>
+        <div className="loghdr" style={{marginTop:14}}>Recorded rain-outs</div>
+        <div className="chiprow">
+          {days.map(d=><span key={d} className="predchip">{longDate(d)}<button title="Clear — pull the schedule back a working day" onClick={()=>clearRainout(d)}>✕</button></span>)}
+        </div>
+      </>}
+    </Modal>
+  );
+}
+function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close}){
   const [day,setDay]=useState(d0);
   const [copied,setCopied]=useState(false);
   const [ver,setVer]=useState(0);   // bump to remount log rows after a bulk "log as planned"
@@ -2227,15 +2263,23 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
   },[weekTasks,day,crews,cfg]);
 
   const text = useMemo(()=>{
+    const dt = addDays(wk,day);
+    const isRain = !!(rainDays && rainDays[dt]);
     const L=[];
-    L.push(longDate(addDays(wk,day)));
+    L.push(longDate(dt));
     L.push("");
     L.push("Project: 2124013 - DPS 01 Watershed");
     L.push("Superintendent: Brett Leonhard");
     L.push("");
     L.push("Safety:"); L.push(eosMeta.safety); L.push("");
     L.push("Quality:"); L.push(eosMeta.quality); L.push("");
-    L.push("Weather:"); L.push(eosMeta.weather); L.push("");
+    L.push("Weather:"); L.push(isRain ? "Rained out — inclement weather; no work performed." : eosMeta.weather); L.push("");
+    if(isRain){
+      L.push("RAINED OUT — no crews worked this shift. All scheduled operations pushed one working day.");
+      L.push(""); L.push("—");
+      L.push("Preliminary end-of-shift figures based on field counts at time of send; quantities subject to survey verification and final reconciliation.");
+      return L.join("\n");
+    }
     L.push("Trucking:"); L.push(truckLine); L.push("");
     L.push("Production - Self Perform Crews:"); L.push("");
     crews.filter(c=>c.type==="crew").forEach(c=>{
@@ -2264,7 +2308,7 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
     L.push("—");
     L.push("Preliminary end-of-shift figures based on field counts at time of send; quantities subject to survey verification and final reconciliation.");
     return L.join("\n");
-  },[wk,day,crews,weekTasks,logs,eosMeta,truckLine]);
+  },[wk,day,crews,weekTasks,logs,eosMeta,truckLine,rainDays]);
 
   const active = crews.filter(c=>dayTasks(c.id).length>0);
   // Editable email body: a per-day override on eosMeta wins once the user types; otherwise the
@@ -2274,8 +2318,9 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
     <Modal close={close} w={720}>
       <div className="crewhead">
         <h3 style={{margin:0}}>End of Shift — {longDate(addDays(wk,day))}</h3>
-        <select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((x,i)=><option key={x} value={i}>{x} {dLabel(wk,i)}</option>)}</select>
+        <select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((x,i)=><option key={x} value={i}>{x} {dLabel(wk,i)}{rainDays&&rainDays[addDays(wk,i)]?" ⛈":""}</option>)}</select>
       </div>
+      {rainDays && rainDays[addDays(wk,day)] && <div className="msline" style={{background:"var(--noteIbg)",borderColor:"var(--noteIln)",color:"var(--noteItx)"}}>⛈ This day is marked rained out — the summary below records a rain-out.</div>}
       <div className="loghdr eoslhdr">Email body
         <button className="ghost sm" onClick={()=>setEosMeta(m=>{ const bd={...(m.bodies||{})}; delete bd[day]; return {...m,bodies:bd}; })} title="Discard edits and re-generate this day's summary from the board">↻ Rebuild from board</button>
       </div>
@@ -3561,6 +3606,8 @@ thead .rescol{z-index:12}
 .capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 .capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
 .msflag{display:inline-flex;align-items:center;gap:3px;margin-top:4px;font:700 9px "Saira Condensed";letter-spacing:.02em;color:#0c0d0c;background:var(--lime);padding:2px 6px 2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.board thead th.rain{background:linear-gradient(var(--bg),rgba(90,120,170,.14))}
+.rainflag{display:block;margin-top:3px;font:700 9px "Saira Condensed";letter-spacing:.04em;color:#bcd0ea;background:rgba(70,100,150,.28);border:1px solid rgba(120,150,200,.5);padding:1px 6px;border-radius:3px;white-space:nowrap}
 .msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
 .msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
 .msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
