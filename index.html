@@ -1611,11 +1611,19 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   const runOpenDays = runN - runLocked;
   const crewOf = crews.find(c=>c.id===t.res);
   const capMH = (crewOf && crewOf.capMH>0) ? crewOf.capMH : 68;
-  const perDayMH = runAvgVal*it[CI.MH];
-  const perDayLoads = ecfg.truckRate>0 ? (runAvgVal*it[CI.UT])/ecfg.truckRate : 0;
   const runFinishWdi = runMem.length ? Math.max(...runMem.map(m=>wdi(m.wk,m.day))) : null;
   const runFinish = runFinishWdi!=null ? fromWdi(runFinishWdi) : null;
   const succCount = Object.keys(deps).filter(dk=>(deps[dk]||[]).includes(myKey)).length;
+  // Live reciprocal Days ⇄ avg/day: the run total is the pivot (avg = total/days). Typing in one
+  // field previews the other instantly; the actual re-slice commits on blur / Enter / step.
+  const [pDays,setPDays]=useState(runN);
+  const [pAvg,setPAvg]=useState(runAvgVal);
+  useEffect(()=>{ setPDays(runN); setPAvg(runAvgVal); },[runN,runAvgVal]);
+  const pMH = (+pAvg||0)*it[CI.MH];
+  const pLoads = ecfg.truckRate>0 ? ((+pAvg||0)*it[CI.UT])/ecfg.truckRate : 0;
+  const commitAvg = () => { const p=+pAvg; if(p>0 && Math.abs(p-runAvgVal)>1e-9) resliceRun(t,{perDay:p}); };
+  const commitDays = () => { const d=Math.round(+pDays); if(d>0 && d!==runN) resliceRun(t,{days:d}); };
+  const stepAvg = dir => { const s=Math.max(1,Math.round((+pAvg||runAvgVal)*0.1)); const p=(+pAvg||runAvgVal)+dir*s; if(p>0){ setPAvg(p); if(runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); resliceRun(t,{perDay:p}); } };
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -1750,19 +1758,21 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
       <div className="logrow">
         <label>Avg {it[CI.UM]}/day
           <div className="stepper">
-            <button type="button" className="stepbtn" title="Slower — spread over more days" onClick={()=>{ const s=Math.max(1,Math.round(runAvgVal*0.1)); const p=runAvgVal-s; if(p>0) resliceRun(t,{perDay:p}); }}>−</button>
-            <BlurInput type="number" value={runAvgVal} onCommit={v=>{const p=+v; if(p>0) resliceRun(t,{perDay:p});}}/>
-            <button type="button" className="stepbtn" title="Faster — fewer days" onClick={()=>{ const s=Math.max(1,Math.round(runAvgVal*0.1)); resliceRun(t,{perDay:runAvgVal+s}); }}>+</button>
+            <button type="button" className="stepbtn" title="Slower — spread over more days" onClick={()=>stepAvg(-1)}>−</button>
+            <input type="number" value={pAvg} onChange={e=>{ const v=e.target.value; setPAvg(v); const p=+v; if(p>0 && runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); }}
+              onBlur={commitAvg} onKeyDown={e=>{ if(e.key==="Enter") e.currentTarget.blur(); }}/>
+            <button type="button" className="stepbtn" title="Faster — fewer days" onClick={()=>stepAvg(1)}>+</button>
           </div>
         </label>
-        <label>Days<BlurInput type="number" value={runN} onCommit={v=>{const d=Math.round(+v); if(d>0) resliceRun(t,{days:d});}}/></label>
+        <label>Days<input type="number" value={pDays} onChange={e=>{ const v=e.target.value; setPDays(v); const d=Math.round(+v); if(d>0 && runQtot>0) setPAvg(Math.round(runQtot/d*100)/100); }}
+          onBlur={commitDays} onKeyDown={e=>{ if(e.key==="Enter") e.currentTarget.blur(); }}/></label>
         <div className="gen">Total<b>{fmtN(runQtot,runQtot%1?1:0)} {it[CI.UM]}</b>{runSta&&runS0!=null&&runEnd!=null && <em className="dim2"> · {staFmt(runS0)}→{staFmt(runEnd)}</em>}</div>
       </div>
       {/* Live impact — updates as the run is re-sliced above */}
       <div className="impact">
         <div className="impact-i"><label>Finish</label><b>{runFinish?DAYS[runFinish.day]+" "+dLabel(runFinish.wk,runFinish.day):"—"}</b></div>
-        <div className={"impact-i"+(perDayMH>capMH+1e-6?" over":"")}><label>MH / day</label><b>{fmtN(perDayMH,perDayMH<10?1:0)}<em> / {capMH} cap</em></b></div>
-        <div className="impact-i"><label>Loads / day</label><b>{perDayLoads>=0.05?fmtN(perDayLoads,1):"—"}</b></div>
+        <div className={"impact-i"+(pMH>capMH+1e-6?" over":"")}><label>MH / day</label><b>{fmtN(pMH,pMH<10?1:0)}<em> / {capMH} cap</em></b></div>
+        <div className="impact-i"><label>Loads / day</label><b>{pLoads>=0.05?fmtN(pLoads,1):"—"}</b></div>
         <div className="impact-i"><label>Successors</label><b>{succCount||"—"}</b></div>
       </div>
       {runLoggedMem.length>0 && runOpenDays>0 && (()=>{ const um=it[CI.UM]; return (
