@@ -1934,6 +1934,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
   const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
   const [daysOv,setDaysOv]=useState("");
+  const [prodOv,setProdOv]=useState("");   // avg-per-day override — reciprocal with Days via the total qty
   const [predSel,setPredSel]=useState([]); const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
   const predCands = useMemo(()=>{
     const newKey = res+"|"+ci+"|"+((loc||"").trim());
@@ -1964,7 +1965,9 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
     : genQty;
   const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
   const dayRate = it && it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : useQty||1;
-  const nDays = daysOv? Math.max(1,+daysOv) : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
+  const nDays = daysOv!=="" ? Math.max(1,Math.round(+daysOv))
+              : (prodOv!=="" && +prodOv>0) ? Math.max(1, Math.ceil(useQty/+prodOv))
+              : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
   const perDay = useQty/nDays;
   const inst = it? installedFor(ci):0, est=it? it[CI.EST]:0;
   const remaining = Math.max(0, est-inst);
@@ -2041,7 +2044,15 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
         <div className="logrow">
           <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
-          <label>Days ({fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/d)<input type="number" placeholder={String(nDays)} value={daysOv} onChange={e=>setDaysOv(e.target.value)}/></label>
+        </div>
+        <div className="logrow">
+          <label>Avg {it[CI.UM]}/day<input type="number" min="0" placeholder={useQty>0?fmtN(perDay,perDay<10?1:0):"—"}
+            value={prodOv!==""?prodOv:(useQty>0?fmtN(perDay,perDay%1?1:0):"")} onFocus={e=>e.target.select()}
+            onChange={e=>{ setProdOv(e.target.value); setDaysOv(""); }}/></label>
+          <label>Days<input type="number" min="1" placeholder={String(nDays)}
+            value={daysOv!==""?daysOv:(useQty>0?String(nDays):"")} onFocus={e=>e.target.select()}
+            onChange={e=>{ setDaysOv(e.target.value); setProdOv(""); }}/></label>
+          <div className="gen">Total<b>{useQty>0?fmtN(useQty,useQty%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
         </div>
         <div className="chiprow" style={{margin:"2px 0 4px"}}>
           <span className="ovnote" style={{margin:"0 4px 0 0"}}>Predecessors:</span>
