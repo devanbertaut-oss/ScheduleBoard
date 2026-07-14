@@ -249,16 +249,24 @@ const TRUCK_DEFAULTS = {
   stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
   roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4,
   cycSpoil:24, cycStone:26, cycSand:32,
-  // Haul sources for the back-haul optimizer + map. oneWayMin = field-observed one-way
-  // drive time (the ground truth for cycles); lat/lng set by dragging the pin (New Orleans
-  // job area defaults). oneWayMin seeds from cycSpoil/cycStone/cycSand ÷ 2.
+  // Haul sources for the back-haul optimizer + map. oneWayMin = one-way DRIVE (windshield)
+  // time — the single basis for every cycle: round trip = 2·oneWayMin + loadSpot + tipMin.
+  // Auto-filled from the map route (OSRM) or edited by hand; lat/lng set by dragging the pin.
   sources: {
     site:  { name:"Job site",         lat:29.9550, lng:-90.0750 },
-    dump:  { name:"Haul-out / dump",  lat:29.9900, lng:-90.0300, oneWayMin:12 },
-    stone: { name:"#57 stone pit",    lat:29.9800, lng:-90.1350, oneWayMin:13 },
-    sand:  { name:"Sand pit",         lat:30.0250, lng:-90.0800, oneWayMin:16 }
+    dump:  { name:"Haul-out / dump",  lat:29.9900, lng:-90.0300, oneWayMin:10 },
+    stone: { name:"#57 stone pit",    lat:29.9800, lng:-90.1350, oneWayMin:11 },
+    sand:  { name:"Sand pit",         lat:30.0250, lng:-90.0800, oneWayMin:14 }
   }
 };
+/* One cycle basis, shared by truckModel and routePlan so their truck counts agree. Round-trip
+   minutes per stream = 2·(one-way drive to that source) + load/spot + tip. Falls back to the
+   flat cyc* autos only when a source has no drive time set. */
+function truckCycles(c){
+  const S=c.sources||{}, load=+c.loadSpot||6, tip=+c.tipMin||3;
+  const cyc=(key,flat)=>{ const v=+(S[key]&&S[key].oneWayMin); return v>0 ? (2*v+load+tip) : flat; };
+  return { spoil:cyc("dump",c.cycSpoil), stone:cyc("stone",c.cycStone), sand:cyc("sand",c.cycSand) };
+}
 /* Roadway / earthwork item recognizer (Phase 6). Excavation (CY) hauls spoil OUT; base
    course & bridging aggregate haul IN from the stone pit (#610 by the ton, #57/#8 by CY);
    "unsuitable subgrade" also brings sand IN. Fine grading is labor only (no haul → null). */
@@ -284,8 +292,9 @@ function truckModel(item, dailyQty, D, tcfg){
   const P=+dailyQty, um=item[CI.UM];
   const volCap=c.axle==="quad"?c.quadCY:c.triCY, stoneCap=c.axle==="quad"?c.stoneTnQuad:c.stoneTnTri;
   const trips = cyc => Math.max(1, Math.floor(c.shiftHrs*60*c.eff/Math.max(1,cyc)));
-  const tset = {spoil:trips(c.cycSpoil), stone:trips(c.cycStone), sand:trips(c.cycSand)};
-  const feedMin=Math.ceil(c.cycSpoil/Math.max(1,c.loadSpot));
+  const CYC = truckCycles(c);                                  // drive-derived round-trip minutes
+  const tset = {spoil:trips(CYC.spoil), stone:trips(CYC.stone), sand:trips(CYC.sand)};
+  const feedMin=Math.ceil(CYC.spoil/Math.max(1,c.loadSpot));    // keep the excavator fed on the spoil cycle
   const g = um==="LF" ? bedForItem(item[CI.CC], item[CI.TASK], um, c.tw) : null;
   if(g && g.cyEnv!=null){
     const Dd=Math.max(0,+D||0);
@@ -363,10 +372,12 @@ function routePlan(streams, sources, autos){
   for(const k of ["dump","stone","sand"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
   const mpm = impl.length ? impl.reduce((a,x)=>a+x,0)/impl.length : null;   // miles per min
   const legPair = (a,b) => { const d=haversine(S[a],S[b]); return (d!=null && mpm>0) ? Math.max(1, d/mpm) : (legSite(a)+legSite(b)); };
-  // dedicated round-trip cycle minutes
+  // round-trip cycle minutes — SAME basis as truckModel (2·drive + load + tip)
   const spoilRT = load + 2*legSite("dump") + tip;
   const rt = key => 2*legSite(key) + load + tip;
   const combined = key => 2*load + 2*tip + legSite("dump") + legPair("dump",key) + legSite(key);
+  const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));   // round trips one truck can run in a shift
+  const feedMin = Math.ceil(spoilRT/Math.max(1,load));                      // excavator-feed floor on the spoil cycle
   const mats = [
     {key:"stone", label:"#57 stone", loads:stoneN, rt:rt("stone"), comb:combined("stone"), save:(legSite("dump")+legSite("stone")-legPair("dump","stone"))},
     {key:"sand",  label:"sand",      loads:sandN,  rt:rt("sand"),  comb:combined("sand"),  save:(legSite("dump")+legSite("sand") -legPair("dump","sand"))}
@@ -377,13 +388,26 @@ function routePlan(streams, sources, autos){
     const pair=Math.min(spoilLeft, m.loads); if(pair<=0) continue;
     combos.push({material:m.label, key:m.key, count:pair, cycleMin:m.comb, savedMin:pair*m.save});
     spoilLeft-=pair; m.paired=pair; }
-  // dedicated remainders
+  // minutes (for hours saved) + dedicated remainders
   let smartMin=0; const dedic=[];
   combos.forEach(x=>{ smartMin += x.count*x.cycleMin; });
   if(spoilLeft>0.001){ smartMin += spoilLeft*spoilRT; dedic.push({material:"spoil", count:spoilLeft, cycleMin:spoilRT}); }
   mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001){ smartMin += rem*m.rt; dedic.push({material:m.label, key:m.key, count:rem, cycleMin:m.rt}); } });
   const dumbMin = spoilN*spoilRT + stoneN*mats[0].rt + sandN*mats[1].rt;
-  const trucks = Math.ceil(smartMin/availMin), dumbTrucks = Math.ceil(dumbMin/availMin);
+  // TRUCK COUNTS — per-stream fleets, so dedicated == the sum of truckModel's stream trucks (card totals).
+  const dumbSpoil = spoilN>0 ? Math.max(Math.ceil(spoilN/trips(spoilRT)), feedMin) : 0;
+  const dumbStone = stoneN>0 ? Math.ceil(stoneN/trips(mats[0].rt)) : 0;
+  const dumbSand  = sandN>0  ? Math.ceil(sandN /trips(mats[1].rt)) : 0;
+  const dumbTrucks = dumbSpoil + dumbStone + dumbSand;
+  // smart: combined trips carry spoil+material together; leftovers dedicated; keep the excavator fed.
+  let smartTrucks=0, combSpoilTrucks=0;
+  combos.forEach(x=>{ const t=Math.ceil(x.count/trips(x.cycleMin)); smartTrucks+=t; combSpoilTrucks+=t; });
+  const leftSpoilTrucks = spoilLeft>0.001 ? Math.ceil(spoilLeft/trips(spoilRT)) : 0;
+  smartTrucks += leftSpoilTrucks;
+  const spoilCarrying = combSpoilTrucks + leftSpoilTrucks;
+  if(spoilN>0 && spoilCarrying < feedMin) smartTrucks += (feedMin - spoilCarrying);   // top up to feed the machine
+  mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001) smartTrucks += Math.ceil(rem/trips(m.rt)); });
+  const trucks = Math.min(smartTrucks, dumbTrucks);   // back-haul never needs more trucks than dedicated
   const hoursSaved = Math.max(0, (dumbMin-smartMin)/60);
   return { combos, dedic, smartMin, dumbMin, trucks, dumbTrucks, hoursSaved,
     savings:{stone:mats[0].save, sand:mats[1].save},
@@ -894,9 +918,12 @@ function LookAhead(){
     const planMH = t.qty*it[CI.MH];
     const lg = logs[t.id]||{};
     const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
-    const trk = truckModel(it, t.qty, t.dig, cfg.truck);       // physical per-day trucks (pipe items)
+    const trk = truckModel(it, t.qty, t.dig, cfg.truck);       // planned per-day trucks
+    // Actual trucking is a function of ACTUAL production (logged qty) — never hand-counted loads.
+    const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, t.dig, cfg.truck) : null;
     return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
       trk, trucks: trk.applicable ? trk.total : null,
+      actTrk, actTrucks: actTrk && actTrk.applicable ? actTrk.total : null,
       mat:t.qty*it[CI.UM$], budAmt:t.qty*it[CI.BID], budCost:t.qty*unitCost(it),
       earnMH:(lg.qty||0)*it[CI.MH] };
   };
@@ -3066,25 +3093,49 @@ const SRC_ROLES = [
    back-haul loop (site→dump→pit→site) drawn as a highlighted polyline. Data = cfg.truck.sources;
    dragging a pin writes lat/lng back through setSource. Falls back to a note if tiles/lib fail. */
 function TruckMap({sources, setSource, plan}){
-  const elRef=useRef(null), mapRef=useRef(null), grpRef=useRef(null);
+  const elRef=useRef(null), mapRef=useRef(null), grpRef=useRef(null), routesRef=useRef({});
   const srcRef=useRef(sources), planRef=useRef(plan), setRef=useRef(setSource);
   srcRef.current=sources; planRef.current=plan; setRef.current=setSource;
-  const [ready,setReady]=useState(false); const [err,setErr]=useState("");
+  const [ready,setReady]=useState(false); const [err,setErr]=useState(""); const [tick,setTick]=useState(0); const [osrm,setOsrm]=useState("");
+
+  // Real driving route site<->source via OSRM. Stores the road geometry for the map and, when
+  // updateTime, writes the rounded one-way minutes back into the source (auto-fills drive time).
+  const fetchRoute = React.useCallback(async (key, updateTime)=>{
+    const S=srcRef.current||{}, a=S.site, b=S[key]; if(!a||a.lat==null||!b||b.lat==null) return;
+    try{
+      const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),8000);
+      const url=`https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+      const res=await fetch(url,{signal:ctrl.signal}); clearTimeout(to);
+      const j=await res.json(); const rt=j&&j.routes&&j.routes[0]; if(!rt||!rt.geometry) throw new Error("no route");
+      routesRef.current[key]=rt.geometry.coordinates.map(c=>[c[1],c[0]]);   // [lng,lat] → [lat,lng]
+      setTick(t=>t+1);
+      if(updateTime) setRef.current(key,{oneWayMin:Math.max(1,Math.round(rt.duration/60))});
+      setOsrm("");
+    }catch(e){ setOsrm("Live routing unavailable — straight-line + your manual times are used."); }
+  },[]);
+  const recalcAll = ()=>{ setOsrm("Routing…"); ["dump","stone","sand"].forEach(k=>fetchRoute(k,true)); };
 
   const draw = React.useCallback(()=>{
     const L=window.L, map=mapRef.current, grp=grpRef.current; if(!L||!map||!grp) return;
     grp.clearLayers();
-    const S=srcRef.current||{}, plan=planRef.current, pts=[], site=S.site;
-    ["dump","stone","sand"].forEach(k=>{ if(site&&site.lat!=null&&S[k]&&S[k].lat!=null){
-      L.polyline([[site.lat,site.lng],[S[k].lat,S[k].lng]],{color:"#6c7178",weight:1.5,opacity:.55,dashArray:"4 5"}).addTo(grp); }});
-    ((plan&&plan.combos)||[]).forEach(c=>{ const pit=S[c.key]; if(site&&site.lat!=null&&S.dump&&S.dump.lat!=null&&pit&&pit.lat!=null){
-      L.polyline([[site.lat,site.lng],[S.dump.lat,S.dump.lng],[pit.lat,pit.lng],[site.lat,site.lng]],{color:"#dce442",weight:4,opacity:.9}).addTo(grp); }});
+    const S=srcRef.current||{}, plan=planRef.current, R=routesRef.current, pts=[], site=S.site;
+    const roleColor={dump:"#e5484d",stone:"#8B63E0",sand:"#F58A2E"};
+    // baseline legs — real road route when we have it, else straight dashed
+    ["dump","stone","sand"].forEach(k=>{ const s=S[k]; if(!(site&&site.lat!=null&&s&&s.lat!=null)) return;
+      if(R[k]&&R[k].length>1) L.polyline(R[k],{color:roleColor[k],weight:2.5,opacity:.6}).addTo(grp);
+      else L.polyline([[site.lat,site.lng],[s.lat,s.lng]],{color:"#6c7178",weight:1.5,opacity:.55,dashArray:"4 5"}).addTo(grp); });
+    // back-haul loop highlight: site→dump→pit→site (real route segments where available)
+    ((plan&&plan.combos)||[]).forEach(c=>{ const pit=S[c.key]; if(!(site&&site.lat!=null&&S.dump&&S.dump.lat!=null&&pit&&pit.lat!=null)) return;
+      const segSD = (R.dump&&R.dump.length>1) ? R.dump : [[site.lat,site.lng],[S.dump.lat,S.dump.lng]];
+      const segPS = (R[c.key]&&R[c.key].length>1) ? [...R[c.key]].slice().reverse() : [[pit.lat,pit.lng],[site.lat,site.lng]];
+      L.polyline([...segSD, [S.dump.lat,S.dump.lng],[pit.lat,pit.lng], ...segPS],{color:"#dce442",weight:4,opacity:.85}).addTo(grp); });
     SRC_ROLES.forEach(rl=>{ const s=S[rl.key]; if(!s||s.lat==null) return; pts.push([s.lat,s.lng]);
       const icon=L.divIcon({className:"", html:`<div class="mappin" style="background:${rl.color}">${rl.tag}</div>`, iconSize:[44,20], iconAnchor:[22,10]});
       const m=L.marker([s.lat,s.lng],{draggable:true, icon}).addTo(grp);
       const ld = rl.key==="site" ? "" : (s.oneWayMin?` · ${s.oneWayMin} min`:"");
       m.bindTooltip((s.name||rl.tag)+ld, {direction:"top", offset:[0,-10]});
-      m.on("dragend", e=>{ const ll=e.target.getLatLng(); setRef.current(rl.key, {lat:+ll.lat.toFixed(5), lng:+ll.lng.toFixed(5)}); });
+      m.on("dragend", e=>{ const ll=e.target.getLatLng(); setRef.current(rl.key, {lat:+ll.lat.toFixed(5), lng:+ll.lng.toFixed(5)});
+        if(rl.key==="site"){ ["dump","stone","sand"].forEach(k=>fetchRoute(k,true)); } else fetchRoute(rl.key,true); });
     });
     if(pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.35), {maxZoom:14});
   },[]);
@@ -3100,10 +3151,18 @@ function TruckMap({sources, setSource, plan}){
     }).catch(e=>setErr(e.message||"map failed to load"));
     return ()=>{ dead=true; if(mapRef.current){ mapRef.current.remove(); mapRef.current=null; grpRef.current=null; } };
   },[]);
-  useEffect(()=>{ if(ready) draw(); },[ready, sources, plan, draw]);
+  useEffect(()=>{ if(ready) draw(); },[ready, sources, plan, tick, draw]);
+  // draw real routes on open (display only — never silently overwrites your manual times)
+  useEffect(()=>{ if(ready){ ["dump","stone","sand"].forEach(k=>{ if(!routesRef.current[k]) fetchRoute(k,false); }); } },[ready, fetchRoute]);
 
   if(err) return <div className="truckmap mapfail">🗺 {err}. You can still set drive-times below — the routing works without the map.</div>;
-  return <div className="truckmap" ref={elRef}/>;
+  return <>
+    <div className="truckmap" ref={elRef}/>
+    <div className="btnrow" style={{margin:"6px 0 2px"}}>
+      <button className="ghost sm" onClick={recalcAll}>↻ Auto-fill drive times from routes</button>
+      <span className="sp"/><em className="dim2">{osrm||"Drag a pin to update its drive time from the real road route."}</em>
+    </div>
+  </>;
 }
 function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const today = new Date().toISOString().slice(0,10);
