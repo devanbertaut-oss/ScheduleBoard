@@ -1740,7 +1740,6 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
   const multi = run && run.total>1;
   const isOps = cardStyle==="highlighter", isCNO = cardStyle==="flat";
   const minimal = isOps || isCNO;
-  const staStr = t.sta ? ` · STA ${staFmt(t.sta[0])}${t.sta[1]!==t.sta[0]?"–"+staFmt(t.sta[1]):""}` : "";
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
     <button className={"card hq"+(selected?" sel":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
@@ -1781,7 +1780,6 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
         <div className="hqbody ops">
           <div className="opsloc">{t.loc||"—"}</div>
           <div className="opsitem">{it[CI.TASK]}</div>
-          <div className="opsgoal"><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}{staStr}</span></div>
         </div>
       ) : (
         <div className="hqbody">
@@ -2789,6 +2787,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     cost:{label:"Cost — budget vs actual vs forecast", cols:["day","crew","pay","desc","buduc","fuc","actd","budi","cvar","fac"]},
     field:{label:"Field — installed vs plan", cols:["day","crew","pay","desc","loc","planq","actq","pct","planmh","actmh"]},
   };
+  const [mode,setMode]=useState("table");   // "table" (data reports) | "board" (Ops snapshot)
   const [report,setReport]=useState("quantities");
   const [sel,setSel]=useState(()=>new Set(REPORTS.quantities.cols));
   const [inclCrews,setInclCrews]=useState(true);
@@ -2848,6 +2847,11 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
       <div className="prcfg no-print">
         <div className="crewhead"><h3 style={{margin:0}}>Print / export to PDF — {wkTitle(wk)}</h3></div>
         <div className="repbtns">
+          <button className={mode==="table"?"on":""} onClick={()=>setMode("table")}>Data report</button>
+          <button className={mode==="board"?"on":""} onClick={()=>setMode("board")}>Ops snapshot</button>
+        </div>
+        {mode==="table" ? <>
+        <div className="repbtns">
           {Object.entries(REPORTS).map(([k,v])=>
             <button key={k} className={report===k?"on":""} onClick={()=>pick(k)}>{v.label}</button>)}
         </div>
@@ -2862,6 +2866,9 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
           <label><input type="checkbox" checked={inclNotes} onChange={e=>setInclNotes(e.target.checked)}/>Notes / deliveries</label>
         </div>
         <p className="dim2" style={{fontSize:12,margin:"10px 0 0"}}>Report covers the week on screen. Qty/MH = this week; UC / FAC / earned = item to-date (live CTC). Save as PDF from the browser dialog (landscape).</p>
+        </> : (
+        <p className="dim2" style={{fontSize:12,margin:"10px 0 0"}}>One page — the board grid (crews, subs, and their scheduled work) plus each crew's weekly MH total, nothing else. Weekend columns only appear if something's scheduled on Sat/Sun. Print landscape to fit on letter paper.</p>
+        )}
         <div className="btnrow">
           <button className="cta" onClick={()=>window.print()}>Generate &amp; print</button>
           <button className="ghost" onClick={close}>Cancel</button>
@@ -2869,6 +2876,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
       </div>
 
       <div className="printarea">
+        {mode==="table" ? <>
         <div className="ptitle">DPW547 · Job 2124013 — Look-Ahead · {wkTitle(wk)} · {REPORTS[report].label}</div>
         <table className="dt list">
           <thead><tr>{active.map(c=><th key={c.k} className={c.n?"r":""}>{c.label}</th>)}</tr></thead>
@@ -2886,8 +2894,62 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
             </tbody>
           </table>
         </>}
+        </> : <OpsSnapshot crews={crews} weekTasks={weekTasks} taskCalc={taskCalc} wk={wk}/>}
       </div>
     </Modal>
+  );
+}
+/* One-page board-only print: crew/sub rows × day columns (5, +weekend if used), each cell a
+   minimal Loc/Item snippet, plus a crew-totals column on the right. No cost/budget data —
+   this is the version meant to go outside the crew (e.g. to the city). Logo + job name kept. */
+function OpsSnapshot({crews,weekTasks,taskCalc,wk}){
+  const pinSort = (a,b)=> (b.pinned?1:0)-(a.pinned?1:0);
+  const crewsOnly = crews.filter(c=>c.type==="crew").slice().sort(pinSort);
+  const subsOnly = crews.filter(c=>c.type==="sub").slice().sort(pinSort);
+  const hasWeekend = weekTasks.some(t=>t.day>4);
+  const dayIdxs = hasWeekend ? [0,1,2,3,4,5,6] : [0,1,2,3,4];
+  const recap = res => { let p=0,a=0,e=0; weekTasks.filter(t=>t.res===res.id).forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; }); return {p,a,pf:a>0?e/a:0}; };
+  const row = res => (
+    <tr key={res.id}>
+      <td className="opssres">{res.name}</td>
+      {dayIdxs.map(d=>{
+        const list = weekTasks.filter(t=>t.res===res.id && t.day===d);
+        return <td key={d} className="opsscell">
+          {list.map(t=>{ const it=itemFor(t); const scope=SCOPES[scopeKeyOf(it[CI.CC])]||SCOPES.gen;
+            return <div key={t.id} className="opssitem" style={{borderLeftColor:scope.bg}}>
+              <b>{t.loc||"—"}</b>
+              <span>{it[CI.TASK]}</span>
+            </div>; })}
+        </td>;
+      })}
+    </tr>
+  );
+  const allRes = crewsOnly.concat(subsOnly);
+  return (
+    <div className="opssnap">
+      <div className="opssnaphdr">
+        <img className="opssnaplogo" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
+        <div className="opssnaptitle"><b>DPW547 · Job 2124013</b><span>Look-Ahead — {wkTitle(wk)}</span></div>
+      </div>
+      <div className="opssnapbody">
+        <table className="opssnaptable">
+          <thead><tr><th>Resource</th>{dayIdxs.map(d=><th key={d}>{DAYS[d]}<em>{dLabel(wk,d)}</em></th>)}</tr></thead>
+          <tbody>
+            {crewsOnly.map(row)}
+            {subsOnly.map(row)}
+          </tbody>
+        </table>
+        <div className="opssnaptotals">
+          <div className="opssnaptothdr">Crew totals</div>
+          {allRes.map(c=>{ const r=recap(c); return (
+            <div key={c.id} className="opsstot">
+              <b>{c.name}</b>
+              <span>{fmtN(r.a)}/{fmtN(r.p)} MH{r.pf?` · PF ${r.pf.toFixed(2)}`:""}</span>
+            </div>
+          ); })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3822,7 +3884,7 @@ const CSS = `
  color-scheme:dark;
  background:var(--bg);color:var(--tx);height:100vh;height:100dvh;font:14px/1.45 "Montserrat",system-ui,sans-serif;
  display:flex;flex-direction:column;overflow:hidden}
-.topzone{flex:0 0 auto;max-height:20vh;max-height:20dvh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.topzone{flex:0 0 auto;max-height:225px;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .bodyzone{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:40px}
 .la-root[data-theme="dark"]{color-scheme:dark}
 .la-root[data-theme="light"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
@@ -3874,7 +3936,8 @@ const CSS = `
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
-.actions{display:flex;gap:8px}
+.actions{display:flex;gap:8px;flex-wrap:nowrap;flex-shrink:1;min-width:0;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
 .cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important}
 .cta.hot{background:var(--lime)!important;border-color:var(--lime)!important;color:#111314!important}
@@ -3913,10 +3976,11 @@ const CSS = `
 .kpi b{font-size:17px;font-family:"IBM Plex Mono"}
 .kpi b.good{color:var(--good)}.kpi b.bad{color:var(--bad)}
 .kpi.ts.hot{border-color:#7f2f2f}.kpi.ts.hot b{color:var(--bad)}
-.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:wrap}
+.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.legend>*,.legendswatches>*{flex:none;white-space:nowrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .lgcode{font:800 9px "Saira Condensed";letter-spacing:.05em;color:var(--dm2);margin-right:4px;font-style:normal}
-.legend .hint{margin-left:auto;color:var(--dm2)}
+.legend .hint{margin-left:auto;color:var(--dm2);white-space:nowrap;flex:none}
 .legendbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:4px 10px;font:700 11px "Saira Condensed";letter-spacing:.05em;cursor:pointer}
 .legendbtn:hover{border-color:var(--brand);color:var(--brand)}
 .boardwrap{overflow-x:auto;overflow-y:visible;padding:0 18px 30px;flex:1;min-width:0;position:relative}
@@ -3993,20 +4057,20 @@ const CSS = `
 .trkline input,.trkline select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:12.5px "IBM Plex Mono"}
 @media(max-width:760px){.trkcards{grid-template-columns:1fr}}
 @media(max-width:980px){.crewrail{width:186px}}
-.board{border-collapse:separate;border-spacing:0;width:100%;min-width:1080px}
+.board{border-collapse:separate;border-spacing:0;width:100%;min-width:820px}
 .board thead th{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:3px solid var(--brand);border-left:2px solid var(--ln);padding:8px 6px 10px;text-align:center;font-size:13px;color:var(--dm)}
 .board thead th:first-child{border-left:0}
 .board thead th b{display:block;font-size:17px;color:var(--tx);font-family:"IBM Plex Mono"}
 .board thead th.today{color:var(--acc)}.board thead th.today b{color:var(--acc)}
 .board thead th.wknd,.cell.wknd{opacity:.55}
-.rescol{width:118px;min-width:118px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5;border-right:2px solid var(--ln)}
+.rescol{width:92px;min-width:92px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5;border-right:2px solid var(--ln)}
 thead .rescol{z-index:12;border-right:2px solid var(--ln)}
 .secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Saira Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:2px solid var(--ln)}
 .secrow .addbtn{margin-left:10px;background:none;border:1px dashed var(--ln);color:var(--dm);border-radius:6px;padding:1px 8px;font-size:12px;cursor:pointer}
 .secrow .addbtn:hover{color:var(--acc);border-color:var(--acc)}
 .addrow td{padding:8px 4px}
 .addrow input{background:var(--pn2);border:1px solid var(--acc);color:var(--tx);border-radius:8px;padding:6px 10px;width:280px;margin-right:8px;font:inherit}
-.cell{border-bottom:2px solid var(--ln);border-left:2px solid var(--ln);vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
+.cell{border-bottom:2px solid var(--ln);border-left:2px solid var(--ln);vertical-align:top;padding:4px;min-width:104px;height:52px;cursor:cell}
 .cell:first-of-type{border-left:0}
 tr.altrow .cell,tr.altrow .rescol{background:var(--pn)}
 tr.altrow .cell:hover{background:var(--cellhov)}
@@ -4097,15 +4161,12 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .hqbody>div{display:flex;gap:5px}
 .hqbody label{flex:0 0 40px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
 .hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
-/* Ops view — location leads, item centered/justified below it, goal (+ station) last */
-.hqbody.ops{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;padding:4px 2px 2px}
+/* Ops view — location leads, item centered/justified below it. Card-only fields. */
+.hqbody.ops{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:2px;padding:6px 2px}
 .opsloc{font:800 15px "Saira Condensed";letter-spacing:.03em;margin-bottom:6px}
 .opsitem{font-size:11px;font-weight:600;line-height:1.3;text-align:justify;text-align-last:center;width:100%}
-.opsgoal{display:flex;gap:5px;margin-top:5px;font-size:10.5px}
-.opsgoal label{font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
-.opsgoal span{font-weight:600}
 /* CNO view — location + scope of work only, nothing else (for external distribution) */
-.hqbody.cno{display:flex;flex-direction:column;gap:1px;padding:2px}
+.hqbody.cno{display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px;padding:2px}
 .cnoloc{font:800 14px "Saira Condensed";letter-spacing:.03em}
 .cnocat{font:700 11px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
@@ -4236,6 +4297,26 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
 .printarea .dt th{color:#555}
 .ptitle{font:700 15px "Saira Condensed";margin-bottom:6px}
+.opssnap{color:#111}
+.opssnaphdr{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #111}
+.opssnaplogo{height:34px;width:auto}
+.opssnaptitle{display:flex;flex-direction:column;font:700 13px "Saira Condensed";letter-spacing:.02em}
+.opssnaptitle span{font-weight:600;color:#444;font-size:11px}
+.opssnapbody{display:flex;gap:10px;align-items:flex-start}
+.opssnaptable{flex:1;min-width:0;border-collapse:collapse;table-layout:fixed}
+.opssnaptable th{background:#eee;border:1px solid #ccc;padding:3px 4px;text-align:center;font:700 9px "Saira Condensed";text-transform:uppercase;letter-spacing:.03em}
+.opssnaptable th em{display:block;font-style:normal;font-size:11px;font-family:"IBM Plex Mono"}
+.opssnaptable td{border:1px solid #ccc;vertical-align:top;padding:2px;height:34px}
+.opssres{width:78px;font:700 10px "Saira Condensed";background:#f6f6f6;padding:3px 5px!important}
+.opsscell{width:auto}
+.opssitem{border-left:3px solid #999;padding:1px 0 1px 4px;margin-bottom:2px;font-size:8.5px;line-height:1.2}
+.opssitem b{display:block;font-size:9px}
+.opssitem span{display:block;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opssnaptotals{width:150px;flex:none;border:1px solid #ccc;border-radius:4px;padding:6px}
+.opssnaptothdr{font:700 9px "Saira Condensed";text-transform:uppercase;letter-spacing:.06em;color:#666;margin-bottom:4px;border-bottom:1px solid #ccc;padding-bottom:3px}
+.opsstot{margin-bottom:5px;font-size:9.5px;line-height:1.35}
+.opsstot b{display:block;font-size:10px}
+.opsstot span{display:block;color:#444}
 .repbtns{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
 .repbtns button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:9px;padding:8px 14px;font:600 14px "Saira Condensed";letter-spacing:.03em;cursor:pointer}
 .repbtns button.on{border-color:var(--acc);color:var(--acc)}
