@@ -920,9 +920,64 @@ function LookAhead(){
     });
   };
   const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
+  /* Capacity-aware catch-up re-slice for one run: spreads a logged shortfall across the run's
+     own remaining (open) days first — never pushing a day past the crew's daily MH cap — and
+     only appends new days once that capacity is exhausted. If an appended day lands on a slot
+     another run already occupies for the same crew, that run becomes a formal dependent
+     (successor) so the existing predecessor-push effect (index.html ~526) carries it forward
+     automatically — no manual cascade needed here.
+     Uses a taken baseline's frozen qty (same as the live preview, index.html ~1310) as each
+     ORIGINAL day's plan when one exists, so re-checking after a commit compares against that
+     ORIGINAL plan rather than the just-committed numbers — take a snapshot before a run starts
+     if you want Re-flow to stay accurate across more than one commit on it. Days reflow itself
+     appends (reflowExtra) carry no plan of their own, so they don't re-absorb the same shortfall
+     a second time once re-checked. */
+  const resliceRunCatchup = (members) => {
+    const k = runKey(members[0]), res = members[0].res;
+    const sorted = members.slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+    const open = sorted.filter(m=>logs[m.id]==null);
+    if(!open.length) return;
+    const mhU = itemFor(sorted[0])[CI.MH];
+    const cap = capOf(crews, res);
+    const capQ = mhU>0 ? cap/mhU : Infinity;
+    const planOf = t => { if(t.reflowExtra) return 0; const bt = baseline && baseline.byTask && baseline.byTask[t.id]; return (bt && bt.qty!=null) ? bt.qty : (+t.qty||0); };
+    let carry=0;
+    const patches = {};   // id -> new qty, absorbing the shortfall into THIS run's own open days
+    sorted.forEach(t=>{
+      const lg = logs[t.id];
+      if(lg){ carry = (planOf(t)+carry) - (lg.qty||0); return; }   // logged day: carries its own over/under-run forward
+      const want = Math.max(0, planOf(t)+carry);
+      const cq = Math.min(want, capQ);
+      patches[t.id] = Math.round(cq*100)/100;
+      carry = want-cq;
+    });
+    const extra = [];   // new day-cards, only once the run's own open days are maxed out
+    if(carry>1e-6){
+      const base = open[open.length-1];
+      let cursor = wdi(sorted[sorted.length-1].wk, sorted[sorted.length-1].day);
+      while(carry>1e-6){
+        cursor++;
+        const dq = Math.min(carry, isFinite(capQ)?capQ:carry);
+        const w = fromWdi(cursor);
+        extra.push({ ...base, id:tid(), day:w.day, wk:w.wk, qty:Math.round(dq*100)/100, sta:null, reflowExtra:true });
+        carry -= dq;
+      }
+    }
+    const collide = new Set();
+    if(extra.length){
+      const occupied = {};
+      tasks.forEach(x=>{ if(x.res===res && runKey(x)!==k) occupied[wdi(x.wk,x.day)]=runKey(x); });
+      extra.forEach(nt=>{ const rk=occupied[wdi(nt.wk,nt.day)]; if(rk) collide.add(rk); });
+    }
+    setTasks(ts=>{
+      const patched = ts.map(t=> patches[t.id]!=null ? {...t, qty:patches[t.id]} : t);
+      return [...patched, ...extra];
+    });
+    collide.forEach(depKey=>addDep(depKey,k));   // the run that used to sit right after now formally waits on this one
+  };
   /* Bake the re-flow forecast into the plan: for every run that has an over/under-run on its
-     logged days, re-slice the open tail from today's actuals (adds/drops days; pushes successors
-     via the forward-push effect). Returns how many runs were adjusted. */
+     logged days, capacity-aware re-slice the open tail from today's actuals (adds days only as
+     needed, links a bumped successor). Returns how many runs were adjusted. */
   const commitReflow = () => {
     const byKey={}; tasks.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
     const targets = Object.keys(byKey).filter(k=>{
@@ -934,7 +989,7 @@ function LookAhead(){
     });
     if(!targets.length) return 0;
     pushUndo("Re-flowed to plan"); undoSuppress.current=true;               // one snapshot for the whole batch
-    try { targets.forEach(k=>resliceRun(byKey[k][0], {fromActuals:true})); }
+    try { targets.forEach(k=>resliceRunCatchup(byKey[k])); }
     finally { undoSuppress.current=false; }
     return targets.length;
   };
@@ -1160,7 +1215,7 @@ function LookAhead(){
 
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
@@ -1243,44 +1298,55 @@ function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,
     </>
   );
 }
+// Crew's daily MH ceiling — used both by the live Re-flow preview and by the
+// capacity-aware catch-up commit, so "what you'll get" always matches "what you see".
+const capOf = (crews, id) => { const c=crews.find(x=>x.id===id); return (c && c.capMH>0)? c.capMH : 68; };
 function computeReflow(tasks, logs, baseline, crews, cfg){
   const byTask={}, byCrew={}, crewDayLoads={};
   const truckRate = (cfg && cfg.truckRate>0) ? cfg.truckRate : 220;
   const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * 8; // ~18 loads/truck/day
-  const capOf = id => { const c=crews.find(x=>x.id===id); return (c && c.capMH>0)? c.capMH : 68; };
   const groups={};
-  tasks.forEach(t=>{ const k=t.res+"|"+t.ci; (groups[k]||(groups[k]=[])).push(t); });
+  tasks.forEach(t=>{ const k=runKey(t); (groups[k]||(groups[k]=[])).push(t); });
   Object.entries(groups).forEach(([k,arr])=>{
-    const res=k.slice(0,k.indexOf("|")); const cap=capOf(res);
-    arr.sort((a,b)=> a.wk<b.wk?-1 : a.wk>b.wk?1 : a.day-b.day);
-    // Group MH/unit from the first task's effective row; mixed per-task ov.mh in one group is approximated.
+    arr.sort((a,b)=> wdi(a.wk,a.day)-wdi(b.wk,b.day));
+    const res=arr[0].res, cap=capOf(crews,res);
+    // Group MH/unit from the first task's effective row; mixed per-task ov.mh in one run is approximated.
     const mhU = itemFor(arr[0])[CI.MH];
     const capQ = mhU>0 ? cap/mhU : Infinity;
     let carry=0;
     arr.forEach(t=>{
+      // A day reflow itself appended (reflowExtra) carries no plan of its own — it exists purely
+      // to absorb carry, so treating it as "planned zero" keeps re-checking the run afterward
+      // from re-applying the same historical shortfall on top of it a second time.
       const bt = baseline && baseline.byTask && baseline.byTask[t.id];
-      const planQ = (bt && bt.qty!=null) ? bt.qty : t.qty;
+      const planQ = t.reflowExtra ? 0 : (bt && bt.qty!=null) ? bt.qty : t.qty;
       const lg = logs[t.id];
       let dayQ;
-      if(lg){ const actQ=lg.qty||0; carry=(planQ+carry)-actQ; byTask[t.id]={logged:true, planQ, actQ, reflowQ:actQ, reflowMH:(lg.mh||0), overCap:false}; dayQ=actQ; }
+      if(lg){ const actQ=lg.qty||0; carry=(planQ+carry)-actQ; byTask[t.id]={logged:true, planQ, actQ, reflowQ:actQ, reflowMH:(lg.mh||0), atCap:false}; dayQ=actQ; }
       else {
+        // Try to absorb the shortfall (carry) into THIS segment's own remaining days, never
+        // pushing a single day past the crew's daily cap — the excess (if any) carries to the
+        // next day in the run, and past the run's last day it becomes extraDaysNeeded below.
         const want=Math.max(0, planQ+carry);
-        const capped=Math.min(want, capQ);
-        const reflowMH = mhU>0 ? want*mhU : 0;
-        const overCap = mhU>0 && reflowMH > cap+1e-6;
-        byTask[t.id]={logged:false, planQ, reflowQ:want, cappedQ:capped, reflowMH, overCap};
-        carry = want-capped; dayQ=want;
+        const cappedQ=Math.min(want, capQ);
+        const atCap = mhU>0 && want > capQ+1e-6;
+        byTask[t.id]={logged:false, planQ, reflowQ:cappedQ, reflowMH: mhU>0 ? cappedQ*mhU : 0, atCap};
+        carry = want-cappedQ; dayQ=cappedQ;
       }
       const ut = itemFor(t)[CI.UT] || 0;
       if(ut>0){ const loads=dayQ*ut/truckRate; const dk=t.wk+"_"+t.day;
         (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; }
     });
-    const cur = byCrew[res] || (byCrew[res]={behindMH:0, over:false, cap});
+    // Shortfall that didn't fit inside the segment's own remaining days — the run will need
+    // this many extra days to fully catch up; surfaced on the run's last (highest-wdi) card.
+    const extraDaysNeeded = carry>0.5 ? (capQ>0 && isFinite(capQ) ? Math.ceil(carry/capQ - 1e-6) : 1) : 0;
+    if(extraDaysNeeded>0){ const last=arr[arr.length-1]; byTask[last.id]={...byTask[last.id], extraDaysNeeded}; }
+    const cur = byCrew[res] || (byCrew[res]={behindMH:0, over:false, extraDays:0, cap});
     if(mhU>0 && carry>0.0001) cur.behindMH += carry*mhU;
-    if(arr.some(t=>byTask[t.id] && byTask[t.id].overCap)) cur.over=true;
+    cur.extraDays = (cur.extraDays||0) + extraDaysNeeded;
+    if(arr.some(t=>byTask[t.id] && byTask[t.id].atCap)) cur.over=true;
   });
   Object.values(byCrew).forEach(v=>{
-    v.extraDays = v.behindMH>0.5 ? Math.ceil(v.behindMH/(v.cap||68)) : 0;
     v.status = v.behindMH>0.5 ? "behind" : v.over ? "over" : "on";
   });
   Object.keys(crewDayLoads).forEach(res=>{
@@ -1435,16 +1501,18 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
       <div className="hqcorners">
         <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
-        <span className="hqmh">{mhStr}</span>
+        <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
       </div>
       <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
       <div className="hqbody">
         <div><label>Loc</label><span>{t.loc||"—"}</span></div>
         <div><label>Job #</label><span>{JOB_NO}</span></div>
         <div><label>Item</label><span>{name}</span></div>
-        <div><label>Goal</label><span>{qtyStr}</span></div>
+        <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
         {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
         <div><label>Trucks</label><span>{trucksStr}</span></div>
+        {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
+          <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
       </div>
     </button>
   );
@@ -1560,7 +1628,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
   const [tab,setTab]=useState("log");
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
@@ -1776,7 +1844,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
             {runVar!==0 && <> · logged actuals ran <b style={{color:runVar<0?"var(--bad)":"var(--good)"}}>{runVar<0?"behind":"ahead"} {fmtN(Math.abs(runVar),Math.abs(runVar)%1?1:0)} {um}</b></>}.</div>
           <div className="btnrow" style={{marginTop:0}}>
             {achievedRate>0 && Math.abs(achievedRate-runRate)>0.05 && <button className="ghost sm" onClick={()=>resliceRun(t,{perDay:achievedRate})} title="Re-slice the remaining days at the crew's real achieved rate">Apply achieved rate to remaining</button>}
-            {runVar!==0 && <button className="ghost sm" onClick={()=>resliceRun(t,{fromActuals:true})} title="Re-slice the remaining work from today's actuals (absorbs the over/under-run)">Commit actuals → re-slice remaining</button>}
+            {runVar!==0 && <button className="ghost sm" onClick={()=>resliceRunCatchup(tasks.filter(x=>runKey(x)===runKey(t)))} title="Re-slice the remaining work from today's actuals — catches up within the crew's daily MH cap, adding days only if needed">Commit actuals → re-slice remaining</button>}
           </div>
         </div>); })()}
       {runLocked>=runN && <div className="ovnote">All {runN} day(s) logged — run plan is locked.</div>}
@@ -3273,6 +3341,7 @@ thead .rescol{z-index:12}
 .card.dragging{opacity:.38}
 .cell.drop{outline:2px dashed var(--brand);outline-offset:-3px;background:var(--cellhov)}
 .card.sel{outline:3px solid var(--lime);outline-offset:-1px}
+.cbad{color:#b00020!important;font-weight:800}
 .cstat{display:inline-block;margin-top:4px;font:700 10px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px;white-space:nowrap}
 .cstat.on{background:var(--pillGoodBg);color:var(--good)}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
