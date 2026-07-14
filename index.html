@@ -247,7 +247,7 @@ function bedForItem(cc, desc, um, ov){
 const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
   stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
-  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4,
+  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,
   cycSpoil:24, cycStone:26, cycSand:32, cycBase:28,
   // Haul sources for the back-haul optimizer + map. oneWayMin = one-way DRIVE (windshield)
   // time — the single basis for every cycle: round trip = 2·oneWayMin + loadSpot + tipMin.
@@ -264,9 +264,15 @@ const TRUCK_DEFAULTS = {
    minutes per stream = 2·(one-way drive × per-route traffic factor) + site stop + dump/pit stop.
    Falls back to the flat cyc* autos only when a source has no drive time set. */
 function trafficOf(src){ const v=+(src&&src.traffic); return v>0 ? v : 1; }   // per-route congestion multiplier (default 1×)
+// Per-route stops: wait at the jobsite + stop at the pit/dump. Each source may set its own
+// siteMin/stopMin; a blank field falls back to the global default (loadSpot / tipMin).
+function siteStopOf(c,key){ const s=(c.sources||{})[key]||{}; return +s.siteMin>0 ? +s.siteMin : (+c.loadSpot||6); }
+function endStopOf(c,key){  const s=(c.sources||{})[key]||{}; return +s.stopMin>0 ? +s.stopMin : (+c.tipMin||3); }
+// Depth used for the trucking calc: a card's hard-keyed depth, else the assumed avg from Advanced.
+function resolveDig(taskDig,cfg){ return (taskDig!=null && taskDig!=="") ? +taskDig : (+((cfg&&cfg.truck&&cfg.truck.avgDepth))||8); }
 function truckCycles(c){
-  const S=c.sources||{}, site=+c.loadSpot||6, end=+c.tipMin||3;   // site stop (load/spot) + haul-end stop (dump or pit)
-  const cyc=(key,flat)=>{ const s=S[key]||{}, v=+s.oneWayMin; return v>0 ? (2*v*trafficOf(s)+site+end) : flat; };
+  const S=c.sources||{};
+  const cyc=(key,flat)=>{ const s=S[key]||{}, v=+s.oneWayMin; return v>0 ? (2*v*trafficOf(s)+siteStopOf(c,key)+endStopOf(c,key)) : flat; };
   return { spoil:cyc("dump",c.cycSpoil), stone:cyc("stone",c.cycStone), sand:cyc("sand",c.cycSand), base:cyc("base",c.cycBase) };
 }
 /* Roadway / earthwork item recognizer (Phase 6). Excavation (CY) hauls spoil OUT; base
@@ -308,12 +314,13 @@ function truckModel(item, dailyQty, D, tcfg){
   const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));
   const CYC = truckCycles(c);                                  // drive-derived round-trip minutes
   const tset = {spoil:trips(CYC.spoil), stone:trips(CYC.stone), sand:trips(CYC.sand), base:trips(CYC.base)};
-  const feedMin=Math.ceil(CYC.spoil/Math.max(1,c.loadSpot));    // keep the excavator fed on the spoil cycle
+  const dumpSite=siteStopOf(c,"dump");                          // excavator load/spot time on the spoil route
+  const feedMin=Math.ceil(CYC.spoil/Math.max(1,dumpSite));      // keep the excavator fed on the spoil cycle
   const g = um==="LF" ? bedForItem(item[CI.CC], item[CI.TASK], um, c.tw) : null;
   if(g && g.cyEnv!=null){
     const Dd=Math.max(0,+D||0);
     const spoilCy=P*(g.tw*Dd/27)*c.swell;
-    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, c.loadSpot, availMin);
+    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
     const stoneCy=P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
     const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/tset.stone):0;
     const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
@@ -328,7 +335,7 @@ function truckModel(item, dailyQty, D, tcfg){
   const rg = roadForItem(item[CI.CC], item[CI.TASK], um);
   if(rg && rg.kind==="exc"){
     const spoilCy=P*c.swell;                                   // excavation qty is bank CY
-    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, c.loadSpot, availMin);
+    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
     const sandCy=rg.sandFill ? P*c.compaction : 0;             // unsuitable-subgrade sand replacement
     const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
     return {applicable:true, mode:"road", total:spoilTrucks+sandTrucks,
@@ -383,7 +390,8 @@ function haversine(a, b){
 function routePlan(streams, sources, autos){
   const c={...TRUCK_DEFAULTS, ...(autos||{})}, S=sources||c.sources||{};
   const spoilN=Math.max(0,+ (streams&&streams.spoil)||0), stoneN=Math.max(0,+(streams&&streams.stone)||0), sandN=Math.max(0,+(streams&&streams.sand)||0), baseN=Math.max(0,+(streams&&streams.base)||0);
-  const load=+c.loadSpot||6, tip=+c.tipMin||3, availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
+  const availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
+  const siteOf = key => siteStopOf(c,key), endOf = key => endStopOf(c,key);   // per-route wait@site + stop@pit
   // one-way leg (min) between site and a source role, inflated by that route's traffic factor
   const tf = key => trafficOf(S[key]);
   const legSite = key => Math.max(1, (+(S[key]&&S[key].oneWayMin) || 1) * tf(key));
@@ -392,12 +400,12 @@ function routePlan(streams, sources, autos){
   for(const k of ["dump","stone","sand","base"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
   const mpm = impl.length ? impl.reduce((a,x)=>a+x,0)/impl.length : null;   // miles per min (free-flow)
   const legPair = (a,b) => { const d=haversine(S[a],S[b]), tavg=(tf(a)+tf(b))/2; return (d!=null && mpm>0) ? Math.max(1, d/mpm*tavg) : (legSite(a)+legSite(b)); };
-  // round-trip cycle minutes — SAME basis as truckModel (2·drive + load + tip)
-  const spoilRT = load + 2*legSite("dump") + tip;
-  const rt = key => 2*legSite(key) + load + tip;
-  const combined = key => 2*load + 2*tip + legSite("dump") + legPair("dump",key) + legSite(key);
+  // round-trip cycle minutes — SAME basis as truckModel (2·drive·traffic + wait@site + stop@pit)
+  const spoilRT = siteOf("dump") + 2*legSite("dump") + endOf("dump");
+  const rt = key => 2*legSite(key) + siteOf(key) + endOf(key);
+  const combined = key => siteOf("dump") + endOf("dump") + siteOf(key) + endOf(key) + legSite("dump") + legPair("dump",key) + legSite(key);
   const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));   // round trips one truck can run in a shift
-  const feedMin = Math.ceil(spoilRT/Math.max(1,load));                      // excavator-feed floor on the spoil cycle
+  const feedMin = Math.ceil(spoilRT/Math.max(1,siteOf("dump")));            // excavator-feed floor on the spoil cycle
   const mats = [
     {key:"stone", label:"#57 stone", loads:stoneN, rt:rt("stone"), comb:combined("stone"), save:(legSite("dump")+legSite("stone")-legPair("dump","stone"))},
     {key:"sand",  label:"sand",      loads:sandN,  rt:rt("sand"),  comb:combined("sand"),  save:(legSite("dump")+legSite("sand") -legPair("dump","sand"))},
@@ -416,7 +424,7 @@ function routePlan(streams, sources, autos){
   mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001){ smartMin += rem*m.rt; dedic.push({material:m.label, key:m.key, count:rem, cycleMin:m.rt}); } });
   const dumbMin = spoilN*spoilRT + mats.reduce((a,m)=>a+m.loads*m.rt,0);
   // TRUCK COUNTS — per-stream fleets, so dedicated == the sum of truckModel's stream trucks (card totals).
-  const dumbSpoil = spoilN>0 ? spoilFleet(spoilN, trips(spoilRT), feedMin, load, availMin) : 0;
+  const dumbSpoil = spoilN>0 ? spoilFleet(spoilN, trips(spoilRT), feedMin, siteOf("dump"), availMin) : 0;
   const dumbMat = mats.reduce((a,m)=> a + (m.loads>0?Math.ceil(m.loads/trips(m.rt)):0), 0);
   const dumbTrucks = dumbSpoil + dumbMat;
   // smart: combined trips carry spoil+material together; leftovers dedicated; keep the excavator fed.
@@ -425,7 +433,7 @@ function routePlan(streams, sources, autos){
   const leftSpoilTrucks = spoilLeft>0.001 ? Math.ceil(spoilLeft/trips(spoilRT)) : 0;
   smartTrucks += leftSpoilTrucks;
   const spoilCarrying = combSpoilTrucks + leftSpoilTrucks;
-  const feedReq = Math.ceil(feedMin*Math.min(1, spoilN*load/availMin));                // time-aware feed floor (dig fraction)
+  const feedReq = Math.ceil(feedMin*Math.min(1, spoilN*siteOf("dump")/availMin));       // time-aware feed floor (dig fraction)
   if(spoilN>0 && spoilCarrying < feedReq) smartTrucks += (feedReq - spoilCarrying);    // top up to feed the machine
   mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001) smartTrucks += Math.ceil(rem/trips(m.rt)); });
   const trucks = Math.min(smartTrucks, dumbTrucks);   // back-haul never needs more trucks than dedicated
@@ -940,9 +948,9 @@ function LookAhead(){
     const planMH = t.qty*it[CI.MH];
     const lg = logs[t.id]||{};
     const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
-    const trk = truckModel(it, t.qty, t.dig, cfg.truck);       // planned per-day trucks
+    const trk = truckModel(it, t.qty, resolveDig(t.dig,cfg), cfg.truck);       // planned per-day trucks
     // Actual trucking is a function of ACTUAL production (logged qty) — never hand-counted loads.
-    const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, t.dig, cfg.truck) : null;
+    const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, resolveDig(t.dig,cfg), cfg.truck) : null;
     return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
       trk, trucks: trk.applicable ? trk.total : null,
       actTrk, actTrucks: actTrk && actTrk.applicable ? actTrk.total : null,
@@ -1562,7 +1570,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
         byTask[t.id]={logged:false, planQ, reflowQ:cappedQ, reflowMH: mhU>0 ? cappedQ*mhU : 0, atCap};
         carry = want-cappedQ; dayQ=cappedQ;
       }
-      const dk=t.wk+"_"+t.day, tm=truckModel(itemFor(t), dayQ, t.dig, cfg.truck);
+      const dk=t.wk+"_"+t.day, tm=truckModel(itemFor(t), dayQ, resolveDig(t.dig,cfg), cfg.truck);
       if(tm.applicable){ (crewDayTrucks[res]||(crewDayTrucks[res]={}))[dk]=(crewDayTrucks[res][dk]||[]); crewDayTrucks[res][dk].push(tm); }
       else { const ut=itemFor(t)[CI.UT]||0; if(ut>0){ const loads=dayQ*ut/truckRate;
         (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; } }
@@ -1983,7 +1991,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   // Trucking model — optimal trucks/day for this run's phase code at the (previewed) daily rate + trench depth.
   const bgEdit = bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw);
   const tmRate = +pAvg || runRate || t.qty || 0;
-  const tm = truckModel(it, tmRate, +dig||0, cfg.truck);
+  const tm = truckModel(it, tmRate, resolveDig(dig,cfg), cfg.truck);
   const tmStreams = tm.applicable ? [
     {s:tm.spoil, lbl:tm.mat.spoil||"Dig-out", d:fmtN(tm.spoil.loads,1)+" ld"},
     {s:tm.stone, lbl:tm.mat.stone||"#57 stone", d:fmtN(tm.stone.tn,1)+" tn"},
@@ -2154,7 +2162,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
       <div className="loghdr">Trucking — optimal trucks/day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>({bgEdit ? bgEdit.fam+" · "+bgEdit.spec : "Roadway · "+(tm.spoil.cy>0?"excavation":"base course")})</em></div>
       <div className="ovnote">{bgEdit ? "Three dedicated haul streams from the daily rate and trench depth: dig-out spoil (out), #57 stone bedding (in), sand backfill (in). Depth is the avg from existing grade to bottom of trench." : "Roadway haul sized from the daily quantity: excavation hauls spoil out; base course / aggregate hauls in from the stone pit."}</div>
       <div className="logrow">
-        {bgEdit && <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder="e.g. 8" onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>}
+        {bgEdit && <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder={`${resolveDig("",cfg)} assumed`} onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>}
         <div className="gen">Optimal<b>🚚 {tm.total} truck{tm.total===1?"":"s"}/day</b><em className="dim2">at {fmtN(tmRate,tmRate%1?1:0)} {it[CI.UM]}/day</em></div>
       </div>
       <div className="impact">
@@ -2364,7 +2372,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const remaining = Math.max(0, est-inst);
   const loadsDay = it&&cfg.truckRate>0 ? (perDay*it[CI.UT])/cfg.truckRate : 0;
   const bg = it ? bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw) : null;    // pipe geometry → physical trucking model applies
-  const tm = it ? truckModel(it, perDay, +dig||0, cfg.truck) : null;   // pipe (needs depth) OR roadway (qty-driven)
+  const tm = it ? truckModel(it, perDay, resolveDig(dig,cfg), cfg.truck) : null;   // pipe (needs depth) OR roadway (qty-driven)
 
   return (
     <Modal close={close} w={620}>
@@ -2441,7 +2449,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
         <div className="logrow">
           <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
-          {bg && <label>Trench depth ft · grade→btm<input type="number" min="0" placeholder="e.g. 8" value={dig} onChange={e=>setDig(e.target.value)}/></label>}
+          {bg && <label>Trench depth ft · grade→btm<input type="number" min="0" placeholder={`${resolveDig("",cfg)} assumed`} value={dig} onChange={e=>setDig(e.target.value)}/></label>}
         </div>
         <div className="logrow">
           <label>Avg {it[CI.UM]}/day<input type="number" min="0" placeholder={useQty>0?fmtN(perDay,perDay<10?1:0):"—"}
@@ -3373,7 +3381,12 @@ function TruckMap({sources, setSource, plan, op}){
       setTick(t=>t+1);
       if(updateTime) setRef.current(key,{oneWayMin:Math.max(1,Math.round(rt.duration/60))});
       setOsrm("");
-    }catch(e){ setOsrm("Live routing unavailable — straight-line + your manual times are used."); }
+    }catch(e){
+      // OSRM unreachable: still move the cycle with the pin — estimate one-way min from the
+      // straight-line distance at ~33 mph (1.8 min/mi) so dragging a pit adjusts the cycle offline.
+      if(updateTime){ const S=srcRef.current||{}, d=haversine(S.site,S[key]); if(d!=null) setRef.current(key,{oneWayMin:Math.max(1,Math.round(d*1.8))}); }
+      setOsrm("Live routing unavailable — using a straight-line estimate; tweak the drive time if needed.");
+    }
   },[]);
   const recalcAll = ()=>{ setOsrm("Routing…"); keysRef.current.forEach(k=>fetchRoute(k,true)); };
 
@@ -3605,16 +3618,18 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
         </div>
         <TruckMap sources={sources} setSource={setSource} plan={bplan} op={op}/>
         <table className="dt list srctbl">
-          <thead><tr><th>Source</th><th>Name</th><th className="r">One-way drive (min)</th><th className="r">Traffic ×</th></tr></thead>
+          <thead><tr><th>Source</th><th>Name</th><th className="r">One-way drive (min)</th><th className="r">Traffic ×</th><th className="r">Wait @ site</th><th className="r">Stop @ pit</th></tr></thead>
           <tbody>
             <tr><td><span className="srcdot" style={{background:"#00a34d"}}/>Job site</td>
               <td><input value={sources.site.name||""} onChange={e=>setSource('site',{name:e.target.value})}/></td>
-              <td className="r dim2">— (drag pin)</td><td className="r dim2">—</td></tr>
+              <td className="r dim2">— (drag pin)</td><td className="r dim2">—</td><td className="r dim2">—</td><td className="r dim2">—</td></tr>
             {OP_KEYS[op].map(k=>SRC_ROWS[k]).map(([k,col,lbl])=>(
               <tr key={k}><td><span className="srcdot" style={{background:col}}/>{lbl}</td>
                 <td><input value={sources[k].name||""} onChange={e=>setSource(k,{name:e.target.value})}/></td>
-                <td className="r"><input type="number" step="1" style={{width:80}} value={sources[k].oneWayMin??""} onChange={e=>setSource(k,{oneWayMin:e.target.value===""?0:+e.target.value})}/></td>
-                <td className="r"><input type="number" step="0.05" min="1" style={{width:70}} value={sources[k].traffic??1} onChange={e=>setSource(k,{traffic:e.target.value===""?1:+e.target.value})}/></td></tr>
+                <td className="r"><input type="number" step="1" style={{width:74}} value={sources[k].oneWayMin??""} onChange={e=>setSource(k,{oneWayMin:e.target.value===""?0:+e.target.value})}/></td>
+                <td className="r"><input type="number" step="0.05" min="1" style={{width:60}} value={sources[k].traffic??1} onChange={e=>setSource(k,{traffic:e.target.value===""?1:+e.target.value})}/></td>
+                <td className="r"><input type="number" step="1" style={{width:56}} placeholder={String(T.loadSpot)} value={sources[k].siteMin??""} onChange={e=>setSource(k,{siteMin:e.target.value===""?"":+e.target.value})}/></td>
+                <td className="r"><input type="number" step="1" style={{width:56}} placeholder={String(T.tipMin)} value={sources[k].stopMin??""} onChange={e=>setSource(k,{stopMin:e.target.value===""?"":+e.target.value})}/></td></tr>
             ))}
           </tbody>
         </table>
@@ -3637,9 +3652,10 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           {NF('stone57Den','#57 tn/CY',0.1)}{NF('sandDen','Sand tn/CY',0.1)}{NF('swell','Spoil swell ×',0.05)}{NF('compaction','Sand compaction ×',0.05)}{NF('roadSection','Grade→base (ft)',0.25)}
         </div>
         <div className="trkrow">
-          {NF('cycSpoil','Spoil cycle (min)')}{NF('cycStone','Stone cycle (min)')}{NF('cycSand','Sand cycle (min)')}{NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Site stop (min)')}{NF('tipMin','Dump/pit stop (min)')}
+          {NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}
         </div>
-        <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Stored with the board — syncs to every device. Blank a field to restore its default.</em></div>
+        {(()=>{ const C=truckCycles(T); return <div className="cycread">Round-trip cycle now <span className="dim2">(live)</span>: <b>spoil {fmtN(C.spoil,0)}</b> · <b>#57 {fmtN(C.stone,0)}</b> · <b>sand {fmtN(C.sand,0)}</b> · <b>#610 {fmtN(C.base,0)}</b> min <em className="dim2">— 2×drive×traffic + wait@site + stop@pit; moves the instant you drag a pin or edit a stop in Sources.</em></div>; })()}
+        <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Assumed depth drives spoil &amp; sand on every card with no keyed depth. Blank a field to restore its default; stored with the board.</em></div>
       </div>
 
       {/* Per-item preview + trench section (drainage operation) */}
@@ -4113,6 +4129,7 @@ const CSS = `
 .bhaul{margin:6px 0 2px;font-size:13px;padding:10px 12px;border-radius:9px;border:1px solid var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .bhaul b{color:var(--good)}
 .srctbl input{width:100%}
+.cycread{margin:8px 2px 2px;font-size:13px;color:var(--tx);background:var(--pn2);border:1px solid var(--ln);border-radius:8px;padding:7px 10px}
 .srcdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;border:1px solid rgba(0,0,0,.4)}
 .daychips{display:flex;gap:8px;margin:4px 0 12px;flex-wrap:wrap}
 .daychip{flex:1;min-width:64px;display:flex;flex-direction:column;align-items:center;gap:1px;padding:8px 6px;border:1px solid var(--ln);border-radius:10px;background:var(--pn2);color:var(--tx);font:700 13px "Saira Condensed";cursor:pointer}
