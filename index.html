@@ -621,6 +621,7 @@ function useIsMobile(){
 function LookAhead(){
   const isMobile = useIsMobile();
   const [tab, setTab] = useState("board");
+  const effTab = isMobile ? "board" : tab; // mobile is board-only regardless of any leftover tab state
   const [wk, setWk] = useState(()=>mondayOf(new Date().toISOString().slice(0,10)));
   const [crews, setCrews] = useState(seedCrews);
   const [siteRows, setSiteRows] = useState(seedSite);
@@ -653,6 +654,10 @@ function LookAhead(){
   const anim=(name,dur,ease,fill)=> logoHover ? (name+" "+dur+" "+(ease||"ease")+(fill?" "+fill:"")) : "none";
   const [sync, setSync] = useState({status:"boot", at:null, detail:""}); // blobs sync pill state
   const [syncPop, setSyncPop] = useState(false); // sync pill popover
+  const syncBtnRef = useRef(null);
+  const [syncPopPos, setSyncPopPos] = useState(null);
+  useEffect(()=>{ if(syncPop && syncBtnRef.current){ const r=syncBtnRef.current.getBoundingClientRect();
+    setSyncPopPos({top:r.bottom+6, right:Math.max(8,window.innerWidth-r.right)}); } },[syncPop]);
   const syncRef = useRef({rev:null, lastSyncedJson:null, latestJson:null, inflight:false, dirty:false,
                           fail:0, pollMs:60000, nextPollAt:0, pendingRemote:null, keyPrompted:false, appliedRemote:false,
                           bootPulled:false}); // no pushes until the boot pull resolves — else fresh seeds could overwrite the shared board
@@ -1316,7 +1321,7 @@ function LookAhead(){
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
         </div>
         <div className="actions">
-          {tab==="board" && <>
+          {effTab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
@@ -1326,14 +1331,15 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"rhythm"})} title="Weekly SOP touchpoints and last-updated status">📋 Rhythm</button>
           <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
           </>}
-          {tab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
+          {effTab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
-          <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
+          <span className="syncwrap">
+          <button ref={syncBtnRef} className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
             onClick={()=>setSyncPop(v=>!v)}
             title={SYNC_LABEL[sync.status]+(sync.at? " · "+new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"")}>
             {sync.status==="synced"?("✓ Saved"+(sync.at?" "+new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"")):(sync.status==="syncing"||sync.status==="boot")?"⟳ Saving…":sync.status==="offline"?"⌁ Offline":sync.status==="local"?"Local":sync.status==="key"?"Key…":"! Error"}
           </button>
-          {syncPop && <div className="syncpop" onMouseLeave={()=>setSyncPop(false)}>
+          {syncPop && syncPopPos && <div className="syncpop" style={{top:syncPopPos.top,right:syncPopPos.right}} onMouseLeave={()=>setSyncPop(false)}>
             <div className="sphead">{SYNC_LABEL[sync.status]}</div>
             <div className="spline">Last contact: {sync.at? new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) : "—"}</div>
             <div className="spline">Device {syncLS.device()}</div>
@@ -1343,6 +1349,7 @@ function LookAhead(){
               <button className="ghost sm" onClick={()=>{ setSyncPop(false); setModal({type:"boardkey"}); }}>Board key</button>
             </div>
           </div>}
+          </span>
         </div>
       </header>
 
@@ -1352,7 +1359,7 @@ function LookAhead(){
         <button className="dgx" onClick={()=>{ try{localStorage.setItem("lafable-digest",new Date().toISOString().slice(0,10));}catch(e){} setDigest(null); }}>Got it</button>
       </div>}
 
-      {tab==="board" && <>
+      {effTab==="board" && <>
       <div className="legend no-print">
         <span className="legendswatches">
           {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/><em className="lgcode">{SCOPES[k].code}</em>{SCOPES[k].name}</span>)}
@@ -1389,7 +1396,7 @@ function LookAhead(){
 
       <div className="bodyzone">
       {/* ============ BOARD GRID ============ */}
-      {tab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}}/> :
+      {effTab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -1426,9 +1433,9 @@ function LookAhead(){
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
       </div>)}
 
-      {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
-      {tab==="catalog" && (catalogOK
+      {effTab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
+      {effTab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
+      {effTab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       </div>
@@ -1605,7 +1612,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -1632,14 +1639,21 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         <div className="mdays">
           {DAYS.map((d,i)=>{
             const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
+            const w = wxForDate && wxForDate(addDays(wk,i));
             return <button key={d} className={"mday"+(i===day?" on":"")+(today?" today":"")+(i>4?" wknd":"")}
               onDragOver={e=>{e.preventDefault(); e.currentTarget.classList.add("dropday");}}
               onDragLeave={e=>e.currentTarget.classList.remove("dropday")}
               onDrop={e=>{e.preventDefault(); e.currentTarget.classList.remove("dropday"); const id=e.dataTransfer.getData("text/plain"); if(id){ rescheduleDrop(id,null,i); setDay(i); }}}
-              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b>{msFor(i).length>0 && <i className="msdot"/>}</button>;
+              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b>{w && <em className="mwx">{wxIcon(w.code)}</em>}{msFor(i).length>0 && <i className="msdot"/>}</button>;
           })}
         </div>
         <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
+      </div>
+      <div className="mcardtoggle">
+        <span>HQ</span>
+        <button role="switch" aria-checked={cardStyle==="highlighter"} className={"mswitch"+(cardStyle==="highlighter"?" on":"")}
+          onClick={()=>setCardStyle(cardStyle==="highlighter"?"bold":"highlighter")}><i/></button>
+        <span>OPS</span>
       </div>
       {msFor(day).length>0 && <div className="msline">{msFor(day).map(m=>"◆ "+m.label).join("  ·  ")}</div>}
       <div className="msec">Crews</div>
@@ -1792,6 +1806,10 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
         <div className="hqbody ops">
           <div className="opsloc">{t.loc||"—"}</div>
           <div className="opsitem">{it[CI.TASK]}</div>
+          <div className="opsmeta">
+            <span>{qtyStr}</span>
+            {t.sta && <span>STA {staFmt(t.sta[0])}</span>}
+          </div>
         </div>
       ) : (
         <div className="hqbody">
@@ -1920,7 +1938,9 @@ function BlurInput({value,onCommit,...props}){
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
 function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
+  const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
+  const [showDetails,setShowDetails]=useState(false);
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
   const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
@@ -2024,40 +2044,55 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
         <button className={tab==="edit"?"on":""} onClick={()=>setTab("edit")}>Edit</button>
       </div>
 
-      {tab==="log" ? <>
-      <table className="dt">
-        <tbody>
-          <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
-          <tr><th>Crew</th><td>{ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
-          <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
-        </tbody>
-      </table>
-
-      <table className="dt fcst">
-        <tbody>
-          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
-          <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
-        </tbody>
-      </table>
-
-      <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
-      {L.staTask && <div className="logrow">
-        <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
-        <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
-      </div>}
-      <div className="logrow">
-        <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
-        <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
-      </div>
-      <div className="btnrow">
-        <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>Save as in-progress</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true); close();}}>Log as planned ✓</button>
-        <span className="sp"/>
-        {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
-        <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
-      </div>
-      </> : <>
+      {tab==="log" ? (()=>{
+        const rateTable = (
+          <table className="dt">
+            <tbody>
+              <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
+              <tr><th>Crew</th><td>{ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
+              <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
+            </tbody>
+          </table>
+        );
+        const fcstTable = (
+          <table className="dt fcst">
+            <tbody>
+              <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
+              <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
+            </tbody>
+          </table>
+        );
+        const logSection = (
+          <>
+            <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
+            {L.staTask && <div className="logrow">
+              <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
+              <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
+            </div>}
+            <div className="logrow">
+              <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
+              <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
+            </div>
+            <div className="btnrow">
+              <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>Save as in-progress</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true); close();}}>Log as planned ✓</button>
+              <span className="sp"/>
+              {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
+              <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
+            </div>
+          </>
+        );
+        return isMobile ? <>
+          {logSection}
+          <button className="ghost sm expdet" onClick={()=>setShowDetails(s=>!s)}>{showDetails?"▴ Hide details":"▾ Expand details"}</button>
+          {showDetails && <>{rateTable}{fcstTable}</>}
+        </> : <>
+          {rateTable}
+          {fcstTable}
+          {logSection}
+        </>;
+      })() : <>
 
       <div className="loghdr">Plan</div>
       {!picking ?
@@ -2798,7 +2833,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     quantities:{label:"Quantities — plan vs actual", cols:["day","crew","pay","desc","loc","planq","actq","qvar","pct"]},
     cost:{label:"Cost — budget vs actual vs forecast", cols:["day","crew","pay","desc","buduc","fuc","actd","budi","cvar","fac"]},
     field:{label:"Field — installed vs plan", cols:["day","crew","pay","desc","loc","planq","actq","pct","planmh","actmh"]},
-    actuals:{label:"Actual log — date, pay item, qty, UM, location, crew", cols:["day","pay","actq","um","loc","crew"], loggedOnly:true},
+    actuals:{label:"QPC — date, pay item, description, qty, UM, location, crew", cols:["day","pay","desc","actq","um","loc","crew"], loggedOnly:true},
   };
   const [mode,setMode]=useState("table");   // "table" (data reports) | "board" (Ops snapshot)
   const [report,setReport]=useState("quantities");
@@ -4024,7 +4059,7 @@ const CSS = `
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
-.actions{display:flex;gap:8px;flex-wrap:nowrap;flex-shrink:1;min-width:0;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.actions{display:flex;gap:8px;flex-wrap:nowrap;flex-shrink:1;min-width:0;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
 .actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
 .cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important}
@@ -4064,7 +4099,7 @@ const CSS = `
 .kpi b{font-size:17px;font-family:"IBM Plex Mono"}
 .kpi b.good{color:var(--good)}.kpi b.bad{color:var(--bad)}
 .kpi.ts.hot{border-color:#7f2f2f}.kpi.ts.hot b{color:var(--bad)}
-.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:nowrap;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
 .legend>*,.legendswatches>*{flex:none;white-space:nowrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .lgcode{font:800 9px "Saira Condensed";letter-spacing:.05em;color:var(--dm2);margin-right:4px;font-style:normal}
@@ -4247,6 +4282,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .hqbody.ops{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:2px;padding:6px 2px}
 .opsloc{font:800 15px "Saira Condensed";letter-spacing:.03em;margin-bottom:6px}
 .opsitem{font-size:11px;font-weight:600;line-height:1.3;text-align:justify;text-align-last:center;width:100%}
+.opsmeta{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:5px;font:600 10px "IBM Plex Mono";opacity:.85}
 /* CNO view — location + scope of work only, nothing else (for external distribution) */
 .hqbody.cno{display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px;padding:2px}
 .cnoloc{font:800 14px "Saira Condensed";letter-spacing:.03em}
@@ -4283,6 +4319,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .mono{font-family:"IBM Plex Mono";font-size:12px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
 .loghdr{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;font-family:"Saira Condensed";font-weight:700}
+.expdet{display:block;width:100%;margin-top:16px;text-align:center}
 .logrow{display:flex;gap:10px;margin:8px 0;flex-wrap:wrap}
 .logrow label,.eosgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:600;flex:1;min-width:130px}
 .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 10px;font:13px "IBM Plex Mono";width:100%}
@@ -4314,7 +4351,8 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .ovnote{font-size:11.5px;color:var(--dm2);margin:2px 0 8px}
 .pill.ovpill{background:var(--lime);color:#22240a}
 .syncpill{cursor:pointer;align-self:center;border:1px solid var(--ln);background:var(--pn2);font-family:"Saira Condensed"}
-.syncpop{position:fixed;top:56px;right:16px;z-index:80;background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;min-width:215px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.syncwrap{display:inline-block}
+.syncpop{position:fixed;z-index:80;background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;width:max-content;max-width:min(260px,90vw);box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .syncpop .sphead{font-family:"Saira Condensed";font-weight:700;font-size:14px;margin-bottom:4px}
 .syncpop .spline{font-size:12px;color:var(--dm);margin:2px 0;font-family:"IBM Plex Mono"}
 .gen{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;font-weight:600;justify-content:flex-end}
@@ -4452,6 +4490,12 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .mday.on span,.mday.on b{color:#fff}
 .mday.today:not(.on) b{color:var(--brand)}
 .mday.wknd:not(.on){opacity:.7}
+.mwx{display:block;font-size:13px;font-style:normal;line-height:1}
+.mcardtoggle{display:flex;align-items:center;justify-content:center;gap:8px;margin:2px 0 10px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm)}
+.mswitch{position:relative;width:42px;height:24px;border-radius:12px;background:var(--pn2);border:1px solid var(--ln);cursor:pointer;flex:none;padding:0}
+.mswitch i{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--dm);transition:transform .15s ease,background .15s ease}
+.mswitch.on{background:var(--brand);border-color:var(--brand)}
+.mswitch.on i{transform:translateX(18px);background:#fff}
 .msec{font:700 11px "Saira Condensed";letter-spacing:.14em;text-transform:uppercase;color:var(--dm2);margin:16px 0 8px}
 .mcrew{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:10px 12px;margin-bottom:10px}
 .mcrewhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
@@ -4463,11 +4507,15 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 @media (max-width:760px){
  .topzone{max-height:162px}
  .top{gap:10px;padding:10px 12px 8px}
- .brandlogo{height:20px}
- .brandmicro,.brandbar,.proj{display:none}
- .brand{padding:2px 0;gap:0}
- .tabs{order:3;width:100%;overflow-x:auto;border-radius:10px}
- .tabs button{flex:1 0 auto;white-space:nowrap;min-height:40px}
+ .brandlogo{height:22px}
+ .brandmicro{display:none}
+ .brandbar{display:none}
+ .brand{flex-direction:column;justify-content:center;width:100%;padding:6px 0 4px;gap:2px;cursor:default}
+ .brandmark{align-items:center}
+ .proj{text-align:center;font-size:11.5px;max-width:none}
+ .proj em{display:none}
+ .projul{display:none}
+ .tabs{display:none}
  .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between;gap:6px;background:var(--bg);padding:6px 0 10px;border-bottom:1px solid var(--ln)}
  .weeknav > button{background:var(--pn2);border:1px solid var(--ln);border-radius:10px;min-width:44px;height:44px;padding:0;font-size:18px;color:var(--tx);flex:none}
  .weeknav > button.ghost{font:700 12px "Saira Condensed";letter-spacing:.05em;min-width:54px}
