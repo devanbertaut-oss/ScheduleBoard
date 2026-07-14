@@ -4,7 +4,7 @@
    - Cross-origin runtime deps (unpkg React/ReactDOM/Babel, Google Fonts) are
      cached stale-while-revalidate on first successful online load, so the app
      fully boots offline afterwards. */
-const VERSION = "rngd-v26";
+const VERSION = "rngd-v27";
 const SHELL = VERSION + "-shell";
 const RUNTIME = VERSION + "-runtime";
 const SHELL_ASSETS = [

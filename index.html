@@ -247,7 +247,7 @@ function bedForItem(cc, desc, um, ov){
 const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
   stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
-  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3,
+  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4,
   cycSpoil:24, cycStone:26, cycSand:32,
   // Haul sources for the back-haul optimizer + map. oneWayMin = field-observed one-way
   // drive time (the ground truth for cycles); lat/lng set by dragging the pin (New Orleans
@@ -259,31 +259,69 @@ const TRUCK_DEFAULTS = {
     sand:  { name:"Sand pit",         lat:30.0250, lng:-90.0800, oneWayMin:16 }
   }
 };
+/* Roadway / earthwork item recognizer (Phase 6). Excavation (CY) hauls spoil OUT; base
+   course & bridging aggregate haul IN from the stone pit (#610 by the ton, #57/#8 by CY);
+   "unsuitable subgrade" also brings sand IN. Fine grading is labor only (no haul → null). */
+function roadForItem(cc, desc, um){
+  const code=(cc||"").replace(/-/g,"."), d=desc||"";
+  if(/fine grading/i.test(d)) return null;
+  if(/base course|bridging course|aggregate/i.test(d) || /^32\.07\.13|^32\.05\.59|^01\.55\.13/.test(code)){
+    let material="#610 base"; if(/no\.?\s*57|#57/i.test(d)) material="#57 stone"; else if(/no\.?\s*8\b|#8/i.test(d)) material="#8 stone";
+    return {kind:"base", material, um};
+  }
+  if(/excavation/i.test(d) || /^31\.23\.|^02\.61\./.test(code))
+    return {kind:"exc", material:"excavation", sandFill:/sand fill/i.test(d), um};
+  return null;
+}
+/* Physical per-item, per-day trucking model. Drainage pipe (LF) → three streams from the
+   trench geometry; roadway/earthwork (CY/TON) → excavation spoil-out and/or base/aggregate
+   haul-in. Same {spoil,stone,sand} shape so cards, reflow, merge & routePlan all reuse it. */
 function truckModel(item, dailyQty, D, tcfg){
   const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
   const z=()=>({cy:0,tn:0,loads:0,trucks:0});
-  const g = (item && item[CI.UM]==="LF") ? bedForItem(item[CI.CC], item[CI.TASK], item[CI.UM], c.tw) : null;
-  if(!g || g.cyEnv==null || !(+dailyQty>0)) return {applicable:false,total:0,spoil:z(),stone:z(),sand:z(),g};
-  const P=+dailyQty, Dd=Math.max(0,+D||0);
+  const na={applicable:false,total:0,spoil:z(),stone:z(),sand:z(),g:null};
+  if(!item || !(+dailyQty>0)) return na;
+  const P=+dailyQty, um=item[CI.UM];
   const volCap=c.axle==="quad"?c.quadCY:c.triCY, stoneCap=c.axle==="quad"?c.stoneTnQuad:c.stoneTnTri;
   const trips = cyc => Math.max(1, Math.floor(c.shiftHrs*60*c.eff/Math.max(1,cyc)));
-  // Spoil (dig-out): full trench bank volume, swelled to loose. Throughput OR excavator-feed floor.
-  const spoilCy=P*(g.tw*Dd/27)*c.swell;
-  const spoilThr=Math.ceil(spoilCy/volCap/trips(c.cycSpoil));
+  const tset = {spoil:trips(c.cycSpoil), stone:trips(c.cycStone), sand:trips(c.cycSand)};
   const feedMin=Math.ceil(c.cycSpoil/Math.max(1,c.loadSpot));
-  const spoilTrucks=spoilCy>0?Math.max(spoilThr,feedMin):0;
-  // #57 stone: fixed envelope per size, weight-governed (invoiced by the ton).
-  const stoneCy=P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
-  const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/trips(c.cycStone)):0;
-  // Sand: springline → bottom of #610 road base, compacted. Volume-governed.
-  const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
-  const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27)*c.compaction;
-  const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/trips(c.cycSand)):0;
-  return {applicable:true, total:spoilTrucks+stoneTrucks+sandTrucks,
-    spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
-    stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
-    sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks},
-    trips:{spoil:trips(c.cycSpoil), stone:trips(c.cycStone), sand:trips(c.cycSand)}, feedMin, g};
+  const g = um==="LF" ? bedForItem(item[CI.CC], item[CI.TASK], um, c.tw) : null;
+  if(g && g.cyEnv!=null){
+    const Dd=Math.max(0,+D||0);
+    const spoilCy=P*(g.tw*Dd/27)*c.swell;
+    const spoilTrucks=spoilCy>0?Math.max(Math.ceil(spoilCy/volCap/tset.spoil), feedMin):0;
+    const stoneCy=P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
+    const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/tset.stone):0;
+    const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
+    const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27)*c.compaction;
+    const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
+    return {applicable:true, mode:"drain", total:spoilTrucks+stoneTrucks+sandTrucks,
+      spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
+      stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
+      sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks},
+      mat:{spoil:"dig-out", stone:"#57 stone", sand:"sand"}, trips:tset, feedMin, g};
+  }
+  const rg = roadForItem(item[CI.CC], item[CI.TASK], um);
+  if(rg && rg.kind==="exc"){
+    const spoilCy=P*c.swell;                                   // excavation qty is bank CY
+    const spoilTrucks=spoilCy>0?Math.max(Math.ceil(spoilCy/volCap/tset.spoil), feedMin):0;
+    const sandCy=rg.sandFill ? P*c.compaction : 0;             // unsuitable-subgrade sand replacement
+    const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
+    return {applicable:true, mode:"road", total:spoilTrucks+sandTrucks,
+      spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks}, stone:z(),
+      sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks},
+      mat:{spoil:"excavation", stone:"", sand:"sand fill"}, trips:tset, feedMin, g:null};
+  }
+  if(rg && rg.kind==="base"){
+    const den = /57|#8/.test(rg.material) ? c.stone57Den : c.baseDen;   // #57/#8 washed vs #610 base
+    const tn = um==="TON" ? P : P*den, cy = um==="TON" ? P/den : P;      // CY <-> tons
+    const stoneTrucks=tn>0?Math.ceil(tn/stoneCap/tset.stone):0;
+    return {applicable:true, mode:"road", total:stoneTrucks,
+      spoil:z(), stone:{cy, tn, loads:tn/stoneCap, trucks:stoneTrucks}, sand:z(),
+      mat:{spoil:"", stone:rg.material, sand:""}, trips:tset, feedMin:0, g:null};
+  }
+  return na;
 }
 /* Aggregate several per-item truck models (a merged card) into one truck count by
    pooling each dedicated stream's loads before rounding — a shared stone/sand fleet
@@ -1864,7 +1902,12 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,setRunDig,upT
   // Trucking model — optimal trucks/day for this run's phase code at the (previewed) daily rate + trench depth.
   const bgEdit = bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw);
   const tmRate = +pAvg || runRate || t.qty || 0;
-  const tm = bgEdit ? truckModel(it, tmRate, +dig||0, cfg.truck) : null;
+  const tm = truckModel(it, tmRate, +dig||0, cfg.truck);
+  const tmStreams = tm.applicable ? [
+    {s:tm.spoil, lbl:tm.mat.spoil||"Dig-out", d:fmtN(tm.spoil.loads,1)+" ld"},
+    {s:tm.stone, lbl:tm.mat.stone||"#57 stone", d:fmtN(tm.stone.tn,1)+" tn"},
+    {s:tm.sand,  lbl:tm.mat.sand||"Sand", d:fmtN(tm.sand.loads,1)+" ld"}
+  ].filter(x=>x.lbl && (x.s.cy>0 || x.s.trucks>0)) : [];
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -2029,21 +2072,19 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,setRunDig,upT
       </>}
       {kind==="callout" &&
       <div className="ovnote">Station is a location callout for {it[CI.UM]} items — it doesn't set the quantity. Enter qty manually (defaults to 1).</div>}
-      {bgEdit && <>
-      <div className="loghdr">Trucking — optimal trucks/day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>({bgEdit.fam} · {bgEdit.spec})</em></div>
-      <div className="ovnote">Three dedicated haul streams sized from the planned daily rate and the trench depth: dig-out spoil (out), #57 stone bedding (in), sand backfill (in). Depth is the avg from existing grade to bottom of trench.</div>
+      {tm.applicable && <>
+      <div className="loghdr">Trucking — optimal trucks/day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>({bgEdit ? bgEdit.fam+" · "+bgEdit.spec : "Roadway · "+(tm.spoil.cy>0?"excavation":"base course")})</em></div>
+      <div className="ovnote">{bgEdit ? "Three dedicated haul streams from the daily rate and trench depth: dig-out spoil (out), #57 stone bedding (in), sand backfill (in). Depth is the avg from existing grade to bottom of trench." : "Roadway haul sized from the daily quantity: excavation hauls spoil out; base course / aggregate hauls in from the stone pit."}</div>
       <div className="logrow">
-        <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder="e.g. 8" onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>
-        <div className="gen">Optimal<b>🚚 {tm&&tm.applicable?tm.total:"—"} truck{tm&&tm.total===1?"":"s"}/day</b><em className="dim2">at {fmtN(tmRate,tmRate%1?1:0)} {it[CI.UM]}/day</em></div>
+        {bgEdit && <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder="e.g. 8" onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>}
+        <div className="gen">Optimal<b>🚚 {tm.total} truck{tm.total===1?"":"s"}/day</b><em className="dim2">at {fmtN(tmRate,tmRate%1?1:0)} {it[CI.UM]}/day</em></div>
       </div>
-      {tm&&tm.applicable && <div className="impact">
-        <div className="impact-i"><label>Dig-out</label><b>{tm.spoil.trucks}<em> {fmtN(tm.spoil.loads,1)} ld</em></b></div>
-        <div className="impact-i"><label>#57 stone</label><b>{tm.stone.trucks}<em> {fmtN(tm.stone.tn,1)} tn</em></b></div>
-        <div className="impact-i"><label>Sand</label><b>{tm.sand.trucks}<em> {fmtN(tm.sand.loads,1)} ld</em></b></div>
+      <div className="impact">
+        {tmStreams.map((x,i)=><div className="impact-i" key={i}><label>{x.lbl}</label><b>{x.s.trucks}<em> {x.d}</em></b></div>)}
         <div className="impact-i"><label>Total /day</label><b>{tm.total}</b></div>
-      </div>}
-      {tm&&tm.applicable&&tm.sand.trucks===0&&(+dig||0)>0 && <div className="ovnote">Trench too shallow for a sand backfill lift at this depth (springline + road section ≥ depth) — no sand haul.</div>}
-      {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <div className="ovnote">With back-haul: <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} (vs {rp.dumbTrucks} dedicated) · saves ~{fmtN(rp.hoursSaved,1)} hr/day. Tune sources in Trucking → Sources.</div>; })()}
+      </div>
+      {bgEdit&&tm.sand.trucks===0&&(+dig||0)>0 && <div className="ovnote">Trench too shallow for a sand backfill lift at this depth (springline + road section ≥ depth) — no sand haul.</div>}
+      {(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <div className="ovnote">With back-haul: <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} (vs {rp.dumbTrucks} dedicated) · saves ~{fmtN(rp.hoursSaved,1)} hr/day. Tune sources in Trucking → Sources.</div>; })()}
       </>}
       <div className="logrow">
         <label>Location<BlurInput list="loclist-edit" placeholder="Pick or type a location…" value={t.loc||""} onCommit={v=>upTask(t.id,{loc:String(v).trim()||null})}/>
@@ -2231,7 +2272,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const remaining = Math.max(0, est-inst);
   const loadsDay = it&&cfg.truckRate>0 ? (perDay*it[CI.UT])/cfg.truckRate : 0;
   const bg = it ? bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw) : null;    // pipe geometry → physical trucking model applies
-  const tm = bg ? truckModel(it, perDay, +dig||0, cfg.truck) : null;
+  const tm = it ? truckModel(it, perDay, +dig||0, cfg.truck) : null;   // pipe (needs depth) OR roadway (qty-driven)
 
   return (
     <Modal close={close} w={620}>
@@ -2338,7 +2379,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
         {useQty>0 && <table className="dt">
           <tbody>
             <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
-            {tm&&tm.applicable && <tr><th>Trucks / day</th><td>🚚 <b>{tm.total}</b> — dig-out {tm.spoil.trucks} · #57 stone {tm.stone.trucks} · sand {tm.sand.trucks}{(+dig||0)>0?"":" (set trench depth for spoil/sand)"}</td></tr>}
+            {tm&&tm.applicable && <tr><th>Trucks / day</th><td>🚚 <b>{tm.total}</b> — {[["spoil",tm.spoil],["stone",tm.stone],["sand",tm.sand]].filter(([k,s])=>tm.mat[k]&&(s.cy>0||s.trucks>0)).map(([k,s])=>tm.mat[k]+" "+s.trucks).join(" · ")||"—"}{bg&&(+dig||0)===0?" · set trench depth for spoil/sand":""}</td></tr>}
             {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <tr><th>With back-haul</th><td>🔁 <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} <em className="dim2">(vs {rp.dumbTrucks} dedicated · saves ~{fmtN(rp.hoursSaved,1)} hr/day)</em></td></tr>; })()}
             <tr><th>Material (plan)</th><td>{fmt$(useQty*it[CI.UM$])}</td></tr>
             <tr><th>Budget amount</th><td>{fmt$(useQty*it[CI.BID])} <em className="dim2">@ {fmt$(it[CI.BID],2)}/{it[CI.UM]}</em></td></tr>
@@ -3314,6 +3355,12 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const sources = T.sources || TRUCK_DEFAULTS.sources;
   const setSource = (key,patch)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS,...((c&&c.truck)||{})}; const src={...(t.sources||TRUCK_DEFAULTS.sources)}; src[key]={...(src[key]||{}), ...patch}; return {...c, truck:{...t, sources:src}}; });
   const plan = pv.applicable ? routePlan({spoil:pv.spoil.loads, stone:pv.stone.loads, sand:pv.sand.loads}, sources, T) : null;
+  // Roadway preview (Phase 6): excavation CY/day + #610 base TON/day → streams + back-haul.
+  const [rwExc,setRwExc]=useState(400); const [rwBase,setRwBase]=useState(410);
+  const rwItem=(cc,task,um)=>{ const r=[]; r[CI.CC]=cc; r[CI.TASK]=task; r[CI.UM]=um; return r; };
+  const rwE = truckModel(rwItem("31.23.19.00","Roadway Excavation","CY"), +rwExc, 0, T);
+  const rwB = truckModel(rwItem("32.07.13.00","Base Course Dump And Spread","TON"), +rwBase, 0, T);
+  const rwPlan = (rwE.applicable||rwB.applicable) ? routePlan({spoil:rwE.spoil.loads, stone:rwB.stone.loads, sand:0}, sources, T) : null;
 
   // ===== Fleet balancer =====
   const [cyc,setCyc]=useState(TRUCK_BASE.minLoad);
@@ -3460,6 +3507,27 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
             </tr>); })}</tbody>
         </table>
         <p className="dim2" style={{margin:"6px 2px 0"}}>Widths seed from the SWB standard drawings (arch D-3933, round RCP D-3810). Overrides flow straight into the #57 stone envelope and the truck counts everywhere.</p>
+      </div>
+
+      {/* Roadway — excavation & base course (Phase 6) */}
+      <div className="panel">
+        <div className="ph">Roadway — excavation &amp; base course <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>excavation hauls out, #610 base hauls in — same back-haul engine</em></div>
+        <div className="trkrow">
+          <label>Roadway excavation (CY/day){num(rwExc,setRwExc)}</label>
+          <label>#610 base course (TON/day){num(rwBase,setRwBase)}</label>
+        </div>
+        <table className="dt list">
+          <thead><tr><th>Haul stream</th><th className="r">Volume</th><th className="r">Loads/day</th><th className="r">Trucks</th></tr></thead>
+          <tbody>
+            <tr><td>Excavation spoil → dump</td><td className="r">{fmtN(rwE.spoil.cy,0)} CY</td><td className="r">{fmtN(rwE.spoil.loads,1)}</td><td className="r"><b>{rwE.spoil.trucks}</b></td></tr>
+            <tr><td>#610 base ← pit</td><td className="r">{fmtN(rwB.stone.tn,0)} tn</td><td className="r">{fmtN(rwB.stone.loads,1)}</td><td className="r"><b>{rwB.stone.trucks}</b></td></tr>
+            <tr className="cheattot"><td><b>Dedicated total</b></td><td/><td/><td className="r"><b>🚚 {rwE.total+rwB.total}/day</b></td></tr>
+          </tbody>
+        </table>
+        {rwPlan && (rwPlan.combos.length
+          ? <div className="bhaul">Back-haul: <b>{fmtN(rwPlan.combos.reduce((a,c)=>a+c.count,0),1)}</b> excavation loads grab <b>#610</b> from the pit on the way back from the dump → <b>saves ~{fmtN(rwPlan.hoursSaved,1)} hr/day</b> of empty driving.</div>
+          : <div className="ovnote">No back-haul gain at these pin positions — place the dump &amp; stone pit so the pit sits on the return path (Sources map above).</div>)}
+        <p className="dim2" style={{margin:"6px 2px 0"}}>Roadway excavation (CY) hauls spoil to the dump; base course (#610, by the ton) hauls in from the stone pit. The optimizer back-hauls #610 on the return leg, killing the empty miles. Uses the same sources &amp; autos as drainage.</p>
       </div>
 
       {/* Bedding quick-calc */}
