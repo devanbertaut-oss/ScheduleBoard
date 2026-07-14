@@ -600,6 +600,7 @@ function useIsMobile(){
 function LookAhead(){
   const isMobile = useIsMobile();
   const [tab, setTab] = useState("board");
+  const effTab = isMobile ? "board" : tab; // mobile is board-only regardless of any leftover tab state
   const [wk, setWk] = useState(()=>mondayOf(new Date().toISOString().slice(0,10)));
   const [crews, setCrews] = useState(seedCrews);
   const [siteRows, setSiteRows] = useState(seedSite);
@@ -1299,7 +1300,7 @@ function LookAhead(){
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
         </div>
         <div className="actions">
-          {tab==="board" && <>
+          {effTab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
@@ -1309,7 +1310,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"rhythm"})} title="Weekly SOP touchpoints and last-updated status">📋 Rhythm</button>
           <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
           </>}
-          {tab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
+          {effTab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <span className="syncwrap">
           <button ref={syncBtnRef} className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
@@ -1337,7 +1338,7 @@ function LookAhead(){
         <button className="dgx" onClick={()=>{ try{localStorage.setItem("lafable-digest",new Date().toISOString().slice(0,10));}catch(e){} setDigest(null); }}>Got it</button>
       </div>}
 
-      {tab==="board" && <>
+      {effTab==="board" && <>
       <div className="legend no-print">
         <span className="legendswatches">
           {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/><em className="lgcode">{SCOPES[k].code}</em>{SCOPES[k].name}</span>)}
@@ -1374,7 +1375,7 @@ function LookAhead(){
 
       <div className="bodyzone">
       {/* ============ BOARD GRID ============ */}
-      {tab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}}/> :
+      {effTab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -1411,9 +1412,9 @@ function LookAhead(){
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
       </div>)}
 
-      {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
-      {tab==="catalog" && (catalogOK
+      {effTab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
+      {effTab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
+      {effTab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       </div>
@@ -1590,7 +1591,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -1617,14 +1618,21 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         <div className="mdays">
           {DAYS.map((d,i)=>{
             const today = addDays(wk,i)===new Date().toISOString().slice(0,10);
+            const w = wxForDate && wxForDate(addDays(wk,i));
             return <button key={d} className={"mday"+(i===day?" on":"")+(today?" today":"")+(i>4?" wknd":"")}
               onDragOver={e=>{e.preventDefault(); e.currentTarget.classList.add("dropday");}}
               onDragLeave={e=>e.currentTarget.classList.remove("dropday")}
               onDrop={e=>{e.preventDefault(); e.currentTarget.classList.remove("dropday"); const id=e.dataTransfer.getData("text/plain"); if(id){ rescheduleDrop(id,null,i); setDay(i); }}}
-              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b>{msFor(i).length>0 && <i className="msdot"/>}</button>;
+              onClick={()=>setDay(i)}><span>{d}</span><b>{dLabel(wk,i)}</b>{w && <em className="mwx">{wxIcon(w.code)}</em>}{msFor(i).length>0 && <i className="msdot"/>}</button>;
           })}
         </div>
         <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
+      </div>
+      <div className="mcardtoggle">
+        <span>HQ</span>
+        <button role="switch" aria-checked={cardStyle==="highlighter"} className={"mswitch"+(cardStyle==="highlighter"?" on":"")}
+          onClick={()=>setCardStyle(cardStyle==="highlighter"?"bold":"highlighter")}><i/></button>
+        <span>OPS</span>
       </div>
       {msFor(day).length>0 && <div className="msline">{msFor(day).map(m=>"◆ "+m.label).join("  ·  ")}</div>}
       <div className="msec">Crews</div>
@@ -1909,7 +1917,9 @@ function BlurInput({value,onCommit,...props}){
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
 function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
+  const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
+  const [showDetails,setShowDetails]=useState(false);
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
   const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
@@ -2013,40 +2023,55 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
         <button className={tab==="edit"?"on":""} onClick={()=>setTab("edit")}>Edit</button>
       </div>
 
-      {tab==="log" ? <>
-      <table className="dt">
-        <tbody>
-          <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
-          <tr><th>Crew</th><td>{ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
-          <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
-        </tbody>
-      </table>
-
-      <table className="dt fcst">
-        <tbody>
-          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
-          <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
-        </tbody>
-      </table>
-
-      <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
-      {L.staTask && <div className="logrow">
-        <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
-        <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
-      </div>}
-      <div className="logrow">
-        <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
-        <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
-      </div>
-      <div className="btnrow">
-        <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>Save as in-progress</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true); close();}}>Log as planned ✓</button>
-        <span className="sp"/>
-        {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
-        <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
-      </div>
-      </> : <>
+      {tab==="log" ? (()=>{
+        const rateTable = (
+          <table className="dt">
+            <tbody>
+              <tr><th>Rate</th><td>{fmtN(dayRate,dayRate<10?1:0)} {it[CI.UM]}/day</td><th>MH / {it[CI.UM]}</th><td>{fmtN(it[CI.MH],3)}</td></tr>
+              <tr><th>Crew</th><td>{ecfg.crewSize} @ {fmt$(ecfg.laborRate)}/MH</td><th>Mat / {it[CI.UM]}</th><td>{fmt$(it[CI.UM$],2)}</td></tr>
+              <tr><th>Trucking / {it[CI.UM]}</th><td>{fmt$(it[CI.UT],2)}</td><th>Est. loads (plan)</th><td>{loads?fmtN(loads,1):"—"}</td></tr>
+            </tbody>
+          </table>
+        );
+        const fcstTable = (
+          <table className="dt fcst">
+            <tbody>
+              <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
+              <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
+            </tbody>
+          </table>
+        );
+        const logSection = (
+          <>
+            <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
+            {L.staTask && <div className="logrow">
+              <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
+              <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
+            </div>}
+            <div className="logrow">
+              <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
+              <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
+            </div>
+            <div className="btnrow">
+              <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>Save as in-progress</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true); close();}}>Log as planned ✓</button>
+              <span className="sp"/>
+              {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
+              <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
+            </div>
+          </>
+        );
+        return isMobile ? <>
+          {logSection}
+          <button className="ghost sm expdet" onClick={()=>setShowDetails(s=>!s)}>{showDetails?"▴ Hide details":"▾ Expand details"}</button>
+          {showDetails && <>{rateTable}{fcstTable}</>}
+        </> : <>
+          {rateTable}
+          {fcstTable}
+          {logSection}
+        </>;
+      })() : <>
 
       <div className="loghdr">Plan</div>
       {!picking ?
@@ -4198,6 +4223,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .mono{font-family:"IBM Plex Mono";font-size:12px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
 .loghdr{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;font-family:"Saira Condensed";font-weight:700}
+.expdet{display:block;width:100%;margin-top:16px;text-align:center}
 .logrow{display:flex;gap:10px;margin:8px 0;flex-wrap:wrap}
 .logrow label,.eosgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:600;flex:1;min-width:130px}
 .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 10px;font:13px "IBM Plex Mono";width:100%}
@@ -4368,6 +4394,12 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .mday.on span,.mday.on b{color:#fff}
 .mday.today:not(.on) b{color:var(--brand)}
 .mday.wknd:not(.on){opacity:.7}
+.mwx{display:block;font-size:13px;font-style:normal;line-height:1}
+.mcardtoggle{display:flex;align-items:center;justify-content:center;gap:8px;margin:2px 0 10px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm)}
+.mswitch{position:relative;width:42px;height:24px;border-radius:12px;background:var(--pn2);border:1px solid var(--ln);cursor:pointer;flex:none;padding:0}
+.mswitch i{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--dm);transition:transform .15s ease,background .15s ease}
+.mswitch.on{background:var(--brand);border-color:var(--brand)}
+.mswitch.on i{transform:translateX(18px);background:#fff}
 .msec{font:700 11px "Saira Condensed";letter-spacing:.14em;text-transform:uppercase;color:var(--dm2);margin:16px 0 8px}
 .mcrew{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:10px 12px;margin-bottom:10px}
 .mcrewhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
@@ -4379,11 +4411,15 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 @media (max-width:760px){
  .topzone{max-height:162px}
  .top{gap:10px;padding:10px 12px 8px}
- .brandlogo{height:20px}
- .brandmicro,.brandbar,.proj{display:none}
- .brand{padding:2px 0;gap:0}
- .tabs{order:3;width:100%;overflow-x:auto;border-radius:10px}
- .tabs button{flex:1 0 auto;white-space:nowrap;min-height:40px}
+ .brandlogo{height:22px}
+ .brandmicro{display:none}
+ .brandbar{display:none}
+ .brand{flex-direction:column;justify-content:center;width:100%;padding:6px 0 4px;gap:2px;cursor:default}
+ .brandmark{align-items:center}
+ .proj{text-align:center;font-size:11.5px;max-width:none}
+ .proj em{display:none}
+ .projul{display:none}
+ .tabs{display:none}
  .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between;gap:6px;background:var(--bg);padding:6px 0 10px;border-bottom:1px solid var(--ln)}
  .weeknav > button{background:var(--pn2);border:1px solid var(--ln);border-radius:10px;min-width:44px;height:44px;padding:0;font-size:18px;color:var(--tx);flex:none}
  .weeknav > button.ghost{font:700 12px "Saira Condensed";letter-spacing:.05em;min-width:54px}
