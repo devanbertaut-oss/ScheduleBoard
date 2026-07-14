@@ -1696,12 +1696,10 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   const stepAvg = dir => { const s=Math.max(1,Math.round((+pAvg||runRate)*0.1)); const p=(+pAvg||runRate)+dir*s; if(p>0){ setPAvg(p); if(runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); resliceRun(t,{perDay:p}); } };
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
-  const budUC=unitCost(it), f=fcstFor(t);
+  const f=fcstFor(t);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
   const dayRate = it[CI.MH]>0 ? (ecfg.crewSize*ecfg.shiftHrs)/it[CI.MH] : t.qty;
   const loads = ecfg.truckRate>0 ? (t.qty*it[CI.UT])/ecfg.truckRate : 0;
-  const fac=f.uc*est, budTot=budUC*est, cvar=budTot-fac;
-  const margin=(it[CI.BID]-f.uc)*est;
   const setOv=(k,v)=>{ const o={...(t.ov||{})}; if(v==null||v==="") delete o[k]; else o[k]=v; upTask(t.id,{ov:Object.keys(o).length?o:null}); };
   const results = useMemo(()=>{
     const s=q.trim().toLowerCase(); if(!s) return [];
@@ -1718,7 +1716,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   );
   return (
     <Modal close={close} w={640}>
-      <h3>{it[CI.TASK]}</h3>
+      <BlurInput className="h3edit" title="Edit this card's item name — the catalog item is unaffected"
+        value={it[CI.TASK]} onCommit={v=>setOv("task", String(v).trim()||null)}/>
       <div className="chiprow">
         <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.code} · {cat.name}</span>
         <span className="pill dim">Cost {it[CI.CC]}</span>
@@ -1741,10 +1740,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
 
       <table className="dt fcst">
         <tbody>
-          <tr><th>Budget UC</th><td>{fmt$(budUC,2)}</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
-          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>FAC</th><td>{fmt$(fac)}</td></tr>
-          <tr><th>Cost var</th><td className={cvar<0?"neg":"pos"}>{fmt$(cvar)}</td><th>Pay / {it[CI.UM]}</th><td>{fmt$(it[CI.BID],2)}</td></tr>
-          <tr><th>Proj. margin</th><td className={margin<0?"neg":"pos"} colSpan={3}>{fmt$(margin)}</td></tr>
+          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
+          <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
         </tbody>
       </table>
 
@@ -1898,10 +1895,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
       </div>}
 
       <div className="loghdr">Overrides — this card only</div>
-      <div className="ovnote">Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
-      <div className="logrow">
-        {ovIn("task","Task name",bit[CI.TASK],false)}
-      </div>
+      <div className="ovnote">Item name is edited at the top of this card. Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
       <div className="logrow">
         <label>Scope color
           <select className={t.ov&&t.ov.scope?"ovon":""} value={t.ov?.scope ?? ""} onChange={e=>setOv("scope", e.target.value||null)}>
@@ -3203,6 +3197,9 @@ const CSS = `
 .la-root *{box-sizing:border-box}
 .la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Saira Condensed","Oswald",sans-serif;letter-spacing:.04em}
 .la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
+.h3edit{display:block;width:100%;background:transparent;border:1px solid transparent;border-radius:6px;padding:2px 6px;margin:0 0 10px -7px;font:20px "Saira Condensed","Oswald",sans-serif;letter-spacing:.04em;text-transform:none;color:var(--tx);cursor:text}
+.h3edit:hover{border-color:var(--ln)}
+.h3edit:focus{outline:none;border-color:var(--brand);background:var(--pn2);cursor:text}
 .top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--ln);background:var(--pn);position:sticky;top:0;z-index:40}
 .brand{display:flex;align-items:center;gap:12px;position:relative;overflow:hidden;padding:4px 8px 4px 2px;border-radius:8px;cursor:pointer}
 .brandsweep{position:absolute;top:0;bottom:0;left:0;width:34%;pointer-events:none;background:linear-gradient(100deg,rgba(220,228,66,0) 0%,rgba(220,228,66,.16) 30%,rgba(220,228,66,.85) 50%,rgba(220,228,66,.16) 70%,rgba(220,228,66,0) 100%);mix-blend-mode:screen;opacity:0;z-index:3}
