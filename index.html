@@ -247,8 +247,17 @@ function bedForItem(cc, desc, um, ov){
 const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
   stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
-  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6,
-  cycSpoil:24, cycStone:26, cycSand:32
+  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3,
+  cycSpoil:24, cycStone:26, cycSand:32,
+  // Haul sources for the back-haul optimizer + map. oneWayMin = field-observed one-way
+  // drive time (the ground truth for cycles); lat/lng set by dragging the pin (New Orleans
+  // job area defaults). oneWayMin seeds from cycSpoil/cycStone/cycSand ÷ 2.
+  sources: {
+    site:  { name:"Job site",         lat:29.9550, lng:-90.0750 },
+    dump:  { name:"Haul-out / dump",  lat:29.9900, lng:-90.0300, oneWayMin:12 },
+    stone: { name:"#57 stone pit",    lat:29.9800, lng:-90.1350, oneWayMin:13 },
+    sand:  { name:"Sand pit",         lat:30.0250, lng:-90.0800, oneWayMin:16 }
+  }
 };
 function truckModel(item, dailyQty, D, tcfg){
   const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
@@ -289,6 +298,59 @@ function mergeTruckModels(models){
   const stone = ms.some(m=>m.stone.cy>0) ? Math.ceil(sum("stone")/tr.stone) : 0;
   const sand  = ms.some(m=>m.sand.cy>0)  ? Math.ceil(sum("sand")/tr.sand)   : 0;
   return { applicable:true, total:spoil+stone+sand, spoilTrucks:spoil, stoneTrucks:stone, sandTrucks:sand };
+}
+/* Great-circle distance (miles) between two {lat,lng}. */
+function haversine(a, b){
+  if(!a || !b || a.lat==null || b.lat==null) return null;
+  const R=3958.8, rad=Math.PI/180;
+  const dLat=(b.lat-a.lat)*rad, dLng=(b.lng-a.lng)*rad;
+  const s=Math.sin(dLat/2)**2 + Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.min(1,Math.sqrt(s)));
+}
+/* Back-haul (deadhead) optimizer. Given loads/day per stream and the sources, combine a
+   spoil-out load with a material-in load into one cycle: site→dump→pit→site. The time saved
+   vs two round trips is the triangle t(site,dump)+t(site,pit)−t(dump,pit) (≥0), largest when
+   the dump and pit are the same side of the job. Greedy: pair spoil with the higher-saving
+   material first; leftovers run dedicated. Inter-source (dump↔pit) legs are derived from the
+   pins' straight-line distance scaled by the site legs' implied speed; when a pin is unset the
+   leg is treated as the full detour (savings 0), so back-haul only kicks in once pins are placed. */
+function routePlan(streams, sources, autos){
+  const c={...TRUCK_DEFAULTS, ...(autos||{})}, S=sources||c.sources||{};
+  const spoilN=Math.max(0,+ (streams&&streams.spoil)||0), stoneN=Math.max(0,+(streams&&streams.stone)||0), sandN=Math.max(0,+(streams&&streams.sand)||0);
+  const load=+c.loadSpot||6, tip=+c.tipMin||3, availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
+  // one-way leg (min) between site and a source role
+  const legSite = key => Math.max(1, +(S[key]&&S[key].oneWayMin) || 1);
+  // implied road speed (mi/min) from the site legs → derive dump↔pit legs from the pins
+  const impl=[];
+  for(const k of ["dump","stone","sand"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
+  const mpm = impl.length ? impl.reduce((a,x)=>a+x,0)/impl.length : null;   // miles per min
+  const legPair = (a,b) => { const d=haversine(S[a],S[b]); return (d!=null && mpm>0) ? Math.max(1, d/mpm) : (legSite(a)+legSite(b)); };
+  // dedicated round-trip cycle minutes
+  const spoilRT = load + 2*legSite("dump") + tip;
+  const rt = key => 2*legSite(key) + load + tip;
+  const combined = key => 2*load + 2*tip + legSite("dump") + legPair("dump",key) + legSite(key);
+  const mats = [
+    {key:"stone", label:"#57 stone", loads:stoneN, rt:rt("stone"), comb:combined("stone"), save:(legSite("dump")+legSite("stone")-legPair("dump","stone"))},
+    {key:"sand",  label:"sand",      loads:sandN,  rt:rt("sand"),  comb:combined("sand"),  save:(legSite("dump")+legSite("sand") -legPair("dump","sand"))}
+  ];
+  // greedy: pair spoil with the higher-saving material first
+  let spoilLeft=spoilN; const combos=[]; const order=[...mats].sort((a,b)=>b.save-a.save);
+  for(const m of order){ if(spoilLeft<=0) break; if(!(m.save>0.01) || m.loads<=0) continue;
+    const pair=Math.min(spoilLeft, m.loads); if(pair<=0) continue;
+    combos.push({material:m.label, key:m.key, count:pair, cycleMin:m.comb, savedMin:pair*m.save});
+    spoilLeft-=pair; m.paired=pair; }
+  // dedicated remainders
+  let smartMin=0; const dedic=[];
+  combos.forEach(x=>{ smartMin += x.count*x.cycleMin; });
+  if(spoilLeft>0.001){ smartMin += spoilLeft*spoilRT; dedic.push({material:"spoil", count:spoilLeft, cycleMin:spoilRT}); }
+  mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001){ smartMin += rem*m.rt; dedic.push({material:m.label, key:m.key, count:rem, cycleMin:m.rt}); } });
+  const dumbMin = spoilN*spoilRT + stoneN*mats[0].rt + sandN*mats[1].rt;
+  const trucks = Math.ceil(smartMin/availMin), dumbTrucks = Math.ceil(dumbMin/availMin);
+  const hoursSaved = Math.max(0, (dumbMin-smartMin)/60);
+  return { combos, dedic, smartMin, dumbMin, trucks, dumbTrucks, hoursSaved,
+    savings:{stone:mats[0].save, sand:mats[1].save},
+    legs:{ dump:legSite("dump"), stone:legSite("stone"), sand:legSite("sand"),
+           dumpStone:legPair("dump","stone"), dumpSand:legPair("dump","sand") } };
 }
 /* Labor-category cost codes: exclude leave/holiday (50.50.x), misc/overhead (99.x),
    fuel/consumables, and sales-tax phases so daily tracking stays on productive work. */
@@ -1981,6 +2043,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,setRunDig,upT
         <div className="impact-i"><label>Total /day</label><b>{tm.total}</b></div>
       </div>}
       {tm&&tm.applicable&&tm.sand.trucks===0&&(+dig||0)>0 && <div className="ovnote">Trench too shallow for a sand backfill lift at this depth (springline + road section ≥ depth) — no sand haul.</div>}
+      {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <div className="ovnote">With back-haul: <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} (vs {rp.dumbTrucks} dedicated) · saves ~{fmtN(rp.hoursSaved,1)} hr/day. Tune sources in Trucking → Sources.</div>; })()}
       </>}
       <div className="logrow">
         <label>Location<BlurInput list="loclist-edit" placeholder="Pick or type a location…" value={t.loc||""} onCommit={v=>upTask(t.id,{loc:String(v).trim()||null})}/>
@@ -2276,6 +2339,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
           <tbody>
             <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
             {tm&&tm.applicable && <tr><th>Trucks / day</th><td>🚚 <b>{tm.total}</b> — dig-out {tm.spoil.trucks} · #57 stone {tm.stone.trucks} · sand {tm.sand.trucks}{(+dig||0)>0?"":" (set trench depth for spoil/sand)"}</td></tr>}
+            {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <tr><th>With back-haul</th><td>🔁 <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} <em className="dim2">(vs {rp.dumbTrucks} dedicated · saves ~{fmtN(rp.hoursSaved,1)} hr/day)</em></td></tr>; })()}
             <tr><th>Material (plan)</th><td>{fmt$(useQty*it[CI.UM$])}</td></tr>
             <tr><th>Budget amount</th><td>{fmt$(useQty*it[CI.BID])} <em className="dim2">@ {fmt$(it[CI.BID],2)}/{it[CI.UM]}</em></td></tr>
             <tr><th>Budget cost</th><td>{fmt$(useQty*unitCost(it))} <em className="dim2">@ {fmt$(unitCost(it),2)}/{it[CI.UM]}</em></td></tr>
@@ -3170,6 +3234,62 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
+/* Lazy-load Leaflet (map library) on demand — mirrors ensureXLSX. Service worker caches it. */
+const ensureLeaflet = () => new Promise((res,rej)=>{
+  if(window.L) return res(window.L);
+  if(!document.getElementById("leaflet-css")){ const css=document.createElement("link"); css.id="leaflet-css"; css.rel="stylesheet"; css.href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"; document.head.appendChild(css); }
+  const el=document.createElement("script"); el.src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  el.onload=()=>res(window.L); el.onerror=()=>rej(new Error("could not load the map — check your connection")); document.head.appendChild(el);
+});
+const SRC_ROLES = [
+  {key:"site",  color:"#00a34d", tag:"SITE"},
+  {key:"dump",  color:"#e5484d", tag:"DUMP"},
+  {key:"stone", color:"#8B63E0", tag:"#57"},
+  {key:"sand",  color:"#F58A2E", tag:"SAND"}
+];
+/* Imperative Leaflet map: site + 3 draggable source pins over OSM tiles, with the recommended
+   back-haul loop (site→dump→pit→site) drawn as a highlighted polyline. Data = cfg.truck.sources;
+   dragging a pin writes lat/lng back through setSource. Falls back to a note if tiles/lib fail. */
+function TruckMap({sources, setSource, plan}){
+  const elRef=useRef(null), mapRef=useRef(null), grpRef=useRef(null);
+  const srcRef=useRef(sources), planRef=useRef(plan), setRef=useRef(setSource);
+  srcRef.current=sources; planRef.current=plan; setRef.current=setSource;
+  const [ready,setReady]=useState(false); const [err,setErr]=useState("");
+
+  const draw = React.useCallback(()=>{
+    const L=window.L, map=mapRef.current, grp=grpRef.current; if(!L||!map||!grp) return;
+    grp.clearLayers();
+    const S=srcRef.current||{}, plan=planRef.current, pts=[], site=S.site;
+    ["dump","stone","sand"].forEach(k=>{ if(site&&site.lat!=null&&S[k]&&S[k].lat!=null){
+      L.polyline([[site.lat,site.lng],[S[k].lat,S[k].lng]],{color:"#6c7178",weight:1.5,opacity:.55,dashArray:"4 5"}).addTo(grp); }});
+    ((plan&&plan.combos)||[]).forEach(c=>{ const pit=S[c.key]; if(site&&site.lat!=null&&S.dump&&S.dump.lat!=null&&pit&&pit.lat!=null){
+      L.polyline([[site.lat,site.lng],[S.dump.lat,S.dump.lng],[pit.lat,pit.lng],[site.lat,site.lng]],{color:"#dce442",weight:4,opacity:.9}).addTo(grp); }});
+    SRC_ROLES.forEach(rl=>{ const s=S[rl.key]; if(!s||s.lat==null) return; pts.push([s.lat,s.lng]);
+      const icon=L.divIcon({className:"", html:`<div class="mappin" style="background:${rl.color}">${rl.tag}</div>`, iconSize:[44,20], iconAnchor:[22,10]});
+      const m=L.marker([s.lat,s.lng],{draggable:true, icon}).addTo(grp);
+      const ld = rl.key==="site" ? "" : (s.oneWayMin?` · ${s.oneWayMin} min`:"");
+      m.bindTooltip((s.name||rl.tag)+ld, {direction:"top", offset:[0,-10]});
+      m.on("dragend", e=>{ const ll=e.target.getLatLng(); setRef.current(rl.key, {lat:+ll.lat.toFixed(5), lng:+ll.lng.toFixed(5)}); });
+    });
+    if(pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.35), {maxZoom:14});
+  },[]);
+
+  useEffect(()=>{ let dead=false;
+    ensureLeaflet().then(L=>{ if(dead||!elRef.current||mapRef.current) return;
+      const st=(srcRef.current&&srcRef.current.site)||{};
+      const map=L.map(elRef.current,{zoomControl:true, scrollWheelZoom:false}).setView([st.lat||29.955, st.lng||-90.075], 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19, attribution:"&copy; OpenStreetMap"}).addTo(map);
+      mapRef.current=map; grpRef.current=L.layerGroup().addTo(map);
+      setTimeout(()=>{ if(mapRef.current) mapRef.current.invalidateSize(); },140);
+      setReady(true);
+    }).catch(e=>setErr(e.message||"map failed to load"));
+    return ()=>{ dead=true; if(mapRef.current){ mapRef.current.remove(); mapRef.current=null; grpRef.current=null; } };
+  },[]);
+  useEffect(()=>{ if(ready) draw(); },[ready, sources, plan, draw]);
+
+  if(err) return <div className="truckmap mapfail">🗺 {err}. You can still set drive-times below — the routing works without the map.</div>;
+  return <div className="truckmap" ref={elRef}/>;
+}
 function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
@@ -3190,6 +3310,10 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const pvTbl = pvFam==="Arch pipe"?ARCH_BED:RCP_BED;
   const pvItem=(()=>{ const r=[]; r[CI.CC]=(pvFam==="Arch pipe"?"33.40.19.":"33.40.18.")+pvSize; r[CI.TASK]=(pvFam==="Arch pipe"?"Arch pipe ":"RCP ")+pvSize+" in"; r[CI.UM]="LF"; return r; })();
   const pv = truckModel(pvItem, +pvLF, +pvDepth, T);
+  // Sources + back-haul routing (drives the map & readout; streams come from the preview item).
+  const sources = T.sources || TRUCK_DEFAULTS.sources;
+  const setSource = (key,patch)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS,...((c&&c.truck)||{})}; const src={...(t.sources||TRUCK_DEFAULTS.sources)}; src[key]={...(src[key]||{}), ...patch}; return {...c, truck:{...t, sources:src}}; });
+  const plan = pv.applicable ? routePlan({spoil:pv.spoil.loads, stone:pv.stone.loads, sand:pv.sand.loads}, sources, T) : null;
 
   // ===== Fleet balancer =====
   const [cyc,setCyc]=useState(TRUCK_BASE.minLoad);
@@ -3266,6 +3390,31 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   return (
     <div className="page trk">
       <div className="cchead"><div><h2>Trucking</h2><p className="dim2">Cycle-time baselines, live load tracking, and the fleet-balance / sign-out optimizer — keep the excavator fed without paying trucks to sit.</p></div></div>
+
+      {/* Sources & smart routing (map + back-haul optimizer) */}
+      <div className="panel">
+        <div className="ph">Sources &amp; smart routing <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>haul spoil off, then back-haul #57 or sand on the return — cut the empty miles</em></div>
+        <TruckMap sources={sources} setSource={setSource} plan={plan}/>
+        <table className="dt list srctbl">
+          <thead><tr><th>Source</th><th>Name</th><th className="r">One-way drive (min)</th></tr></thead>
+          <tbody>
+            <tr><td><span className="srcdot" style={{background:"#00a34d"}}/>Job site</td>
+              <td><input value={sources.site.name||""} onChange={e=>setSource('site',{name:e.target.value})}/></td>
+              <td className="r dim2">— (drag pin)</td></tr>
+            {[["dump","#e5484d","Dump / haul-out"],["stone","#8B63E0","#57 stone pit"],["sand","#F58A2E","Sand pit"]].map(([k,col,lbl])=>(
+              <tr key={k}><td><span className="srcdot" style={{background:col}}/>{lbl}</td>
+                <td><input value={sources[k].name||""} onChange={e=>setSource(k,{name:e.target.value})}/></td>
+                <td className="r"><input type="number" step="1" style={{width:80}} value={sources[k].oneWayMin??""} onChange={e=>setSource(k,{oneWayMin:e.target.value===""?0:+e.target.value})}/></td></tr>
+            ))}
+          </tbody>
+        </table>
+        {plan ? <div className="bhaul">
+          {plan.combos.length
+            ? <>Back-haul plan for {pvSize}"{pvFam==="Arch pipe"?" arch":" RCP"} @ {fmtN(+pvLF)} LF/day: {plan.combos.map((c,i)=><span key={i}>{i?"; ":""}<b>{fmtN(c.count,1)}</b> spoil loads grab <b>{c.material}</b> on the way back</span>)} → <b>saves ~{fmtN(plan.hoursSaved,1)} hr/day</b> · {plan.trucks} truck{plan.trucks===1?"":"s"} vs {plan.dumbTrucks} dedicated{plan.trucks<plan.dumbTrucks?` (−${plan.dumbTrucks-plan.trucks})`:""}.</>
+            : <>No back-haul gain at these pin positions — drag the dump &amp; a pit so one sits on the return path. Running {plan.dumbTrucks} dedicated truck{plan.dumbTrucks===1?"":"s"}.</>}
+        </div> : <div className="ovnote">Pick a pipe size in the preview below to see the routing.</div>}
+        <p className="dim2" style={{margin:"6px 2px 0"}}>Drag the pins to place your dump &amp; pits; set the one-way drive time you see in the field (that&rsquo;s what drives the cycles). The optimizer pairs spoil-out loads with #57/sand-in loads to kill empty return trips. Streams are taken from the preview item below.</p>
+      </div>
 
       {/* Advanced — trucking model autos */}
       <div className="panel">
@@ -3730,6 +3879,14 @@ const CSS = `
 .heat .hweek{font:600 12px "IBM Plex Mono";color:var(--bad);padding-left:8px}
 @media(max-width:760px){.engbar{grid-template-columns:1fr}}
 .trk .panel{margin-bottom:14px}
+.truckmap{height:360px;border-radius:12px;overflow:hidden;border:1px solid var(--mdln);margin:4px 0 12px;z-index:0}
+.truckmap.mapfail{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--dm);font-size:13px;padding:16px;background:var(--pn2)}
+.mappin{display:flex;align-items:center;justify-content:center;width:44px;height:20px;border-radius:10px;color:#fff;font:800 9px "Saira Condensed",sans-serif;letter-spacing:.04em;border:2px solid rgba(0,0,0,.55);box-shadow:0 1px 4px rgba(0,0,0,.55);cursor:grab;white-space:nowrap}
+.leaflet-container{background:#0c0e0f}
+.bhaul{margin:6px 0 2px;font-size:13px;padding:10px 12px;border-radius:9px;border:1px solid var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
+.bhaul b{color:var(--good)}
+.srctbl input{width:100%}
+.srcdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;border:1px solid rgba(0,0,0,.4)}
 .trkrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px}
 .trkrow label{display:flex;flex-direction:column;gap:4px;font:600 11px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;color:var(--dm)}
 .trkrow input,.trkrow select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 9px;font:13px "IBM Plex Mono"}
