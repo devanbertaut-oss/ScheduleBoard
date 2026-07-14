@@ -197,12 +197,28 @@ const MH_BASE = {  /* Drain Manhole Schedule — base footprint (ft^2) by struct
   1:78*78*Math.PI/4/144, 2:84*84*Math.PI/4/144, 3:90*90*Math.PI/4/144,
   4:84*66/144, 5:90*78/144, 6:96*90/144, 7:94*90/144, 8:102*90/144,
   9:126*78/144, 10:145.5*78/144 };
+/* #57 stone envelope per LF (CY): the per-size foundation layer (`bed`, e.g. 9") across
+   the full trench width, PLUS stone around the pipe from invert up to the springline
+   (½ the pipe rise), less the pipe's own cross-section in that band (≈ half an ellipse
+   span×rise). Matches the SWB detail: #57 stone from top-of-bedding to springline. */
+function stoneEnvelope(twFt, fFt, spanIn, riseIn){
+  const halfRiseFt = (riseIn/12)/2;
+  const aLowSf = Math.PI*spanIn*riseIn/8/144;            // pipe area below springline (sf)
+  const haunch = Math.max(0, twFt*halfRiseFt - aLowSf);  // stone around pipe to springline
+  const cyEnv = (twFt*fFt + haunch)/27;
+  return {halfRiseFt, aLowSf, aUpSf:aLowSf, springHtFt:fFt+halfRiseFt, cyEnv};
+}
 /* Resolve a scheduled item to its bedding takeoff. Returns per-unit stone volume
    and the governing drawing, or null when no spec size can be inferred. */
-function bedForItem(cc, desc, um){
+function bedForItem(cc, desc, um, ov){
   const code=(cc||"").replace(/-/g,".");
   const near=(tbl,n)=>{ const ks=Object.keys(tbl).map(Number).sort((a,b)=>a-b);
     let p=ks[0]; for(const k of ks){ if(k<=n) p=k; } return p; };
+  // Apply an editable per-size trench-width / foundation-depth override (Advanced Settings)
+  // and recompute the stone envelope. Keyed by `${fam}|${size}`. Skips HPPP (own wrap calc).
+  const fin = r => { if(ov && r && r.fam && r.size!=null){ const o=ov[r.fam+"|"+r.size];
+      if(o && r.span!=null && r.rise!=null){ const tw=+o.tw>0?+o.tw:r.tw, f=+o.f>0?+o.f:r.f;
+        return {...r, tw, f, ...stoneEnvelope(tw,f,r.span,r.rise)}; } } return r; };
   // structures (manholes / catch basins) — bedding per EACH from base footprint
   if(um==="EACH"||um==="VF"){
     if(/catch basin|manhole|drop inlet|structure/i.test(desc||"")||/^33\.49\./.test(code)){
@@ -218,9 +234,61 @@ function bedForItem(cc, desc, um){
   if(n==null) return null;
   const isArch=/arch/i.test(desc||"")||/^33\.40\.19\./.test(code);
   const isHPPP=/hppp|polypropylene/i.test(desc||"")||/^33\.40\.25\./.test(code);
-  if(isArch){ const s=ARCH_BED[near(ARCH_BED,n)]; return {size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,per:"LF",spec:"D-3933",fam:"Arch pipe"}; }
-  if(isHPPP){ const s=HPPP_SPEC[near(HPPP_SPEC,n)]; const cy=(s.tw*(s.bed+s.od)-Math.PI*s.od*s.od/4)/144/27; return {size:n,cyPer:cy,tonPer:cy*STONE_TON_PER_CY,tw:s.tw/12,per:"LF",spec:"HPPP embedment",fam:"HPPP"}; }
-  const s=RCP_BED[near(RCP_BED,n)]; return {size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,per:"LF",spec:(n>=48?"D-3810":"Round RCP"),fam:"Round pipe"};
+  if(isArch){ const s=ARCH_BED[near(ARCH_BED,n)]; const od=(s.od||"").match(/(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/); const span=od?+od[1]:n, rise=od?+od[2]:n; const env=stoneEnvelope(s.tw,s.bed,span,rise); return fin({size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,f:s.bed,span,rise,...env,per:"LF",spec:"D-3933",fam:"Arch pipe"}); }
+  if(isHPPP){ const s=HPPP_SPEC[near(HPPP_SPEC,n)]; const cy=(s.tw*(s.bed+s.od)-Math.PI*s.od*s.od/4)/144/27; const halfRiseFt=(s.od/12)/2, aUpSf=Math.PI*s.od*s.od/8/144; return {size:n,cyPer:cy,tonPer:cy*STONE_TON_PER_CY,cyEnv:cy,tw:s.tw/12,f:s.bed/12,span:s.od,rise:s.od,halfRiseFt,aLowSf:aUpSf,aUpSf,springHtFt:s.bed/12+halfRiseFt,per:"LF",spec:"HPPP embedment",fam:"HPPP"}; }
+  const s=RCP_BED[near(RCP_BED,n)]; const env=stoneEnvelope(s.tw,s.bed,n,n); return fin({size:n,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,f:s.bed,span:n,rise:n,...env,per:"LF",spec:(n>=48?"D-3810":"Round RCP"),fam:"Round pipe"});
+}
+/* Physical per-item trucking model — three dedicated haul streams for a linear drainage
+   run (spoil-out, #57 stone-in, sand-in), driven by planned daily production (LF) and one
+   field input: avg depth from existing grade to bottom of trench (D, ft). Stone is fixed
+   per size; spoil & sand scale with D. Returns per-stream volume/loads and the optimal
+   truck count (throughput, with an excavator-feed floor on the dig-out). Rates/capacities
+   come from `tcfg` (editable autos); geometry from bedForItem. Non-LF items → not applicable. */
+const TRUCK_DEFAULTS = {
+  axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
+  stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
+  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6,
+  cycSpoil:24, cycStone:26, cycSand:32
+};
+function truckModel(item, dailyQty, D, tcfg){
+  const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
+  const z=()=>({cy:0,tn:0,loads:0,trucks:0});
+  const g = (item && item[CI.UM]==="LF") ? bedForItem(item[CI.CC], item[CI.TASK], item[CI.UM], c.tw) : null;
+  if(!g || g.cyEnv==null || !(+dailyQty>0)) return {applicable:false,total:0,spoil:z(),stone:z(),sand:z(),g};
+  const P=+dailyQty, Dd=Math.max(0,+D||0);
+  const volCap=c.axle==="quad"?c.quadCY:c.triCY, stoneCap=c.axle==="quad"?c.stoneTnQuad:c.stoneTnTri;
+  const trips = cyc => Math.max(1, Math.floor(c.shiftHrs*60*c.eff/Math.max(1,cyc)));
+  // Spoil (dig-out): full trench bank volume, swelled to loose. Throughput OR excavator-feed floor.
+  const spoilCy=P*(g.tw*Dd/27)*c.swell;
+  const spoilThr=Math.ceil(spoilCy/volCap/trips(c.cycSpoil));
+  const feedMin=Math.ceil(c.cycSpoil/Math.max(1,c.loadSpot));
+  const spoilTrucks=spoilCy>0?Math.max(spoilThr,feedMin):0;
+  // #57 stone: fixed envelope per size, weight-governed (invoiced by the ton).
+  const stoneCy=P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
+  const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/trips(c.cycStone)):0;
+  // Sand: springline → bottom of #610 road base, compacted. Volume-governed.
+  const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
+  const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27)*c.compaction;
+  const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/trips(c.cycSand)):0;
+  return {applicable:true, total:spoilTrucks+stoneTrucks+sandTrucks,
+    spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
+    stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
+    sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks},
+    trips:{spoil:trips(c.cycSpoil), stone:trips(c.cycStone), sand:trips(c.cycSand)}, feedMin, g};
+}
+/* Aggregate several per-item truck models (a merged card) into one truck count by
+   pooling each dedicated stream's loads before rounding — a shared stone/sand fleet
+   serves multiple items, so we don't double-count by ceiling per item. */
+function mergeTruckModels(models){
+  const ms = models.filter(m=>m&&m.applicable);
+  if(!ms.length) return null;
+  const sum = k => ms.reduce((a,m)=>a+m[k].loads,0);
+  const tr = ms[0].trips, feedMin = Math.max(...ms.map(m=>m.feedMin||0));
+  const spoilCy = ms.reduce((a,m)=>a+m.spoil.cy,0);
+  const spoil = spoilCy>0 ? Math.max(Math.ceil(sum("spoil")/tr.spoil), feedMin) : 0;
+  const stone = ms.some(m=>m.stone.cy>0) ? Math.ceil(sum("stone")/tr.stone) : 0;
+  const sand  = ms.some(m=>m.sand.cy>0)  ? Math.ceil(sum("sand")/tr.sand)   : 0;
+  return { applicable:true, total:spoil+stone+sand, spoilTrucks:spoil, stoneTrucks:stone, sandTrucks:sand };
 }
 /* Labor-category cost codes: exclude leave/holiday (50.50.x), misc/overhead (99.x),
    fuel/consumables, and sales-tax phases so daily tracking stays on productive work. */
@@ -421,7 +489,7 @@ function LookAhead(){
   const [tasks, setTasks] = useState(()=>migrateRuns(seedTasks,{}).tasks);
   const [logs, setLogs] = useState(seedLogs);
   const [notes, setNotes] = useState(seedNotes);
-  const [cfg, setCfg] = useState({ crewSize:6, shiftHrs:8, laborRate:58, truckRate:220 });
+  const [cfg, setCfg] = useState({ crewSize:6, shiftHrs:8, laborRate:58, truckRate:220, truck:{...TRUCK_DEFAULTS} });
   const [eosMeta, setEosMeta] = useState({ safety:"No safety incidents noted.", quality:"No quality incidents noted.", weather:"Partly sunny, high of 91°F, low of 77°F, 20% chance of rain.", descs:{}, to:"hmenszer@rngd.com, dbertaut@rngd.com, bleonhard@rngd.com, fchavez@rngd.com, smcleish@rngd.com, wknighten@rngd.com, cmcmahon@rngd.com, dguidry@rngd.com, jgomez@rngd.com, jbergeron@rngd.com, mryan@rngd.com, moprea@rngd.com" });
   const [modal, setModal] = useState(null); // {type, ...}
   const [addingIn, setAddingIn] = useState(null); // 'crew'|'sub'|'site'
@@ -740,7 +808,9 @@ function LookAhead(){
     const planMH = t.qty*it[CI.MH];
     const lg = logs[t.id]||{};
     const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
+    const trk = truckModel(it, t.qty, t.dig, cfg.truck);       // physical per-day trucks (pipe items)
     return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
+      trk, trucks: trk.applicable ? trk.total : null,
       mat:t.qty*it[CI.UM$], budAmt:t.qty*it[CI.BID], budCost:t.qty*unitCost(it),
       earnMH:(lg.qty||0)*it[CI.MH] };
   };
@@ -920,6 +990,11 @@ function LookAhead(){
       }
       return [...ts.filter(x=>runKey(x)!==k), ...locked, ...newOpen];
     });
+  };
+  const setRunDig = (t, val) => {                         // trench depth (grade→bottom, ft) — one value for the whole run
+    const k = runKey(t), v = (val===""||val==null) ? null : +val;
+    pushUndo("Set trench depth");
+    setTasks(ts => ts.map(x => runKey(x)===k ? {...x, dig: v} : x));
   };
   const asapRun = t => {                                  // one-shot "schedule as soon as possible": snap the run's start to its latest predecessor's finish + 1
     const k=runKey(t), preds=(deps[k]||[]); if(!preds.length) return;
@@ -1179,14 +1254,14 @@ function LookAhead(){
 
       {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal,savings,cfg}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings}}/>}
+      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg}}/>}
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
 
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
@@ -1312,9 +1387,9 @@ function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmE
   );
 }
 function computeReflow(tasks, logs, baseline, crews, cfg){
-  const byTask={}, byCrew={}, crewDayLoads={};
+  const byTask={}, byCrew={}, crewDayLoads={}, crewDayTrucks={};
   const truckRate = (cfg && cfg.truckRate>0) ? cfg.truckRate : 220;
-  const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * 8; // ~18 loads/truck/day
+  const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * 8; // proxy for non-pipe haul items (no physical model)
   const capOf = id => { const c=crews.find(x=>x.id===id); return (c && c.capMH>0)? c.capMH : 68; };
   const groups={};
   tasks.forEach(t=>{ const k=t.res+"|"+t.ci; (groups[k]||(groups[k]=[])).push(t); });
@@ -1339,9 +1414,10 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
         byTask[t.id]={logged:false, planQ, reflowQ:want, cappedQ:capped, reflowMH, overCap};
         carry = want-capped; dayQ=want;
       }
-      const ut = itemFor(t)[CI.UT] || 0;
-      if(ut>0){ const loads=dayQ*ut/truckRate; const dk=t.wk+"_"+t.day;
-        (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; }
+      const dk=t.wk+"_"+t.day, tm=truckModel(itemFor(t), dayQ, t.dig, cfg.truck);
+      if(tm.applicable){ (crewDayTrucks[res]||(crewDayTrucks[res]={}))[dk]=(crewDayTrucks[res][dk]||[]); crewDayTrucks[res][dk].push(tm); }
+      else { const ut=itemFor(t)[CI.UT]||0; if(ut>0){ const loads=dayQ*ut/truckRate;
+        (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; } }
     });
     const cur = byCrew[res] || (byCrew[res]={behindMH:0, over:false, cap});
     if(mhU>0 && carry>0.0001) cur.behindMH += carry*mhU;
@@ -1351,12 +1427,20 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
     v.extraDays = v.behindMH>0.5 ? Math.ceil(v.behindMH/(v.cap||68)) : 0;
     v.status = v.behindMH>0.5 ? "behind" : v.over ? "over" : "on";
   });
-  Object.keys(crewDayLoads).forEach(res=>{
-    const peak = Math.max(0, ...Object.values(crewDayLoads[res]));
+  const haulRes = new Set([...Object.keys(crewDayTrucks), ...Object.keys(crewDayLoads)]);
+  haulRes.forEach(res=>{
+    const days = new Set([...Object.keys(crewDayTrucks[res]||{}), ...Object.keys(crewDayLoads[res]||{})]);
+    let peakTrucks=0, peakLoads=0;
+    days.forEach(dk=>{
+      const models=(crewDayTrucks[res]||{})[dk]||[], merged=mergeTruckModels(models), other=(crewDayLoads[res]||{})[dk]||0;
+      const trucks=(merged?merged.total:0) + (other>0?Math.ceil(other/LOADS_PER_TRUCK_DAY):0);
+      const loads=models.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads,0) + other;
+      if(trucks>peakTrucks) peakTrucks=trucks; if(loads>peakLoads) peakLoads=loads;
+    });
     const c = crews.find(x=>x.id===res); const avail = (c && c.trucks>0)? c.trucks : 0;
     const cur = byCrew[res] || (byCrew[res]={behindMH:0,over:false,status:"on",extraDays:0});
-    cur.peakLoads = Math.round(peak);
-    cur.trucksNeeded = peak>0 ? Math.ceil(peak/LOADS_PER_TRUCK_DAY) : 0;
+    cur.peakLoads = Math.round(peakLoads);
+    cur.trucksNeeded = peakTrucks;
     cur.trucksAvail = avail;
     cur.truckShort = avail>0 && cur.trucksNeeded>avail;
   });
@@ -1480,7 +1564,9 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const startSta = t.sta ? staFmt(t.sta[0]) : null;
   const mhStr = fmtN(mhShown,mhShown%1?1:0)+" MH";
   const scale=t.qty?qShown/t.qty:1, lds=(c.loads||0)*scale;
-  const trucksStr = (t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (lds>=0.05?fmtN(lds,1)+" loads":"—");
+  const trucksStr = (t.trucks!=null && t.trucks!=="") ? String(t.trucks)
+    : (c.trucks!=null ? c.trucks+" truck"+(c.trucks===1?"":"s")
+    : (lds>=0.05?fmtN(lds,1)+" loads":"—"));
   const multi = run && run.total>1;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
@@ -1652,7 +1738,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
   const [tab,setTab]=useState("log");
   const [picking,setPicking]=useState(false);
   const [q,setQ]=useState("");
@@ -1676,6 +1762,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   // Station-to-station takeoff (Edit): width/depth/density are ephemeral — they only
   // compute a generated qty (via the shared staGenQty), they are never saved on the task.
   const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
+  const [dig,setDig]=useState(t.dig!=null?String(t.dig):"");   // trench depth grade→bottom (ft) for the trucking model
+  useEffect(()=>{ setDig(t.dig!=null?String(t.dig):""); },[t.id,t.dig]);
   const kind = unitKind(it[CI.UM]);
   const staLen = t.sta ? Math.abs(t.sta[1]-t.sta[0]) : null;
   const genQty = staGenQty(it[CI.UM], staLen, +width, +depth, +dens);
@@ -1711,6 +1799,10 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
   const commitAvg = () => { const p=+pAvg; if(p>0 && Math.abs(p-runRate)>1e-9) resliceRun(t,{perDay:p}); };
   const commitDays = () => { const d=Math.round(+pDays); if(d>0 && d!==runN) resliceRun(t,{days:d}); };
   const stepAvg = dir => { const s=Math.max(1,Math.round((+pAvg||runRate)*0.1)); const p=(+pAvg||runRate)+dir*s; if(p>0){ setPAvg(p); if(runQtot>0) setPDays(Math.max(1,Math.ceil(runQtot/p))); resliceRun(t,{perDay:p}); } };
+  // Trucking model — optimal trucks/day for this run's phase code at the (previewed) daily rate + trench depth.
+  const bgEdit = bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw);
+  const tmRate = +pAvg || runRate || t.qty || 0;
+  const tm = bgEdit ? truckModel(it, tmRate, +dig||0, cfg.truck) : null;
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const budUC=unitCost(it), f=fcstFor(t);
@@ -1875,11 +1967,26 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,asapRun,upTask,cfg,in
       </>}
       {kind==="callout" &&
       <div className="ovnote">Station is a location callout for {it[CI.UM]} items — it doesn't set the quantity. Enter qty manually (defaults to 1).</div>}
+      {bgEdit && <>
+      <div className="loghdr">Trucking — optimal trucks/day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>({bgEdit.fam} · {bgEdit.spec})</em></div>
+      <div className="ovnote">Three dedicated haul streams sized from the planned daily rate and the trench depth: dig-out spoil (out), #57 stone bedding (in), sand backfill (in). Depth is the avg from existing grade to bottom of trench.</div>
+      <div className="logrow">
+        <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder="e.g. 8" onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>
+        <div className="gen">Optimal<b>🚚 {tm&&tm.applicable?tm.total:"—"} truck{tm&&tm.total===1?"":"s"}/day</b><em className="dim2">at {fmtN(tmRate,tmRate%1?1:0)} {it[CI.UM]}/day</em></div>
+      </div>
+      {tm&&tm.applicable && <div className="impact">
+        <div className="impact-i"><label>Dig-out</label><b>{tm.spoil.trucks}<em> {fmtN(tm.spoil.loads,1)} ld</em></b></div>
+        <div className="impact-i"><label>#57 stone</label><b>{tm.stone.trucks}<em> {fmtN(tm.stone.tn,1)} tn</em></b></div>
+        <div className="impact-i"><label>Sand</label><b>{tm.sand.trucks}<em> {fmtN(tm.sand.loads,1)} ld</em></b></div>
+        <div className="impact-i"><label>Total /day</label><b>{tm.total}</b></div>
+      </div>}
+      {tm&&tm.applicable&&tm.sand.trucks===0&&(+dig||0)>0 && <div className="ovnote">Trench too shallow for a sand backfill lift at this depth (springline + road section ≥ depth) — no sand haul.</div>}
+      </>}
       <div className="logrow">
         <label>Location<BlurInput list="loclist-edit" placeholder="Pick or type a location…" value={t.loc||""} onCommit={v=>upTask(t.id,{loc:String(v).trim()||null})}/>
           <datalist id="loclist-edit">{LOCATIONS.map(l=><option key={l} value={l}/>)}</datalist></label>
         <label>Equipment (Equipt. on card)<BlurInput placeholder="e.g. PC490, CAT 336" value={t.equip||""} onCommit={v=>upTask(t.id,{equip:String(v).trim()||null})}/></label>
-        <label>Trucks (blank = auto from loads)<BlurInput placeholder="auto" value={t.trucks||""} onCommit={v=>upTask(t.id,{trucks:String(v).trim()||null})}/></label>
+        <label>Trucks (blank = auto)<BlurInput placeholder={tm&&tm.applicable?tm.total+" auto":"auto"} value={t.trucks||""} onCommit={v=>upTask(t.id,{trucks:String(v).trim()||null})}/></label>
       </div>
       {t.wk!==wk && <div className="ovnote">This card is now on the week of {t.wk} — it will leave the current board view.</div>}
 
@@ -2020,6 +2127,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const [qty,setQty]=useState("");
   const [s0,setS0]=useState(""); const [s1,setS1]=useState("");
   const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
+  const [dig,setDig]=useState("");         // trench depth grade→bottom (ft) for the trucking model
   const [daysOv,setDaysOv]=useState("");
   const [prodOv,setProdOv]=useState("");   // avg-per-day override — reciprocal with Days via the total qty
   const [predSel,setPredSel]=useState([]); const [predAdd,setPredAdd]=useState(false); const [predQ,setPredQ]=useState("");
@@ -2059,6 +2167,8 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const inst = it? installedFor(ci):0, est=it? it[CI.EST]:0;
   const remaining = Math.max(0, est-inst);
   const loadsDay = it&&cfg.truckRate>0 ? (perDay*it[CI.UT])/cfg.truckRate : 0;
+  const bg = it ? bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw) : null;    // pipe geometry → physical trucking model applies
+  const tm = bg ? truckModel(it, perDay, +dig||0, cfg.truck) : null;
 
   return (
     <Modal close={close} w={620}>
@@ -2126,11 +2236,12 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
           <label>Location<input list="loclist" placeholder="Pick or type a location…" value={loc} onChange={e=>setLoc(e.target.value)}/>
             <datalist id="loclist">{LOCATIONS.map(l=><option key={l} value={l}/>)}</datalist></label>
           <label>Equipt.<input placeholder="e.g. PC490, CAT 336" value={equip} onChange={e=>setEquip(e.target.value)}/></label>
-          <label>Trucks<input placeholder={loadsDay?fmtN(loadsDay,1)+" loads":"auto"} value={trucks} onChange={e=>setTrucks(e.target.value)}/></label>
+          <label>Trucks<input placeholder={tm&&tm.applicable?tm.total+" auto":(loadsDay?fmtN(loadsDay,1)+" loads":"auto")} value={trucks} onChange={e=>setTrucks(e.target.value)}/></label>
         </div>
         <div className="logrow">
           <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
+          {bg && <label>Trench depth ft · grade→btm<input type="number" min="0" placeholder="e.g. 8" value={dig} onChange={e=>setDig(e.target.value)}/></label>}
         </div>
         <div className="logrow">
           <label>Avg {it[CI.UM]}/day<input type="number" min="0" placeholder={useQty>0?fmtN(perDay,perDay<10?1:0):"—"}
@@ -2164,6 +2275,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
         {useQty>0 && <table className="dt">
           <tbody>
             <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
+            {tm&&tm.applicable && <tr><th>Trucks / day</th><td>🚚 <b>{tm.total}</b> — dig-out {tm.spoil.trucks} · #57 stone {tm.stone.trucks} · sand {tm.sand.trucks}{(+dig||0)>0?"":" (set trench depth for spoil/sand)"}</td></tr>}
             <tr><th>Material (plan)</th><td>{fmt$(useQty*it[CI.UM$])}</td></tr>
             <tr><th>Budget amount</th><td>{fmt$(useQty*it[CI.BID])} <em className="dim2">@ {fmt$(it[CI.BID],2)}/{it[CI.UM]}</em></td></tr>
             <tr><th>Budget cost</th><td>{fmt$(useQty*unitCost(it))} <em className="dim2">@ {fmt$(unitCost(it),2)}/{it[CI.UM]}</em></td></tr>
@@ -2184,7 +2296,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
               const staSpan = (!isCallout && cursor!=null && useQty>0) ? (b-a)*(dq/useQty) : null;
               const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staSpan] : null); if(cursor!=null && !isCallout) cursor+=staSpan;
               list.push({ id:tid(), rid:runId, res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
-                ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}) });
+                ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}), ...((+dig>0)?{dig:+dig}:{}) });
               curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
             }
             if(predSel.length){ predSel.forEach(pk=>addDep(runId,pk)); }
@@ -2803,8 +2915,11 @@ function PCard({cd}){
   const lines = merged ? cd.lines : [{it:cd.it, qty:t.qty, sta:t.sta}];
   const loc   = merged ? cd.loc   : (t.loc||"");
   const equip = merged ? cd.equip : (t.equip||"");
-  // Trucks: explicit per-task override (single cards only), else the summed computed loads.
-  const trucksStr = (!merged && t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (loads>=0.05?fmtN(loads,1)+" loads":"");
+  // Trucks: explicit per-task override (single cards only), else the optimal truck count from
+  // the physical haul model (pipe items); falls back to loads for items without a truck model.
+  const trucksStr = (!merged && t.trucks!=null && t.trucks!=="") ? String(t.trucks)
+    : (cd.trucks!=null ? cd.trucks+" truck"+(cd.trucks===1?"":"s")
+    : (loads>=0.05?fmtN(loads,1)+" loads":""));
   return (
     <div className={"pcard"+(merged?" merged n"+Math.min(lines.length,3):"")}>
       <div className="pcorners">
@@ -2855,20 +2970,21 @@ function CardExportModal({weekTasks,runDayMap,crews,taskCalc,cfg,wk,close}){
     const base = weekTasks
       .filter(t=> scopeOf(t,crews)===sck && (crewF==="all"||t.res===crewF))
       .sort((a,b)=> a.day-b.day || String(a.res).localeCompare(String(b.res)))
-      .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:(runDayMap&&runDayMap[t.id])||{idx:1,total:1}, mh:c.planMH, loads:c.loads}; });
+      .map(t=>{ const c=taskCalc(t); return {t, it:c.it, run:(runDayMap&&runDayMap[t.id])||{idx:1,total:1}, mh:c.planMH, loads:c.loads, trk:c.trk, trucks:c.trucks}; });
     // Merge same crew (res) + same day onto one card: stations stay separate (one line each),
-    // MH and loads are summed. Sort keeps groups day-ordered; Map preserves that order.
+    // MH and loads are summed; trucks pool per haul stream (shared fleet, no double-count).
     const groups = new Map();
     for(const cd of base){ const k=cd.t.res+"|"+cd.t.day; (groups.get(k) ?? groups.set(k,[]).get(k)).push(cd); }
     const same=(g,f)=> g.every(x=>f(x)===f(g[0]));
-    return [...groups.values()].map(g=> g.length===1 ? g[0] : {
+    return [...groups.values()].map(g=>{ if(g.length===1) return g[0]; const mt=mergeTruckModels(g.map(x=>x.trk)); return {
       merged:true, t:g[0].t, run:g[0].run,   // primary code's run drives the Day X/Y counter
       mh:    g.reduce((s,x)=>s+x.mh,0),
       loads: g.reduce((s,x)=>s+x.loads,0),
+      trucks: mt ? mt.total : null,
       loc:   same(g,x=>x.t.loc||"")   ? (g[0].t.loc||"")   : "",  // shared value or blank
       equip: same(g,x=>x.t.equip||"") ? (g[0].t.equip||"") : "",
       lines: g.map(x=>({ it:x.it, qty:x.t.qty, sta:x.t.sta })),
-    });
+    }; });
   },[weekTasks,sck,crewF,crews]);
   const per = paper==="tabloid"?8:4;
   const pages=[]; for(let i=0;i<cards.length;i+=per) pages.push(cards.slice(i,i+per));
@@ -3054,11 +3170,26 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
-function TruckingView({truckDay,setTruckDay,savings,setSavings}){
+function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
   const upDay = fn => setTruckDay(d=>fn(d.date===today?{...d}:{date:today,trucks:[],loads:[]}));
   const pitKeys = Object.keys(TRUCK_BASE.pits);
+
+  // ===== Advanced — trucking model autos (cfg.truck) =====
+  const T = {...TRUCK_DEFAULTS, ...((cfg&&cfg.truck)||{})};
+  const twOv = T.tw||{};
+  const tset = (k,v)=>setCfg(c=>({...c, truck:{...TRUCK_DEFAULTS, ...((c&&c.truck)||{}), [k]:v}}));
+  const twSet = (fam,size,field,v)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS, ...((c&&c.truck)||{})}; const tw={...(t.tw||{})}, key=fam+"|"+size, cur={...(tw[key]||{})};
+    if(v===""||v==null) delete cur[field]; else cur[field]=+v; if(Object.keys(cur).length) tw[key]=cur; else delete tw[key]; return {...c, truck:{...t, tw}}; });
+  const resetAutos = ()=>setCfg(c=>({...c, truck:{...TRUCK_DEFAULTS}}));
+  const [pvFam,setPvFam]=useState("Arch pipe");
+  const [pvSize,setPvSize]=useState(42);
+  const [pvDepth,setPvDepth]=useState(8);
+  const [pvLF,setPvLF]=useState(60);
+  const pvTbl = pvFam==="Arch pipe"?ARCH_BED:RCP_BED;
+  const pvItem=(()=>{ const r=[]; r[CI.CC]=(pvFam==="Arch pipe"?"33.40.19.":"33.40.18.")+pvSize; r[CI.TASK]=(pvFam==="Arch pipe"?"Arch pipe ":"RCP ")+pvSize+" in"; r[CI.UM]="LF"; return r; })();
+  const pv = truckModel(pvItem, +pvLF, +pvDepth, T);
 
   // ===== Fleet balancer =====
   const [cyc,setCyc]=useState(TRUCK_BASE.minLoad);
@@ -3104,9 +3235,11 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   const bfamO=bedFams[bfam];
   const bszKeys=Object.keys(bfamO.tbl).map(Number).sort((a,b)=>a-b);
   const bs=bfamO.tbl[bsz]||bfamO.tbl[bszKeys[0]];
-  const bCyLf = bfamO.hppp ? (bs.tw*(bs.bed+bs.od)-Math.PI*bs.od*bs.od/4)/144/27 : bs.tw*bs.bed/27;
+  const bMatch = (bfamO.arch && bs.od) ? String(bs.od).match(/(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/) : null;
+  const bSpan = bMatch?+bMatch[1]:bsz, bRise = bMatch?+bMatch[2]:bsz;
+  const bCyLf = bfamO.hppp ? (bs.tw*(bs.bed+bs.od)-Math.PI*bs.od*bs.od/4)/144/27 : stoneEnvelope(bs.tw, bs.bed, bSpan, bRise).cyEnv;
   const bTwFt = bfamO.hppp ? bs.tw/12 : bs.tw;
-  const bTot=(+blf||0)*bCyLf, bTon=bTot*STONE_TON_PER_CY, bLoads=bTon/16;
+  const bTot=(+blf||0)*bCyLf, bTon=bTot*(T.stone57Den||2), bLoads=bTon/(T.stoneTnTri||16);
 
   // ===== Live tracker =====
   const addTruck=()=>upDay(d=>({...d,trucks:[...d.trucks,{id:"3C",mode:"hourly",inT:new Date().toTimeString().slice(0,5)}]}));
@@ -3128,14 +3261,61 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   const lphTone = !lphNow?"":lphNow>=TRUCK_BASE.loadsHr?"good":lphNow>=TRUCK_BASE.loadsHr*0.8?"warn":"bad";
 
   const num=(v,set,w=64,step=1)=><input type="number" step={step} value={v} onChange={e=>set(e.target.value)} style={{width:w}}/>;
+  const NF=(k,lbl,step=1,w=74)=><label>{lbl}<input type="number" step={step} value={T[k]} onChange={e=>tset(k, e.target.value===""?TRUCK_DEFAULTS[k]:+e.target.value)} style={{width:w}}/></label>;
 
   return (
     <div className="page trk">
       <div className="cchead"><div><h2>Trucking</h2><p className="dim2">Cycle-time baselines, live load tracking, and the fleet-balance / sign-out optimizer — keep the excavator fed without paying trucks to sit.</p></div></div>
 
+      {/* Advanced — trucking model autos */}
+      <div className="panel">
+        <div className="ph">Advanced — trucking model autos <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>drive the optimal trucks/day shown on cards &amp; in the schedule modals</em></div>
+        <div className="trkrow">
+          <label>Default axle<select value={T.axle} onChange={e=>tset('axle',e.target.value)}><option value="tri">Tri-axle</option><option value="quad">Quad-axle</option></select></label>
+          {NF('triCY','Tri vol (LCY)')}{NF('quadCY','Quad vol (CY)')}{NF('stoneTnTri','Tri stone (tn)')}{NF('stoneTnQuad','Quad stone (tn)')}
+        </div>
+        <div className="trkrow">
+          {NF('stone57Den','#57 tn/CY',0.1)}{NF('sandDen','Sand tn/CY',0.1)}{NF('swell','Spoil swell ×',0.05)}{NF('compaction','Sand compaction ×',0.05)}{NF('roadSection','Grade→base (ft)',0.25)}
+        </div>
+        <div className="trkrow">
+          {NF('cycSpoil','Spoil cycle (min)')}{NF('cycStone','Stone cycle (min)')}{NF('cycSand','Sand cycle (min)')}{NF('shiftHrs','Shift (hr)',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Load+spot (min)')}
+        </div>
+        <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Stored with the board — syncs to every device. Blank a field to restore its default.</em></div>
+      </div>
+
+      {/* Per-item preview + editable trench widths */}
+      <div className="panel">
+        <div className="ph">Per-item preview &amp; trench widths</div>
+        <div className="trkrow">
+          <label>Family<select value={pvFam} onChange={e=>{setPvFam(e.target.value); const ks=Object.keys(e.target.value==="Arch pipe"?ARCH_BED:RCP_BED).map(Number); if(!ks.includes(pvSize)) setPvSize(ks[Math.floor(ks.length/2)]);}}><option>Arch pipe</option><option>Round pipe</option></select></label>
+          <label>Size (in)<select value={pvSize} onChange={e=>setPvSize(+e.target.value)}>{Object.keys(pvTbl).map(Number).sort((a,b)=>a-b).map(k=><option key={k} value={k}>{k}"{pvFam==="Arch pipe"&&pvTbl[k].od?` (${pvTbl[k].od})`:""}</option>)}</select></label>
+          <label>Depth ft (grade→btm){num(pvDepth,setPvDepth)}</label>
+          <label>LF/day{num(pvLF,setPvLF)}</label>
+        </div>
+        <table className="dt list">
+          <thead><tr><th>Haul stream</th><th className="r">Volume</th><th className="r">Loads/day</th><th className="r">Trucks</th></tr></thead>
+          <tbody>{pv.applicable ? <>
+            <tr><td>Dig-out spoil → dump</td><td className="r">{fmtN(pv.spoil.cy,1)} CY</td><td className="r">{fmtN(pv.spoil.loads,1)}</td><td className="r"><b>{pv.spoil.trucks}</b></td></tr>
+            <tr><td>#57 stone ← pit</td><td className="r">{fmtN(pv.stone.cy,1)} CY · {fmtN(pv.stone.tn,1)} tn</td><td className="r">{fmtN(pv.stone.loads,1)}</td><td className="r"><b>{pv.stone.trucks}</b></td></tr>
+            <tr><td>Sand ← pit</td><td className="r">{fmtN(pv.sand.cy,1)} CY</td><td className="r">{fmtN(pv.sand.loads,1)}</td><td className="r"><b>{pv.sand.trucks}</b></td></tr>
+            <tr className="cheattot"><td><b>Optimal total</b></td><td/><td/><td className="r"><b>🚚 {pv.total}/day</b></td></tr>
+          </> : <tr><td colSpan={4} className="empty">Pick a pipe size.</td></tr>}</tbody>
+        </table>
+        <div className="ph" style={{marginTop:10}}>{pvFam} — trench width &amp; foundation <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(editable; blank = SWB default)</em></div>
+        <table className="dt list">
+          <thead><tr><th>Size</th><th className="r">Trench width (ft)</th><th className="r">Foundation (ft)</th></tr></thead>
+          <tbody>{Object.keys(pvTbl).map(Number).sort((a,b)=>a-b).map(k=>{ const base=pvTbl[k], o=twOv[pvFam+"|"+k]||{}; return (
+            <tr key={k}><td>{k}"{pvFam==="Arch pipe"&&base.od?` (${base.od})`:""}</td>
+              <td className="r"><input type="number" step="0.01" placeholder={String(base.tw)} value={o.tw??""} onChange={e=>twSet(pvFam,k,'tw',e.target.value)} style={{width:82}}/></td>
+              <td className="r"><input type="number" step="0.05" placeholder={String(base.bed)} value={o.f??""} onChange={e=>twSet(pvFam,k,'f',e.target.value)} style={{width:82}}/></td>
+            </tr>); })}</tbody>
+        </table>
+        <p className="dim2" style={{margin:"6px 2px 0"}}>Widths seed from the SWB standard drawings (arch D-3933, round RCP D-3810). Overrides flow straight into the #57 stone envelope and the truck counts everywhere.</p>
+      </div>
+
       {/* Bedding quick-calc */}
       <div className="panel">
-        <div className="ph">Bedding stone (#610) — SWB standard drawings</div>
+        <div className="ph">Bedding stone (#57) envelope — SWB standard drawings</div>
         <div className="trkrow">
           <label>Pipe family
             <select value={bfam} onChange={e=>{setBfam(e.target.value); const ks=Object.keys(bedFams[e.target.value].tbl).map(Number); if(!ks.includes(bsz)) setBsz(ks[Math.floor(ks.length/2)]);}}>
@@ -3148,7 +3328,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings}){
           <thead><tr><th>Trench width</th><th className="r">Stone CY/LF</th><th className="r">Total CY</th><th className="r">Tons</th><th className="r">≈ Loads</th></tr></thead>
           <tbody><tr><td>{fmtN(bTwFt,2)} ft</td><td className="r">{fmtN(bCyLf,3)}</td><td className="r"><b>{fmtN(bTot,1)}</b></td><td className="r"><b>{fmtN(bTon,1)}</b></td><td className="r">{fmtN(bLoads,1)}</td></tr></tbody>
         </table>
-        <p className="dim2" style={{margin:"6px 2px 0"}}>Bedding = compacted #610 crushed stone below the pipe; backfill above is pumped sand (owner-pumped). Stone loads ≈ 16 tn tri-axle. Falls back to these specs whenever a plan sheet doesn't define the trench.</p>
+        <p className="dim2" style={{margin:"6px 2px 0"}}>Bedding = #57 crushed stone: a {"9\""} foundation across the trench plus stone around the pipe up to springline (envelope), at {fmtN(T.stone57Den||2,1)} tn/CY, ≈ {fmtN(T.stoneTnTri||16,0)} tn tri-axle load. Sand fills springline → bottom of road base. Widths/densities come from the autos above.</p>
       </div>
 
       {/* Fleet balancer */}
