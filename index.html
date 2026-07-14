@@ -192,6 +192,16 @@ const RCP_BED = {   /* Round RCP — D-3810 (48-72") + small-dia bottom bedding 
 const HPPP_SPEC = {
   12:{od:14.45,tw:30,bed:4}, 15:{od:17.57,tw:34,bed:4}, 18:{od:21.20,tw:39,bed:4},
   24:{od:27.80,tw:48,bed:4}, 30:{od:35.10,tw:56,bed:6}, 36:{od:41.00,tw:63,bed:6} };
+/* SWBNO water main (pressure DI/PVC) — full SAND embedment, no #57 stone (hauls spoil + sand).
+   Widths seeded from pipe OD + clearance; VERIFY against the SWBNO water standard detail. */
+const WATER_BED = {
+  4:{tw:2.5,bed:0.50}, 6:{tw:2.5,bed:0.50}, 8:{tw:2.5,bed:0.50}, 12:{tw:3.0,bed:0.50},
+  16:{tw:3.5,bed:0.50}, 24:{tw:4.5,bed:0.50}, 36:{tw:5.5,bed:0.50}, 48:{tw:6.5,bed:0.50} };
+/* SWBNO gravity sewer (PVC/RCP) — #57 stone bedding to springline + sand, like drainage
+   (6" foundation). VERIFY against the SWBNO sewer standard detail. */
+const SEWER_BED = {
+  8:{tw:2.5,bed:0.50}, 10:{tw:2.5,bed:0.50}, 12:{tw:3.0,bed:0.50}, 15:{tw:3.5,bed:0.50},
+  18:{tw:4.0,bed:0.50}, 24:{tw:4.5,bed:0.50}, 30:{tw:5.0,bed:0.50}, 36:{tw:5.5,bed:0.50}, 42:{tw:6.0,bed:0.50} };
 const MH_BED_FT = 0.50;   /* compacted-stone bedding under a structure base */
 const MH_BASE = {  /* Drain Manhole Schedule — base footprint (ft^2) by structure */
   1:78*78*Math.PI/4/144, 2:84*84*Math.PI/4/144, 3:90*90*Math.PI/4/144,
@@ -227,6 +237,21 @@ function bedForItem(cc, desc, um, ov){
     return null;
   }
   if(um!=="LF") return null;
+  const scope = scopeKeyOf(code);
+  // SWBNO WATER main (pressure DI/PVC) — sand embedment, no #57 stone (spoil + sand only).
+  if(scope==="water" && /^33\.10\.(14|15)\./.test(code)){
+    const m=code.match(/^33\.10\.(?:14|15)\.(\d{1,2})/); let wn=m?+m[1]:null;
+    if(wn==null){ const md=(desc||"").match(/(\d+)\s*(?:"|in\b)/i); if(md) wn=+md[1]; }
+    if(wn==null) return null;
+    const s=WATER_BED[near(WATER_BED,wn)]; const env=stoneEnvelope(s.tw,s.bed,wn,wn);
+    return fin({size:wn,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,f:s.bed,span:wn,rise:wn,...env,bedMat:"sand",per:"LF",spec:"SWBNO water (verify)",fam:"Water pipe"});
+  }
+  // SWBNO gravity SEWER main — #57 stone to springline + sand (same model as drainage).
+  if(scope==="sewer" && /^33\.30\.19\./.test(code)){
+    const md=(desc||"").match(/(\d+)\s*(?:"|in\b)/i); const sn=md?+md[1]:null; if(sn==null) return null;
+    const s=SEWER_BED[near(SEWER_BED,sn)]; const env=stoneEnvelope(s.tw,s.bed,sn,sn);
+    return fin({size:sn,cyPer:s.tw*s.bed/27,tonPer:s.tw*s.bed/27*STONE_TON_PER_CY,tw:s.tw,f:s.bed,span:sn,rise:sn,...env,bedMat:"#57",per:"LF",spec:"SWBNO sewer (verify)",fam:"Sewer pipe"});
+  }
   // pull an inch size from code tail (33.40.19.42) or the description ("(51\"X31\"")
   let n=null; const mCode=code.match(/^33\.40\.(18|19|20|25)\.(\d{2})$/);
   if(mCode) n=+mCode[2];
@@ -328,16 +353,18 @@ function truckModel(item, dailyQty, D, tcfg){
     const Dd=Math.max(0,+D||0);
     const spoilCy=P*(g.tw*Dd/27)*c.swell;
     const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
-    const stoneCy=P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
+    const sandBed = g.bedMat==="sand";                            // water main = full sand embedment, no #57 stone
+    const stoneCy = sandBed ? 0 : P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
     const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/tset.stone):0;
     const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
-    const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27)*c.compaction;
+    // upper sand (springline→base) + (for water) the whole bedding envelope routed to sand
+    const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27 + (sandBed?g.cyEnv:0))*c.compaction;
     const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
     return {applicable:true, mode:"drain", total:spoilTrucks+stoneTrucks+sandTrucks,
       spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
       stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
       sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks}, base:z(),
-      mat:{spoil:"dig-out", stone:"#57 stone", sand:"sand", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, g};
+      mat:{spoil:"dig-out", stone:sandBed?"":"#57 stone", sand:"sand", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, g};
   }
   const rg = roadForItem(item[CI.CC], item[CI.TASK], um);
   if(rg && rg.kind==="exc"){
@@ -3399,7 +3426,14 @@ const SRC_ROLES = [
   {key:"base",  color:"#B0894B", tag:"#610"}
 ];
 // Which haul sources belong to each operation — used to filter the map, routes & source rows.
-const OP_KEYS = { drain:["dump","stone","sand"], road:["dump","base"] };
+const OP_KEYS = { drain:["dump","stone","sand"], water:["dump","sand"], sewer:["dump","stone","sand"], road:["dump","base"] };
+// Preview pipe families → per-size table + synthetic [costcode, task] builder (drives bedForItem classification).
+const PV_FAMS = {
+  "Arch pipe":  {tbl:ARCH_BED,  item:sz=>["33.40.19."+sz, "Arch pipe "+sz+" in"]},
+  "Round pipe": {tbl:RCP_BED,   item:sz=>["33.40.18."+sz, "RCP "+sz+" in"]},
+  "Water pipe": {tbl:WATER_BED, item:sz=>["33.10.15."+String(sz).padStart(2,"0"), sz+'" DIP New Water Main']},
+  "Sewer pipe": {tbl:SEWER_BED, item:sz=>["33.30.19.00", 'Install Sewer Main ('+sz+'")']}
+};
 /* Imperative Leaflet map: site + 3 draggable source pins over OSM tiles, with the recommended
    back-haul loop (site→dump→pit→site) drawn as a highlighted polyline. Data = cfg.truck.sources;
    dragging a pin writes lat/lng back through setSource. Falls back to a note if tiles/lib fail. */
@@ -3494,6 +3528,7 @@ function TruckingModal({truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close
 function TrenchSection({g, depth, roadSection}){
   if(!g || g.cyEnv==null) return <div className="ovnote" style={{textAlign:"center",padding:14}}>Pick an arch or round pipe to see its trench section.</div>;
   const Dd=Math.max(0.5,+depth||0), tw=Math.max(0.5,+g.tw||1);
+  const sandBed = g.bedMat==="sand";
   const spanFt=(+g.span||0)/12, riseFt=(+g.rise||0)/12, f=+g.f||0;
   const springHt=+g.springHtFt||(f+riseFt/2), rs=Math.max(0,+roadSection||0);
   const baseH=Math.min(rs, Math.max(0,Dd-springHt));
@@ -3518,8 +3553,8 @@ function TrenchSection({g, depth, roadSection}){
     {/* layers, top → bottom */}
     {baseH>0 && <rect x={x0} y={y0} width={W} height={botBase-y0} fill="#cdb488" stroke="#a98f5e" strokeWidth="1"/>}
     {sandH>0 && <rect x={x0} y={botBase} width={W} height={botSand-botBase} fill="#f0dd9a" stroke="#d9bf76" strokeWidth="1"/>}
-    <rect x={x0} y={topEnv} width={W} height={bot-topEnv} fill="#cdbcef" stroke="#9d86d6" strokeWidth="1"/>
-    {/* pipe (span×rise), lower half sits in the #57 envelope, upper half in the sand */}
+    <rect x={x0} y={topEnv} width={W} height={bot-topEnv} fill={sandBed?"#f0dd9a":"#cdbcef"} stroke={sandBed?"#d9bf76":"#9d86d6"} strokeWidth="1"/>
+    {/* pipe (span×rise), lower half sits in the bedding, upper half in the sand */}
     <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="#eef1f5" stroke="#2f333a" strokeWidth="2"/>
     <line x1={cx-rx-6} y1={cy} x2={cx+rx+6} y2={cy} stroke="#2f333a" strokeWidth="0.75" strokeDasharray="3 3"/>
     {/* trench outline */}
@@ -3537,8 +3572,8 @@ function TrenchSection({g, depth, roadSection}){
     {/* right-side layer labels */}
     {baseH>0 && lbl((y0+botBase)/2, "#610 base", ft(baseH))}
     {sandH>0 && lbl((botBase+botSand)/2, "sand backfill", ft(sandH))}
-    {lbl((topEnv+bot)/2, "#57 envelope", "found. "+ft(f))}
-    {lbl(cy, `pipe ${Math.round(+g.span||0)}″×${Math.round(+g.rise||0)}″`, "")}
+    {lbl((topEnv+bot)/2, sandBed?"sand bedding":"#57 envelope", "found. "+ft(f))}
+    {lbl(cy, Math.round(+g.span||0)===Math.round(+g.rise||0) ? `pipe ${Math.round(+g.span||0)}″ ø` : `pipe ${Math.round(+g.span||0)}″×${Math.round(+g.rise||0)}″`, "")}
   </svg>);
 }
 function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
@@ -3558,9 +3593,13 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const [pvSize,setPvSize]=useState(42);
   const [pvDepth,setPvDepth]=useState(8);
   const [pvLF,setPvLF]=useState(60);
-  const [op,setOp]=useState("drain");   // operation filter: drainage pipe vs roadway
-  const pvTbl = pvFam==="Arch pipe"?ARCH_BED:RCP_BED;
-  const pvItem=(()=>{ const r=[]; r[CI.CC]=(pvFam==="Arch pipe"?"33.40.19.":"33.40.18.")+pvSize; r[CI.TASK]=(pvFam==="Arch pipe"?"Arch pipe ":"RCP ")+pvSize+" in"; r[CI.UM]="LF"; return r; })();
+  const [op,setOp]=useState("drain");   // operation: drainage / water / sewer pipe vs roadway
+  const pvFamCfg = PV_FAMS[pvFam] || PV_FAMS["Arch pipe"];
+  const pvTbl = pvFamCfg.tbl;
+  const pvItem=(()=>{ const [cc,task]=pvFamCfg.item(pvSize); const r=[]; r[CI.CC]=cc; r[CI.TASK]=task; r[CI.UM]="LF"; return r; })();
+  // Water/Sewer operations fix the pipe family; Drainage keeps the Arch/Round selector. Keep pvSize valid.
+  useEffect(()=>{ if(op==="water") setPvFam("Water pipe"); else if(op==="sewer") setPvFam("Sewer pipe"); else if(op==="drain" && (pvFam==="Water pipe"||pvFam==="Sewer pipe")) setPvFam("Arch pipe"); },[op]);
+  useEffect(()=>{ const ks=Object.keys((PV_FAMS[pvFam]||PV_FAMS["Arch pipe"]).tbl).map(Number); if(!ks.includes(pvSize)) setPvSize(ks[Math.floor(ks.length/2)]); },[pvFam]);
   const pv = truckModel(pvItem, +pvLF, +pvDepth, T);
   // Sources + back-haul routing (drives the map & readout; streams come from the preview item).
   const sources = {...TRUCK_DEFAULTS.sources, ...(T.sources||{})};   // ensure every role (incl. #610 base) exists for older saved configs
@@ -3656,6 +3695,8 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
         <div className="ph">Sources &amp; smart routing <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>haul spoil off, then back-haul material on the return — cut the empty miles</em></div>
         <div className="qmode sm" style={{margin:"0 0 8px"}}>
           <button className={op==="drain"?"on":""} onClick={()=>setOp("drain")}>Drainage — #57 &amp; sand</button>
+          <button className={op==="water"?"on":""} onClick={()=>setOp("water")}>Water — sand</button>
+          <button className={op==="sewer"?"on":""} onClick={()=>setOp("sewer")}>Sewer — #57 &amp; sand</button>
           <button className={op==="road"?"on":""} onClick={()=>setOp("road")}>Roadway — #610 base</button>
         </div>
         <TruckMap sources={sources} setSource={setSource} plan={bplan} op={op}/>
@@ -3677,7 +3718,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
         </table>
         {bplan ? <div className="bhaul">
           {bplan.combos.length
-            ? <>Back-haul plan — {op==="road"?"roadway (excavation out, #610 base in)":`${pvSize}"${pvFam==="Arch pipe"?" arch":" RCP"} @ ${fmtN(+pvLF)} LF/day`}: {bplan.combos.map((c,i)=><span key={i}>{i?"; ":""}<b>{fmtN(c.count,1)}</b> spoil loads grab <b>{c.material}</b> on the way back</span>)} → <b>saves ~{fmtN(bplan.hoursSaved,1)} hr/day</b> · {bplan.trucks} truck{bplan.trucks===1?"":"s"} vs {bplan.dumbTrucks} dedicated{bplan.trucks<bplan.dumbTrucks?` (−${bplan.dumbTrucks-bplan.trucks})`:""}.</>
+            ? <>Back-haul plan — {op==="road"?"roadway (excavation out, #610 base in)":`${pvSize}"${pvFam==="Arch pipe"?" arch":pvFam==="Water pipe"?" water main":pvFam==="Sewer pipe"?" sewer main":" RCP"} @ ${fmtN(+pvLF)} LF/day`}: {bplan.combos.map((c,i)=><span key={i}>{i?"; ":""}<b>{fmtN(c.count,1)}</b> spoil loads grab <b>{c.material}</b> on the way back</span>)} → <b>saves ~{fmtN(bplan.hoursSaved,1)} hr/day</b> · {bplan.trucks} truck{bplan.trucks===1?"":"s"} vs {bplan.dumbTrucks} dedicated{bplan.trucks<bplan.dumbTrucks?` (−${bplan.dumbTrucks-bplan.trucks})`:""}.</>
             : <>No back-haul gain at these pin positions — drag the dump &amp; the {op==="road"?"#610 pit":"pit"} so one sits on the return path. Running {bplan.dumbTrucks} dedicated truck{bplan.dumbTrucks===1?"":"s"}.</>}
         </div> : <div className="ovnote">Set quantities below to see the routing.</div>}
         <p className="dim2" style={{margin:"6px 2px 0"}}>Pick <b>Drainage</b> or <b>Roadway</b> above to place that operation&rsquo;s dump &amp; pits and see only its routes. Drag the pins, set the one-way drive time you see in the field (that&rsquo;s what drives the cycles). The optimizer back-hauls material-in loads on the spoil-out return to kill empty trips.</p>
@@ -3700,11 +3741,11 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
         <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Assumed depth drives spoil &amp; sand on every card with no keyed depth. Blank a field to restore its default; stored with the board.</em></div>
       </div>
 
-      {/* Per-item preview + trench section (drainage operation) */}
-      {op==="drain" && <div className="panel">
+      {/* Per-item preview + trench section (pipe operations: drainage / water / sewer) */}
+      {(op==="drain"||op==="water"||op==="sewer") && <div className="panel">
         <div className="ph">Per-item preview &amp; trench section</div>
         <div className="trkrow">
-          <label>Family<select value={pvFam} onChange={e=>{setPvFam(e.target.value); const ks=Object.keys(e.target.value==="Arch pipe"?ARCH_BED:RCP_BED).map(Number); if(!ks.includes(pvSize)) setPvSize(ks[Math.floor(ks.length/2)]);}}><option>Arch pipe</option><option>Round pipe</option></select></label>
+          {op==="drain" && <label>Family<select value={pvFam} onChange={e=>setPvFam(e.target.value)}><option>Arch pipe</option><option>Round pipe</option></select></label>}
           <label>Size (in)<select value={pvSize} onChange={e=>setPvSize(+e.target.value)}>{Object.keys(pvTbl).map(Number).sort((a,b)=>a-b).map(k=><option key={k} value={k}>{k}"{pvFam==="Arch pipe"&&pvTbl[k].od?` (${pvTbl[k].od})`:""}</option>)}</select></label>
           <label>Depth ft (grade→btm){num(pvDepth,setPvDepth)}</label>
           <label>LF/day{num(pvLF,setPvLF)}</label>
@@ -3713,8 +3754,8 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           <thead><tr><th>Haul stream</th><th className="r">Volume</th><th className="r">Loads/day</th><th className="r">Trucks</th></tr></thead>
           <tbody>{pv.applicable ? <>
             <tr><td>Dig-out spoil → dump</td><td className="r">{fmtN(pv.spoil.cy,1)} CY</td><td className="r">{fmtN(pv.spoil.loads,1)}</td><td className="r"><b>{pv.spoil.trucks}</b></td></tr>
-            <tr><td>#57 stone ← pit</td><td className="r">{fmtN(pv.stone.cy,1)} CY · {fmtN(pv.stone.tn,1)} tn</td><td className="r">{fmtN(pv.stone.loads,1)}</td><td className="r"><b>{pv.stone.trucks}</b></td></tr>
-            <tr><td>Sand ← pit</td><td className="r">{fmtN(pv.sand.cy,1)} CY</td><td className="r">{fmtN(pv.sand.loads,1)}</td><td className="r"><b>{pv.sand.trucks}</b></td></tr>
+            {pv.g && pv.g.bedMat!=="sand" && <tr><td>#57 stone ← pit</td><td className="r">{fmtN(pv.stone.cy,1)} CY · {fmtN(pv.stone.tn,1)} tn</td><td className="r">{fmtN(pv.stone.loads,1)}</td><td className="r"><b>{pv.stone.trucks}</b></td></tr>}
+            <tr><td>{pv.g && pv.g.bedMat==="sand" ? "Sand embedment ← pit" : "Sand ← pit"}</td><td className="r">{fmtN(pv.sand.cy,1)} CY</td><td className="r">{fmtN(pv.sand.loads,1)}</td><td className="r"><b>{pv.sand.trucks}</b></td></tr>
             <tr className="cheattot"><td><b>Optimal total</b></td><td/><td/><td className="r"><b>🚚 {pv.total}/day</b></td></tr>
           </> : <tr><td colSpan={4} className="empty">Pick a pipe size.</td></tr>}</tbody>
         </table>
@@ -3723,7 +3764,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           const pk=Math.ceil(CYCt.spoil/Math.max(1,T.loadSpot));
           return <p className="dim2" style={{margin:"6px 2px 0"}}>Spoil cycle ≈ <b>{fmtN(CYCt.spoil,0)} min</b> = 2×drive (with traffic) + {fmtN(T.loadSpot,0)} site + {fmtN(T.tipMin,0)} dump/pit → at {fmtN(T.shiftHrs,1)} hr/day × {Math.round(T.eff*100)}% that&rsquo;s <b>{tr}</b> trips/truck/day. Trucks now scale with LF/day; a full-shift dig tops out near the <b>{pk}</b>-truck feed peak. Tune truck hrs/day &amp; stops in the autos below, per-route traffic in Sources above.</p>; })()}
         <div className="trenchwrap"><TrenchSection g={pv.g} depth={+pvDepth} roadSection={T.roadSection}/></div>
-        <p className="dim2" style={{margin:"2px 2px 8px",textAlign:"center"}}>Cross-section of the {pvSize}"{pvFam==="Arch pipe"?" arch":" round"} at {fmtN(+pvDepth,1)}′ cut — the layers the trucks move: dig-out (full box), #57 stone envelope, sand backfill, #610 base.</p>
+        <p className="dim2" style={{margin:"2px 2px 8px",textAlign:"center"}}>Cross-section of the {pvSize}"{pvFam==="Arch pipe"?" arch":pvFam==="Water pipe"?" water main":pvFam==="Sewer pipe"?" sewer main":" round"} at {fmtN(+pvDepth,1)}′ cut — the layers the trucks move: dig-out (full box), {pv.g && pv.g.bedMat==="sand" ? "full sand embedment (pressure pipe, no stone)" : "#57 stone envelope, sand backfill"}, #610 base.</p>
         <div className="ph" style={{marginTop:10}}>{pvFam} — trench width, foundation &amp; assumed depth <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(per size, global; blank = SWB / global default)</em></div>
         <table className="dt list">
           <thead><tr><th>Size</th><th className="r">Trench width (ft)</th><th className="r">Foundation (ft)</th><th className="r">Assumed depth (ft)</th></tr></thead>
