@@ -4727,6 +4727,12 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .bphleg span i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;print-color-adjust:exact;-webkit-print-color-adjust:exact}
 
 @media print{
+ /* The on-screen app is a flex column with an overflow:hidden root + overflow:auto body scroller
+    (unified board scroll). An overflow:hidden ancestor SUPPRESSES page-breaks and clips content, so
+    every print mode must first release the scroll container — otherwise card sheets can't paginate
+    (rows spill onto one sheet and get cut). */
+ .la-root{display:block!important;overflow:visible!important;height:auto!important;max-height:none!important}
+ .bodyzone{overflow:visible!important;height:auto!important;max-height:none!important;padding-bottom:0!important}
  /* MODE 1 — report / legend modal (Print / PDF, Scope legend): print the open modal */
  body:not(.print-cards):not(.board-print) *{visibility:hidden}
  body:not(.print-cards):not(.board-print) .ovl,body:not(.print-cards):not(.board-print) .ovl *{visibility:visible}
@@ -4739,7 +4745,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
  body.print-cards .la-root{padding:0!important;margin:0!important;background:#fff}
  body.print-cards .la-root>*{display:none!important}
  body.print-cards .la-root>.cardsheets{display:block!important}
- .cardpage{page-break-after:always;break-after:page;margin:0 auto}
+ .cardpage{page-break-after:always;break-after:page;margin:0}   /* flush LEFT — no auto-centering, so no extra trim on the left edge */
  .cardpage:last-child{page-break-after:auto;break-after:auto}
  .pcard{break-inside:avoid}
  /* MODE 3 — Procore board snapshot: print the board grid, landscape, colors kept */
