@@ -342,9 +342,9 @@ function spoilFleet(loads, tripsSpoil, feedMin, loadSpot, availMin){
 /* Smart POOLED fleet: one shared fleet hauls every stream and back-hauls material-in on the
    spoil-out return, so a day of fractional streams (spoil 1.8 + #57 0.7 + sand 0.7 loads) is ONE
    truck doing a couple of trips — not three dedicated trucks. Sum the per-stream truck-days, overlap
-   the back-hauled portion; a full-shift dig can't fall below the excavator-feed floor. Whole trucks
-   once a full truck-day of work exists; below that it's a shared HALF-truck call-out (a truck splits
-   the day with another crew). `loads`/`tset` are per-stream {spoil,stone,sand,base} loads / trips-per-shift. */
+   the back-hauled portion; a full-shift dig can't fall below the excavator-feed floor. ≥0.75 truck-day
+   of work rounds up to whole trucks; below that it's a shared HALF-truck call-out (a truck splits the
+   day with another crew). `loads`/`tset` are per-stream {spoil,stone,sand,base} loads / trips-per-shift. */
 function poolFleet(loads, tset, feedMin, dumpSite, availMin){
   const L=k=>Math.max(0,+(loads&&loads[k])||0), tp=k=>Math.max(1,(tset&&tset[k])||1);
   const outTD = L("spoil")/tp("spoil");                                          // spoil-out truck-days
@@ -354,7 +354,7 @@ function poolFleet(loads, tset, feedMin, dumpSite, availMin){
   td = Math.max(td, (feedMin||0)*Math.min(1, L("spoil")*(+dumpSite||6)/Math.max(1,availMin)));  // excavator-feed floor
   const any = L("spoil")+L("stone")+L("sand")+L("base") > 0.001;
   if(!any) return 0;
-  return td < 1 ? 0.5 : Math.ceil(td - 1e-9);    // <1 truck-day of work → half-truck call-out
+  return td < 0.75 ? 0.5 : Math.ceil(td - 1e-9);    // <0.75 truck-day → half-truck call-out; ≥0.75 rounds up to a whole truck
 }
 function truckModel(item, dailyQty, D, tcfg){
   const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
