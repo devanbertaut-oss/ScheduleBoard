@@ -4095,8 +4095,8 @@ const CSS = `
  color-scheme:dark;
  background:var(--bg);color:var(--tx);height:100vh;height:100dvh;font:14px/1.45 "Montserrat",system-ui,sans-serif;
  display:flex;flex-direction:column;overflow:hidden}
-.topzone{flex:0 0 auto;max-height:225px;overflow-y:auto;-webkit-overflow-scrolling:touch}
-.bodyzone{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:40px}
+.topzone{flex:0 0 auto}
+.bodyzone{flex:1 1 auto;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding-bottom:40px}
 .la-root[data-theme="dark"]{color-scheme:dark}
 .la-root[data-theme="light"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
  --tabon:#00833e;--cellln:#e4e7ea;--cellhov:#eef1f4;--mdln:#cdd3d8;--ovl:rgba(17,19,20,.44);--barfill:#00833e;--pillGoodBg:#dcf3e6;--pillBadBg:#fde4e4;
@@ -4135,21 +4135,21 @@ const CSS = `
 .proj{display:flex;flex-direction:column;line-height:1.05;color:var(--brand);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;max-width:280px;position:relative}
 .proj em{color:var(--dm);font-style:normal;font-size:11px;font-weight:600;letter-spacing:.04em}
 .tabs{display:flex;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;overflow:hidden}
-.tabs button{background:none;border:0;color:var(--dm);padding:7px 14px;font-size:14px;font-weight:600;cursor:pointer}
+.tabs button{background:none;border:0;color:var(--dm);padding:8px 16px;font-size:15px;font-weight:600;cursor:pointer}
 .tabs button.on{background:var(--tabon);color:#fff}
 .tabs button:hover:not(.on){color:var(--tx)}
 .histnav{display:flex;align-items:center;gap:4px;margin-left:auto}
 .histnav + .weeknav{margin-left:14px}
 .histnav-inline{display:none}
-.histbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:17px;line-height:1}
+.histbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 11px;cursor:pointer;font-size:18px;line-height:1}
 .histbtn:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
 .histbtn:disabled{opacity:.32;cursor:default}
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
-.weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
-.weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
-.actions{display:flex;gap:8px;flex-wrap:nowrap;flex-shrink:1;min-width:0;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
+.weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:17px;min-width:180px;text-align:center}
+.weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:16px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;min-width:0}
 .actions>button{flex:none;white-space:nowrap}
-.actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
+.actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 15px;font-weight:600;font-size:15px;cursor:pointer;text-decoration:none;display:inline-block}
 .cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important}
 .cta.hot{background:var(--lime)!important;border-color:var(--lime)!important;color:#111314!important}
 .cta:disabled{opacity:.4;cursor:default}
@@ -4187,14 +4187,14 @@ const CSS = `
 .kpi b{font-size:17px;font-family:"IBM Plex Mono"}
 .kpi b.good{color:var(--good)}.kpi b.bad{color:var(--bad)}
 .kpi.ts.hot{border-color:#7f2f2f}.kpi.ts.hot b{color:var(--bad)}
-.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:nowrap;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
+.legend{display:flex;gap:15px;align-items:center;padding:9px 18px;color:var(--dm);font-size:13.5px;flex-wrap:wrap}
 .legend>*,.legendswatches>*{flex:none;white-space:nowrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .lgcode{font:800 9px "Saira Condensed";letter-spacing:.05em;color:var(--dm2);margin-right:4px;font-style:normal}
 .legend .hint{margin-left:auto;color:var(--dm2);white-space:nowrap;flex:none}
-.legendbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:4px 10px;font:700 11px "Saira Condensed";letter-spacing:.05em;cursor:pointer}
+.legendbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:5px 11px;font:700 12px "Saira Condensed";letter-spacing:.05em;cursor:pointer}
 .legendbtn:hover{border-color:var(--brand);color:var(--brand)}
-.boardwrap{overflow-x:auto;overflow-y:visible;padding:0 18px 30px;flex:1;min-width:0;position:relative}
+.boardwrap{overflow:visible;padding:0 18px 30px;flex:1;min-width:0;position:relative}
 /* dependency arrows (SVG overlay, scrolls with the board) + drag-to-link handles */
 .deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
 .deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.6;stroke-linecap:round}
@@ -4296,12 +4296,12 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .cstat.on{background:var(--pillGoodBg);color:var(--good)}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
-.snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
+.snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 13px;font:600 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .tagswitch{display:inline-flex;align-items:center;gap:8px}
 .tagswitch .tagswitch-dot{display:none;width:11px;height:11px;border-radius:50%;flex:none;margin:0}
 .legendswatches{display:contents}
 .viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
-.viewseg button{background:transparent;border:0;color:var(--dm);padding:5px 11px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
+.viewseg button{background:transparent;border:0;color:var(--dm);padding:6px 12px;font:700 12px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
 .viewseg button:first-child{border-left:0}
 .viewseg button.on{background:var(--brand);color:#fff}
 .snapbtn:hover{border-color:var(--brand);color:var(--brand)}
