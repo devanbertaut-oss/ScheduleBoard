@@ -1070,7 +1070,7 @@ function LookAhead(){
           </span>
         </div>
         <nav className="tabs">
-          {[["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
+          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="histnav no-print">
@@ -1099,7 +1099,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
           <button onClick={()=>setModal({type:"data"})}>Data</button>
-          <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
+          <button onClick={()=>setModal({type:"trucking"})}>Trucking</button>
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
             onClick={()=>setSyncPop(v=>!v)}
@@ -1216,7 +1216,7 @@ function LookAhead(){
       </>}
 
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings}}/>}
+      {tab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
@@ -1236,7 +1236,7 @@ function LookAhead(){
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
-      {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
+      {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
           del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
@@ -2367,13 +2367,13 @@ function Trends({crews,tasks,logs,taskCalc,wk}){
 }
 
 /* ============ CATALOG / CTC ============ */
-function MilestoneModal({milestones,setMilestones,close}){
+function MilestoneView({milestones,setMilestones}){
   const [date,setDate]=useState(""); const [label,setLabel]=useState("");
   const add=()=>{ if(!date||!label.trim())return; setMilestones(m=>[...m,{id:"m"+Math.random().toString(36).slice(2,7),date,label:label.trim()}].sort((a,b)=>a.date.localeCompare(b.date))); setDate(""); setLabel(""); };
   const del=id=>setMilestones(m=>m.filter(x=>x.id!==id));
   return (
-    <Modal close={close} w={540}>
-      <h3>Milestones</h3>
+    <div className="page">
+      <h2>Milestones</h2>
       <p className="dim2">Dated markers shown on the board — end of a block, end of a drain run, inspections, deadlines, anything worth flagging.</p>
       <div className="logrow">
         <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
@@ -2389,8 +2389,7 @@ function MilestoneModal({milestones,setMilestones,close}){
           : <tr><td colSpan={4} className="empty">No milestones yet — add one above.</td></tr>}
         </tbody>
       </table>
-      <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
-    </Modal>
+    </div>
   );
 }
 function CatalogGate({onUnlock}){
@@ -2836,6 +2835,13 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
+function TruckingModal({truckDay,setTruckDay,savings,setSavings,close}){
+  return (
+    <Modal close={close} w={960}>
+      <TruckingView {...{truckDay,setTruckDay,savings,setSavings}}/>
+    </Modal>
+  );
+}
 function TruckingView({truckDay,setTruckDay,savings,setSavings}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
@@ -3049,14 +3055,14 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
   const cmds=[
     {label:"Go to Board",hint:"tab",run:()=>setTab("board")},
     {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
+    {label:"Go to Milestones",hint:"tab",run:()=>setTab("milestones")},
     {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
-    {label:"Go to Trucking",hint:"tab",run:()=>setTab("trucking")},
     {label:"Schedule work",hint:"action",run:()=>setModal({type:"sched"})},
     {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},
     {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
     {label:"Print / PDF",hint:"action",run:()=>setModal({type:"print"})},
     {label:"Print Cards — 4×4 notepad sheets",hint:"action",run:()=>setModal({type:"cards"})},
-    {label:"Milestones",hint:"action",run:()=>setModal({type:"milestones"})},
+    {label:"Trucking",hint:"action",run:()=>setModal({type:"trucking"})},
     {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
