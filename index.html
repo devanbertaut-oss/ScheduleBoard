@@ -1479,6 +1479,7 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
   const scale=t.qty?qShown/t.qty:1, lds=(c.loads||0)*scale;
   const trucksStr = (t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (lds>=0.05?fmtN(lds,1)+" loads":"—");
   const multi = run && run.total>1;
+  const minimal = cardStyle==="highlighter" || cardStyle==="flat";
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
     <button className={"card hq"+(selected?" sel":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
@@ -1505,19 +1506,19 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
           const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
           if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
-      <div className="hqcorners">
+      {!minimal && <div className="hqcorners">
         <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
         <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
-      </div>
-      <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
+      </div>}
+      {!minimal && <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>}
       <div className="hqbody">
         <div><label>Loc</label><span>{t.loc||"—"}</span></div>
-        <div><label>Job #</label><span>{JOB_NO}</span></div>
+        {!minimal && <div><label>Job #</label><span>{JOB_NO}</span></div>}
         <div><label>Item</label><span>{name}</span></div>
         <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
-        {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
-        <div><label>Trucks</label><span>{trucksStr}</span></div>
-        {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
+        {!minimal && showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
+        {!minimal && <div><label>Trucks</label><span>{trucksStr}</span></div>}
+        {!minimal && useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
           <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
       </div>
     </button>
