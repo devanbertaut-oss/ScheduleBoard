@@ -1238,9 +1238,10 @@ function LookAhead(){
   const crewsOnly = crews.filter(c=>c.type==="crew").slice().sort(pinSort);
   const subsOnly  = crews.filter(c=>c.type==="sub").slice().sort(pinSort);
   const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
-  /* Board Snapshot for Procore — print just the board grid (landscape) to save as a
-     PDF for the weekly Procore photo album. Uses the browser print dialog, no library. */
   const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews, cfg) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews,cfg]);
+  const wx = useForecast((cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site);
+  const wxForDate = date => { if(!wx) return null; const i=wx.time.indexOf(date); if(i<0) return null;
+    return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
 
   return (
     <div className="la-root" data-theme={theme}>
@@ -1272,6 +1273,10 @@ function LookAhead(){
             title={undoStack.length?("Undo "+undoStack[undoStack.length-1].label):"Nothing to undo"}>↶</button>
           <button className="histbtn" disabled={!redoStack.length} onClick={doRedo} aria-label="Redo"
             title={redoStack.length?("Redo "+redoStack[redoStack.length-1].label):"Nothing to redo"}>↷</button>
+          <button className="histbtn themebtn" title={"Theme: "+theme+" — click to change"}
+            onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
+            {theme==="light"?"☀":theme==="dark"?"☾":"⚙"}
+          </button>
         </div>
         <div className="weeknav">
           <button onClick={()=>setWk(addDays(wk,-7))} aria-label="Previous week">‹</button>
@@ -1282,20 +1287,25 @@ function LookAhead(){
               title={undoStack.length?("Undo "+undoStack[undoStack.length-1].label):"Nothing to undo"}>↶</button>
             <button className="histbtn" disabled={!redoStack.length} onClick={doRedo} aria-label="Redo"
               title={redoStack.length?("Redo "+redoStack[redoStack.length-1].label):"Nothing to redo"}>↷</button>
+            <button className="histbtn themebtn" title={"Theme: "+theme+" — click to change"}
+              onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
+              {theme==="light"?"☀":theme==="dark"?"☾":"⚙"}
+            </button>
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
         </div>
         <div className="actions">
+          {tab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
+          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
+          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
-          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
-          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
-          <button onClick={()=>setModal({type:"data"})}>Data</button>
           <button onClick={()=>setModal({type:"trucking"})}>Trucking</button>
-          <button onClick={()=>setModal({type:"weather"})} title="7-day forecast at the project site">🌤 Weather</button>
           <button onClick={()=>setModal({type:"rhythm"})} title="Weekly SOP touchpoints and last-updated status">📋 Rhythm</button>
           <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
+          </>}
+          {tab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
             onClick={()=>setSyncPop(v=>!v)}
@@ -1312,10 +1322,6 @@ function LookAhead(){
               <button className="ghost sm" onClick={()=>{ setSyncPop(false); setModal({type:"boardkey"}); }}>Board key</button>
             </div>
           </div>}
-          <button className="themebtn" title={"Theme: "+theme+" — click to change"}
-            onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
-            {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
-          </button>
         </div>
       </header>
 
@@ -1372,7 +1378,9 @@ function LookAhead(){
               {DAYS.map((d,i)=>{
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
                 const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date];
+                const w = wxForDate(date);
                 return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                  {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°</span>}
                   {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
                   {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
@@ -1421,7 +1429,6 @@ function LookAhead(){
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
       {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close:()=>setModal(null)}}/>}
-      {modal?.type==="weather" && <WeatherModal site={(cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site} close={()=>setModal(null)}/>}
       {modal?.type==="rhythm" && <RhythmModal lastUpdated={lastUpdated} setModal={setModal} close={()=>setModal(null)}/>}
       {modal?.type==="kpisummary" && <KpiModal kpi={kpi} weekPlan={weekPlan} close={()=>setModal(null)}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
@@ -1638,36 +1645,20 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
 /* Weekly-rhythm banner — loss-framed nudge when the board has gone stale (a shared
    board that no one has touched in 3+ days is drifting from the field), else a calm
    strip showing the SOP touchpoints. lastUpdated is the shared last-edit timestamp. */
-/* 7-day forecast at the project site (Open-Meteo — free, no key). Temps + rain % so the
-   super can plan around weather / rain-outs. Shown inside a modal (opened from the Weather
-   button), so unlike an inline strip it always renders a loading/error state rather than
-   going silent. */
-function WeatherStrip({site}){
+/* 7-day forecast at the project site (Open-Meteo — free, no key), shared by any component
+   that wants per-day weather. Returns Open-Meteo's raw `daily` block (or null while
+   loading / offline / coords unset) — index-aligned arrays keyed by .time (ISO dates). */
+function useForecast(site){
   const [wx,setWx]=useState(null);
-  const [err,setErr]=useState(null);
-  useEffect(()=>{ let dead=false; setWx(null); setErr(null);
-    if(!site||site.lat==null){ setErr("Project site location isn't set — set it in Trucking → Sources."); return; }
+  useEffect(()=>{ let dead=false; setWx(null);
+    if(!site||site.lat==null) return;
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=7`;
-    fetch(url).then(r=>r.json()).then(j=>{ if(dead) return; if(j&&j.daily&&j.daily.time) setWx(j.daily); else setErr("Forecast unavailable right now — try again shortly."); })
-      .catch(()=>{ if(!dead) setErr("Couldn't reach the forecast service — check your connection."); });
+    fetch(url).then(r=>r.json()).then(j=>{ if(!dead && j&&j.daily&&j.daily.time) setWx(j.daily); }).catch(()=>{});
     return ()=>{dead=true;};
   },[site&&site.lat, site&&site.lng]);
-  const icon=c=> c==null?"·":(c>=95?"⛈":c>=80?"🌧":c>=71?"❄":c>=51?"🌦":c>=45?"🌫":c>=1?"⛅":"☀");
-  const dow=d=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(d+"T12:00:00").getDay()];
-  return <div className="wxstrip no-print">
-    <span className="wxlab">🌤 7-day forecast <em>· project site</em></span>
-    {err && <p className="dim2" style={{margin:"8px 0 0"}}>{err}</p>}
-    {!err && !wx && <p className="dim2" style={{margin:"8px 0 0"}}>Loading forecast…</p>}
-    {wx && <div className="wxdays">{wx.time.slice(0,7).map((d,i)=>{ const rain=wx.precipitation_probability_max[i];
-      return <div key={i} className={"wxday"+(rain>=60?" wet":"")} title={rain>=60?"High rain chance — consider a rain-out plan":""}>
-        <span className="wxd">{dow(d)}</span><span className="wxic">{icon(wx.weathercode&&wx.weathercode[i])}</span>
-        <span className="wxt">{Math.round(wx.temperature_2m_max[i])}°<em>/{Math.round(wx.temperature_2m_min[i])}°</em></span>
-        <span className="wxr">{rain==null?"":rain+"%"}</span></div>; })}</div>}
-  </div>;
+  return wx;
 }
-function WeatherModal({site,close}){
-  return <Modal close={close} w={560}><h3>7-day forecast</h3><WeatherStrip site={site}/></Modal>;
-}
+const wxIcon = c=> c==null?"·":(c>=95?"⛈":c>=80?"🌧":c>=71?"❄":c>=51?"🌦":c>=45?"🌫":c>=1?"⛅":"☀");
 function RhythmBanner({lastUpdated,setModal}){
   const days = lastUpdated==null ? Infinity : Math.floor((Date.now()-lastUpdated)/86400000);
   const stale = days>=3;
@@ -2786,6 +2777,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     quantities:{label:"Quantities — plan vs actual", cols:["day","crew","pay","desc","loc","planq","actq","qvar","pct"]},
     cost:{label:"Cost — budget vs actual vs forecast", cols:["day","crew","pay","desc","buduc","fuc","actd","budi","cvar","fac"]},
     field:{label:"Field — installed vs plan", cols:["day","crew","pay","desc","loc","planq","actq","pct","planmh","actmh"]},
+    actuals:{label:"Actual log — date, pay item, qty, UM, location, crew", cols:["day","pay","actq","um","loc","crew"], loggedOnly:true},
   };
   const [mode,setMode]=useState("table");   // "table" (data reports) | "board" (Ops snapshot)
   const [report,setReport]=useState("quantities");
@@ -2811,6 +2803,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     {k:"loc",   label:"Location",         get:r=>r.sta},
     {k:"pay",   label:"Pay Item",         get:r=>r.it[CI.PAY]},
     {k:"desc",  label:"Description",      get:r=>r.it[CI.TASK]},
+    {k:"um",    label:"UM",               get:r=>r.um},
     {k:"planq", label:"Plan Qty (wk)",  n:1, get:r=>fmtN(r.t.qty)+" "+r.um},
     {k:"actq",  label:"Actual Qty (wk)",n:1, get:r=>r.lg?fmtN(r.c.actQty):"—"},
     {k:"qvar",  label:"Qty Var",        n:1, get:r=>r.lg?fmtN(r.c.actQty-r.t.qty):"—"},
@@ -2836,9 +2829,13 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
       um:(t.ov && t.ov.um) || umOverrides[ci] || it[CI.UM],  // task override > catalog UM override > base
       sta:t.sta?`${fmtN(t.sta[0],2)}–${fmtN(t.sta[1],2)}`:"—",
       f, td, fac:f.uc*(it[CI.EST]||0) };
-  }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs));
+  }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs))
+    .filter(r=> !REPORTS[report].loggedOnly || r.lg);
 
-  const active = COLS.filter(c=>sel.has(c.k));
+  // Column order follows the active report's own cols list (its intent), with any
+  // manually-toggled extras appended after in their natural COLS declaration order.
+  const active = REPORTS[report].cols.filter(k=>sel.has(k)).map(k=>COLS.find(c=>c.k===k))
+    .concat(COLS.filter(c=>sel.has(c.k) && !REPORTS[report].cols.includes(c.k)));
   const rowName = id => (siteRows.find(s=>s.id===id)||crews.find(c=>c.id===id)||{}).name || "";
   const noteList = inclNotes ? notes.slice().sort((a,b)=>a.day-b.day) : [];
 
@@ -2882,7 +2879,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
           <thead><tr>{active.map(c=><th key={c.k} className={c.n?"r":""}>{c.label}</th>)}</tr></thead>
           <tbody>{rows.length? rows.map(r=>
             <tr key={r.t.id}>{active.map(c=><td key={c.k} className={c.n?"r":""}>{c.get(r)}</td>)}</tr>)
-            : <tr><td colSpan={Math.max(1,active.length)} className="empty">No matching tasks scheduled this week.</td></tr>}
+            : <tr><td colSpan={Math.max(1,active.length)} className="empty">{REPORTS[report].loggedOnly?"No actuals logged this week.":"No matching tasks scheduled this week."}</td></tr>}
           </tbody>
         </table>
         {inclNotes && noteList.length>0 && <>
@@ -3754,7 +3751,6 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Trucking",hint:"action",run:()=>setModal({type:"trucking"})},
     {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
-    {label:"7-day weather forecast",hint:"action",run:()=>setModal({type:"weather"})},
     {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
     {label:"KPI summary",hint:"action",run:()=>setModal({type:"kpisummary"})},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
@@ -3943,7 +3939,7 @@ const CSS = `
 .cta.hot{background:var(--lime)!important;border-color:var(--lime)!important;color:#111314!important}
 .cta:disabled{opacity:.4;cursor:default}
 .ghost{background:transparent}
-.themebtn{min-width:74px}
+.themebtn{min-width:0}
 .umin{width:60px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 6px;font:12px "IBM Plex Mono";text-transform:uppercase}
 .umin:focus{outline:none;border-color:var(--acc)}
 .ctcbar{display:flex;gap:14px;align-items:center;margin-bottom:8px}
@@ -4098,6 +4094,8 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .msflag{display:inline-flex;align-items:center;gap:3px;margin-top:4px;font:700 9px "Saira Condensed";letter-spacing:.02em;color:#0c0d0c;background:var(--lime);padding:2px 6px 2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .board thead th.rain{background:linear-gradient(var(--bg),rgba(90,120,170,.14))}
 .rainflag{display:block;margin-top:3px;font:700 9px "Saira Condensed";letter-spacing:.04em;color:#bcd0ea;background:rgba(70,100,150,.28);border:1px solid rgba(120,150,200,.5);padding:1px 6px;border-radius:3px;white-space:nowrap}
+.wxflag{display:block;margin-top:3px;font:700 10px "IBM Plex Mono";color:var(--dm);white-space:nowrap}
+.wxflag.wet{color:#bcd0ea}
 .msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
 .msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
 .msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
@@ -4122,18 +4120,6 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .dgtag{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;background:var(--brand);color:#fff;padding:3px 8px;border-radius:6px;flex:none}
 .dgtxt{flex:1;font-size:13px;color:var(--tx)}
 .dgx{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";cursor:pointer;flex:none}
-.wxstrip{display:flex;flex-direction:column;gap:8px;margin:8px 0 0;padding:7px 14px;background:var(--pn);border:1px solid var(--ln);border-radius:11px}
-.wxlab{font:700 11px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;color:var(--dm);flex:none}
-.wxlab em{font-weight:400;text-transform:none;color:var(--dm2)}
-.wxdays{display:flex;gap:8px;flex:1;min-width:0}
-.wxday{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 9px;border-radius:8px;background:var(--pn2);border:1px solid var(--cellln);min-width:56px}
-.wxday.wet{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--pn2))}
-.wxday .wxd{font:700 11px "Saira Condensed";color:var(--tx)}
-.wxday .wxic{font-size:14px;line-height:1}
-.wxday .wxt{font:600 12px "IBM Plex Mono";color:var(--tx)}
-.wxday .wxt em{font-style:normal;color:var(--dm2)}
-.wxday .wxr{font:600 10px "IBM Plex Mono";color:var(--dm2)}
-.wxday.wet .wxr{color:var(--acc)}
 .cheattot td{border-top:2px solid var(--brand)}
 .toast{position:fixed;left:50%;bottom:9vh;transform:translateX(-50%);background:var(--pn);border:1px solid var(--brand);color:var(--tx);padding:12px 22px;border-radius:12px;z-index:201;font:700 16px "Saira Condensed";letter-spacing:.03em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .3s ease}
 @keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
