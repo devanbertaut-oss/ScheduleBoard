@@ -1334,9 +1334,9 @@ function LookAhead(){
         <label className="switch"><input type="checkbox" checked={showEquip} onChange={e=>setShowEquip(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
         {reflowOn && <button className="snapbtn" title="Re-slice every run with a logged over/under-run from its actuals, and push linked successors" onClick={()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}>Commit → plan</button>}
-        <span className="tagswitch"><label className="tagswitch-lbl">Tag style</label>
+        <span className="tagswitch">
           <span className="viewseg">
-            {[["bold","Bold sticky","#2F82DB"],["highlighter","Highlight","#F0C22E"],["flat","Flat brand","#12A150"]].map(([k,l,c])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)} title={l}><span className="tagswitch-txt">{l}</span><i className="tagswitch-dot" style={{background:c}}/></button>)}
+            {[["bold","HQ","#2F82DB"],["highlighter","Ops","#F0C22E"],["flat","CNO","#12A150"]].map(([k,l,c])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)} title={l}><span className="tagswitch-txt">{l}</span><i className="tagswitch-dot" style={{background:c}}/></button>)}
           </span>
         </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
@@ -1709,8 +1709,9 @@ function KpiModal({kpi,weekPlan,close}){
     </div>
   </Modal>;
 }
-/* Card tag treatments — Bold sticky (solid scope fill) / Highlight (dark panel +
-   colored left border) / Flat brand (tinted panel). Container paint only. */
+/* Card tag treatments — HQ (solid scope fill, full detail) / Ops (dark panel +
+   colored left border, loc/item/goal only) / CNO (tinted panel, loc + scope of
+   work only — for sharing outside the crew, e.g. with the city). */
 function cardVisual(scope, style){
   const s = scope || SCOPES.gen, bg=s.bg;
   if(style==="highlighter")
@@ -1737,7 +1738,9 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
     : (c.trucks!=null ? c.trucks+" truck"+(c.trucks===1?"":"s")
     : (lds>=0.05?fmtN(lds,1)+" loads":"—"));
   const multi = run && run.total>1;
-  const minimal = cardStyle==="highlighter" || cardStyle==="flat";
+  const isOps = cardStyle==="highlighter", isCNO = cardStyle==="flat";
+  const minimal = isOps || isCNO;
+  const staStr = t.sta ? ` · STA ${staFmt(t.sta[0])}${t.sta[1]!==t.sta[0]?"–"+staFmt(t.sta[1]):""}` : "";
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
     <button className={"card hq"+(selected?" sel":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
@@ -1769,16 +1772,29 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
         <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
       </div>}
       {!minimal && <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>}
-      <div className="hqbody">
-        <div><label>Loc</label><span>{t.loc||"—"}</span></div>
-        {!minimal && <div><label>Job #</label><span>{JOB_NO}</span></div>}
-        <div><label>Item</label><span>{name}</span></div>
-        <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
-        {!minimal && showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
-        {!minimal && <div><label>Trucks</label><span>{trucksStr}</span></div>}
-        {!minimal && useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
-          <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
-      </div>
+      {isCNO ? (
+        <div className="hqbody cno">
+          <div className="cnoloc">{t.loc||"—"}</div>
+          <div className="cnocat" style={{color:cat.titleColor}}>{scope.name}</div>
+        </div>
+      ) : isOps ? (
+        <div className="hqbody ops">
+          <div className="opsloc">{t.loc||"—"}</div>
+          <div className="opsitem">{it[CI.TASK]}</div>
+          <div className="opsgoal"><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}{staStr}</span></div>
+        </div>
+      ) : (
+        <div className="hqbody">
+          <div><label>Loc</label><span>{t.loc||"—"}</span></div>
+          <div><label>Job #</label><span>{JOB_NO}</span></div>
+          <div><label>Item</label><span>{name}</span></div>
+          <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
+          {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
+          <div><label>Trucks</label><span>{trucksStr}</span></div>
+          {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
+            <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
+        </div>
+      )}
     </button>
   );
 }
@@ -3903,8 +3919,6 @@ const CSS = `
 .legend .hint{margin-left:auto;color:var(--dm2)}
 .legendbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:4px 10px;font:700 11px "Saira Condensed";letter-spacing:.05em;cursor:pointer}
 .legendbtn:hover{border-color:var(--brand);color:var(--brand)}
-.tagswitch{display:inline-flex;align-items:center;gap:8px}
-.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
 .boardwrap{overflow-x:auto;overflow-y:visible;padding:0 18px 30px;flex:1;min-width:0;position:relative}
 /* dependency arrows (SVG overlay, scrolls with the board) + drag-to-link handles */
 .deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
@@ -4008,7 +4022,6 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
 .snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .tagswitch{display:inline-flex;align-items:center;gap:8px}
-.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
 .tagswitch .tagswitch-dot{display:none;width:11px;height:11px;border-radius:50%;flex:none;margin:0}
 .legendswatches{display:contents}
 .viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
@@ -4084,6 +4097,17 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .hqbody>div{display:flex;gap:5px}
 .hqbody label{flex:0 0 40px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
 .hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+/* Ops view — location leads, item centered/justified below it, goal (+ station) last */
+.hqbody.ops{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;padding:4px 2px 2px}
+.opsloc{font:800 15px "Saira Condensed";letter-spacing:.03em;margin-bottom:6px}
+.opsitem{font-size:11px;font-weight:600;line-height:1.3;text-align:justify;text-align-last:center;width:100%}
+.opsgoal{display:flex;gap:5px;margin-top:5px;font-size:10.5px}
+.opsgoal label{font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
+.opsgoal span{font-weight:600}
+/* CNO view — location + scope of work only, nothing else (for external distribution) */
+.hqbody.cno{display:flex;flex-direction:column;gap:1px;padding:2px}
+.cnoloc{font:800 14px "Saira Condensed";letter-spacing:.03em}
+.cnocat{font:700 11px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
 .note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
 .note.crit{background:var(--noteCbg);border-color:var(--noteCln);color:var(--noteCtx)}
@@ -4293,7 +4317,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
  .actions button{flex:none;width:100%;min-width:0;padding:7px 4px;font-size:11.5px;white-space:normal}
  .digest,.rhythm,.kpis,.weekprog{display:none}
  .legendswatches{display:none}
- .tagswitch-lbl,.tagswitch-txt{display:none}
+ .tagswitch-txt{display:none}
  .tagswitch .tagswitch-dot{display:block}
  .legend{padding:8px 12px;gap:10px}
  .hint{display:none}
