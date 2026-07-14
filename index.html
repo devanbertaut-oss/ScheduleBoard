@@ -268,8 +268,15 @@ function trafficOf(src){ const v=+(src&&src.traffic); return v>0 ? v : 1; }   //
 // siteMin/stopMin; a blank field falls back to the global default (loadSpot / tipMin).
 function siteStopOf(c,key){ const s=(c.sources||{})[key]||{}; return +s.siteMin>0 ? +s.siteMin : (+c.loadSpot||6); }
 function endStopOf(c,key){  const s=(c.sources||{})[key]||{}; return +s.stopMin>0 ? +s.stopMin : (+c.tipMin||3); }
-// Depth used for the trucking calc: a card's hard-keyed depth, else the assumed avg from Advanced.
-function resolveDig(taskDig,cfg){ return (taskDig!=null && taskDig!=="") ? +taskDig : (+((cfg&&cfg.truck&&cfg.truck.avgDepth))||8); }
+// Depth used for the trucking calc, in priority: a card's hard-keyed depth → the per-size assumed
+// depth (global, set per pipe size next to trench width/foundation) → the global assumed depth.
+function resolveDig(item,taskDig,cfg){
+  if(taskDig!=null && taskDig!=="") return +taskDig;
+  const T=(cfg&&cfg.truck)||{};
+  if(item){ const g=bedForItem(item[CI.CC], item[CI.TASK], item[CI.UM], null);
+    if(g && g.fam && g.size!=null){ const o=(T.tw||{})[g.fam+"|"+g.size]; if(o && +o.d>0) return +o.d; } }
+  return (+T.avgDepth)||8;
+}
 function truckCycles(c){
   const S=c.sources||{};
   const cyc=(key,flat)=>{ const s=S[key]||{}, v=+s.oneWayMin; return v>0 ? (2*v*trafficOf(s)+siteStopOf(c,key)+endStopOf(c,key)) : flat; };
@@ -953,9 +960,9 @@ function LookAhead(){
     const planMH = t.qty*it[CI.MH];
     const lg = logs[t.id]||{};
     const loads = cfg.truckRate>0 ? (t.qty*it[CI.UT])/cfg.truckRate : 0;
-    const trk = truckModel(it, t.qty, resolveDig(t.dig,cfg), cfg.truck);       // planned per-day trucks
+    const trk = truckModel(it, t.qty, resolveDig(it,t.dig,cfg), cfg.truck);       // planned per-day trucks
     // Actual trucking is a function of ACTUAL production (logged qty) — never hand-counted loads.
-    const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, resolveDig(t.dig,cfg), cfg.truck) : null;
+    const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, resolveDig(it,t.dig,cfg), cfg.truck) : null;
     return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
       trk, trucks: trk.applicable ? trk.total : null,
       actTrk, actTrucks: actTrk && actTrk.applicable ? actTrk.total : null,
@@ -1577,7 +1584,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
         byTask[t.id]={logged:false, planQ, reflowQ:cappedQ, reflowMH: mhU>0 ? cappedQ*mhU : 0, atCap};
         carry = want-cappedQ; dayQ=cappedQ;
       }
-      const dk=t.wk+"_"+t.day, tm=truckModel(itemFor(t), dayQ, resolveDig(t.dig,cfg), cfg.truck);
+      const dk=t.wk+"_"+t.day, tm=truckModel(itemFor(t), dayQ, resolveDig(itemFor(t),t.dig,cfg), cfg.truck);
       if(tm.applicable){ (crewDayTrucks[res]||(crewDayTrucks[res]={}))[dk]=(crewDayTrucks[res][dk]||[]); crewDayTrucks[res][dk].push(tm); }
       else { const ut=itemFor(t)[CI.UT]||0; if(ut>0){ const loads=dayQ*ut/truckRate;
         (crewDayLoads[res]||(crewDayLoads[res]={}))[dk]=(crewDayLoads[res][dk]||0)+loads; } }
@@ -2011,7 +2018,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   // Trucking model — optimal trucks/day for this run's phase code at the (previewed) daily rate + trench depth.
   const bgEdit = bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw);
   const tmRate = +pAvg || runRate || t.qty || 0;
-  const tm = truckModel(it, tmRate, resolveDig(dig,cfg), cfg.truck);
+  const tm = truckModel(it, tmRate, resolveDig(it,dig,cfg), cfg.truck);
   const tmStreams = tm.applicable ? [
     {s:tm.spoil, lbl:tm.mat.spoil||"Dig-out", d:fmtN(tm.spoil.loads,1)+" ld"},
     {s:tm.stone, lbl:tm.mat.stone||"#57 stone", d:fmtN(tm.stone.tn,1)+" tn"},
@@ -2197,7 +2204,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
       <div className="loghdr">Trucking — optimal trucks/day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>({bgEdit ? bgEdit.fam+" · "+bgEdit.spec : "Roadway · "+(tm.spoil.cy>0?"excavation":"base course")})</em></div>
       <div className="ovnote">{bgEdit ? "Three dedicated haul streams from the daily rate and trench depth: dig-out spoil (out), #57 stone bedding (in), sand backfill (in). Depth is the avg from existing grade to bottom of trench." : "Roadway haul sized from the daily quantity: excavation hauls spoil out; base course / aggregate hauls in from the stone pit."}</div>
       <div className="logrow">
-        {bgEdit && <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder={`${resolveDig("",cfg)} assumed`} onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>}
+        {bgEdit && <label>Trench depth ft · grade→bottom<BlurInput type="number" value={dig} placeholder={`${resolveDig(it,"",cfg)} assumed`} onCommit={v=>{ setDig(String(v)); setRunDig(t, v); }}/></label>}
         <div className="gen">Optimal<b>🚚 {tm.total} truck{tm.total===1?"":"s"}/day</b><em className="dim2">at {fmtN(tmRate,tmRate%1?1:0)} {it[CI.UM]}/day</em></div>
       </div>
       <div className="impact">
@@ -2407,7 +2414,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
   const remaining = Math.max(0, est-inst);
   const loadsDay = it&&cfg.truckRate>0 ? (perDay*it[CI.UT])/cfg.truckRate : 0;
   const bg = it ? bedForItem(it[CI.CC], it[CI.TASK], it[CI.UM], cfg.truck&&cfg.truck.tw) : null;    // pipe geometry → physical trucking model applies
-  const tm = it ? truckModel(it, perDay, resolveDig(dig,cfg), cfg.truck) : null;   // pipe (needs depth) OR roadway (qty-driven)
+  const tm = it ? truckModel(it, perDay, resolveDig(it,dig,cfg), cfg.truck) : null;   // pipe (needs depth) OR roadway (qty-driven)
 
   return (
     <Modal close={close} w={620}>
@@ -2484,7 +2491,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
         <div className="logrow">
           <label>Crew / sub<select value={res} onChange={e=>setRes(e.target.value)}>{crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}</select></label>
           <label>Start day<select value={day} onChange={e=>setDay(+e.target.value)}>{DAYS.map((d,i)=><option key={d} value={i}>{d} {dLabel(wk,i)}</option>)}</select></label>
-          {bg && <label>Trench depth ft · grade→btm<input type="number" min="0" placeholder={`${resolveDig("",cfg)} assumed`} value={dig} onChange={e=>setDig(e.target.value)}/></label>}
+          {bg && <label>Trench depth ft · grade→btm<input type="number" min="0" placeholder={`${resolveDig(it,"",cfg)} assumed`} value={dig} onChange={e=>setDig(e.target.value)}/></label>}
         </div>
         <div className="logrow">
           <label>Avg {it[CI.UM]}/day<input type="number" min="0" placeholder={useQty>0?fmtN(perDay,perDay<10?1:0):"—"}
@@ -3717,16 +3724,17 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           return <p className="dim2" style={{margin:"6px 2px 0"}}>Spoil cycle ≈ <b>{fmtN(CYCt.spoil,0)} min</b> = 2×drive (with traffic) + {fmtN(T.loadSpot,0)} site + {fmtN(T.tipMin,0)} dump/pit → at {fmtN(T.shiftHrs,1)} hr/day × {Math.round(T.eff*100)}% that&rsquo;s <b>{tr}</b> trips/truck/day. Trucks now scale with LF/day; a full-shift dig tops out near the <b>{pk}</b>-truck feed peak. Tune truck hrs/day &amp; stops in the autos below, per-route traffic in Sources above.</p>; })()}
         <div className="trenchwrap"><TrenchSection g={pv.g} depth={+pvDepth} roadSection={T.roadSection}/></div>
         <p className="dim2" style={{margin:"2px 2px 8px",textAlign:"center"}}>Cross-section of the {pvSize}"{pvFam==="Arch pipe"?" arch":" round"} at {fmtN(+pvDepth,1)}′ cut — the layers the trucks move: dig-out (full box), #57 stone envelope, sand backfill, #610 base.</p>
-        <div className="ph" style={{marginTop:10}}>{pvFam} — trench width &amp; foundation <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(editable; blank = SWB default)</em></div>
+        <div className="ph" style={{marginTop:10}}>{pvFam} — trench width, foundation &amp; assumed depth <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(per size, global; blank = SWB / global default)</em></div>
         <table className="dt list">
-          <thead><tr><th>Size</th><th className="r">Trench width (ft)</th><th className="r">Foundation (ft)</th></tr></thead>
+          <thead><tr><th>Size</th><th className="r">Trench width (ft)</th><th className="r">Foundation (ft)</th><th className="r">Assumed depth (ft)</th></tr></thead>
           <tbody>{Object.keys(pvTbl).map(Number).sort((a,b)=>a-b).map(k=>{ const base=pvTbl[k], o=twOv[pvFam+"|"+k]||{}; return (
             <tr key={k}><td>{k}"{pvFam==="Arch pipe"&&base.od?` (${base.od})`:""}</td>
               <td className="r"><input type="number" step="0.01" placeholder={String(base.tw)} value={o.tw??""} onChange={e=>twSet(pvFam,k,'tw',e.target.value)} style={{width:82}}/></td>
               <td className="r"><input type="number" step="0.05" placeholder={String(base.bed)} value={o.f??""} onChange={e=>twSet(pvFam,k,'f',e.target.value)} style={{width:82}}/></td>
+              <td className="r"><input type="number" step="0.5" placeholder={String(T.avgDepth)} value={o.d??""} onChange={e=>twSet(pvFam,k,'d',e.target.value)} style={{width:82}}/></td>
             </tr>); })}</tbody>
         </table>
-        <p className="dim2" style={{margin:"6px 2px 0"}}>Widths seed from the SWB standard drawings (arch D-3933, round RCP D-3810). Overrides flow straight into the #57 stone envelope and the truck counts everywhere.</p>
+        <p className="dim2" style={{margin:"6px 2px 0"}}>All three seed from the SWB standard drawings / global assumed depth and apply to <b>every card of that size</b> (existing &amp; future). A card&rsquo;s hand-keyed depth still overrides its own row; blank a cell to fall back to the default.</p>
       </div>}
 
       {/* Roadway — excavation & base course (Phase 6) */}
