@@ -249,13 +249,6 @@ const seedCrews = [
   { id:"s3", name:"Donahoe",  type:"sub" },
 ];
 const seedSite = [ { id:"n1", name:"Notes / Deliveries" } ];
-const seedEquip = [
-  { id:"e1", res:"c1", name:"CAT 336 Excavator", kind:"owned" },
-  { id:"e2", res:"c1", name:"CAT D6 Dozer",      kind:"owned" },
-  { id:"e3", res:"c2", name:"Vac Truck",         kind:"owned" },
-  { id:"e4", res:"c3", name:"CAT 315 Excavator", kind:"owned" },
-  { id:"e5", res:"c5", name:"Crane 40T",         kind:"rental" },
-];
 let _t = 0; const tid = () => "t" + (++_t) + "_" + Math.random().toString(36).slice(2,6);
 const rid = () => "r" + (++_t) + "_" + Math.random().toString(36).slice(2,6);   // run id — assigned once per created operation
 const mk = (res, cc, day, qty, sta) => ({ id:tid(), res, ci:find(cc), day, qty, sta:sta||null, wk:WK0 });
@@ -414,8 +407,8 @@ function useIsMobile(){
 }
 function LookAhead(){
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState("dash");
-  const [wk, setWk] = useState(WK0);
+  const [tab, setTab] = useState("board");
+  const [wk, setWk] = useState(()=>mondayOf(new Date().toISOString().slice(0,10)));
   const [crews, setCrews] = useState(seedCrews);
   const [siteRows, setSiteRows] = useState(seedSite);
   const [tasks, setTasks] = useState(()=>migrateRuns(seedTasks,{}).tasks);
@@ -429,16 +422,12 @@ function LookAhead(){
   const [umOverrides, setUmOverrides] = useState({}); // catalog idx -> edited UM
   const [ctc, setCtc] = useState(CTC_DATA); // phase-code -> billed/forecast qty (importable)
   const [sel, setSel] = useState(()=>new Set()); // multi-selected task ids for group move
-  const [equipment, setEquipment] = useState(seedEquip); // {id,res,name,kind:'owned'|'rental'}
-  const [eqHours, setEqHours] = useState({});            // `${id}_${wk}` -> reported hrs
-  const [showOwned, setShowOwned] = useState(true);      // board: show owned equipment rows
-  const [showRental, setShowRental] = useState(false);   // board: show rental equipment rows
+  const [showEquip, setShowEquip] = useState(true);      // board: show/hide the Equipt line on cards
   const [baseline, setBaseline] = useState(null);        // {takenAt, byTask:{id:{qty,day,wk}}}
   const [milestones, setMilestones] = useState([]);      // {id,date:'YYYY-MM-DD',label}
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [deps, setDeps] = useState({});                  // predecessors: { dependentRunKey: [predRunKey,...] } — dependent auto-starts after latest pred finishes
   const [rainDays, setRainDays] = useState({});          // rain-outs: { 'YYYY-MM-DD': true } — the day is lost; all work from it pushes one working day
-  const [boardView, setBoardView] = useState("Ops");     // board cards: Ops (default) | Field | HQ (sticky note)
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
@@ -485,7 +474,6 @@ function LookAhead(){
     if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
     if (s.eosMeta) setEosMeta(s.eosMeta);
     if (s.umOverrides) setUmOverrides(s.umOverrides);
-    if (s.equipment) setEquipment(s.equipment); if (s.eqHours) setEqHours(s.eqHours);
     if (s.ctc) setCtc(s.ctc);
     if (s.baseline) setBaseline(s.baseline);
     if (s.milestones) setMilestones(s.milestones);
@@ -496,11 +484,9 @@ function LookAhead(){
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
     if (opts && opts.skipView) return;
     if (s.wk) setWk(s.wk);
-    if (s.boardView) setBoardView(s.boardView);
     if (s.cardStyle) setCardStyle(s.cardStyle); // per-device display pref (skipped on remote pulls)
     if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
-    if (typeof s.showOwned==="boolean") setShowOwned(s.showOwned);
-    if (typeof s.showRental==="boolean") setShowRental(s.showRental);
+    if (typeof s.showEquip==="boolean") setShowEquip(s.showEquip);
   };
   useEffect(()=>{ (async()=>{
     try{
@@ -516,8 +502,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -529,7 +515,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,equipment,eqHours,showOwned,showRental,ctc,baseline,milestones,deps,rainDays,reflowOn,boardView,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -988,15 +974,8 @@ function LookAhead(){
   const rmResource = id => {
     setCrews(c=>c.filter(x=>x.id!==id)); setSiteRows(r=>r.filter(x=>x.id!==id));
     setTasks(ts=>ts.filter(t=>t.res!==id)); setNotes(ns=>ns.filter(n=>n.row!==id));
-    setEquipment(e=>e.filter(x=>x.res!==id));
     setModal(null);
   };
-  /* equipment mutations */
-  const addEquip = (res,kind)=> setEquipment(e=>[...e,{id:"e"+Math.random().toString(36).slice(2,7),res,kind,name:kind==="rental"?"Rental unit":"Equipment"}]);
-  const rmEquip = id => { setEquipment(e=>e.filter(x=>x.id!==id)); setEqHours(h=>{const c={...h}; Object.keys(c).forEach(k=>{ if(k.startsWith(id+"_")) delete c[k]; }); return c;}); };
-  const renameEquip = (id,name)=> setEquipment(e=>e.map(x=>x.id===id?{...x,name}:x));
-  const setEqHrs = (id,val)=> setEqHours(h=>({...h,[id+"_"+wk]:val}));
-  const eqProps = { equipment, eqHours, wk, showOwned, showRental, addEquip, rmEquip, renameEquip, setEqHrs };
 
   const pinSort = (a,b)=> (b.pinned?1:0)-(a.pinned?1:0); // pinned crews float to the top (IKEA-effect ownership)
   const crewsOnly = crews.filter(c=>c.type==="crew").slice().sort(pinSort);
@@ -1036,7 +1015,7 @@ function LookAhead(){
           </span>
         </div>
         <nav className="tabs">
-          {[["dash","Command"],["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
+          {[["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="histnav no-print">
@@ -1089,7 +1068,7 @@ function LookAhead(){
         <button className="dgx" onClick={()=>{ try{localStorage.setItem("lafable-digest",new Date().toISOString().slice(0,10));}catch(e){} setDigest(null); }}>Got it</button>
       </div>}
 
-      {(tab==="board"||tab==="dash") && <RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/>}
+      {tab==="board" && <RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/>}
 
       {/* ============ KPI STRIP ============ */}
       {tab==="board" && <>
@@ -1110,13 +1089,9 @@ function LookAhead(){
       <div className="legend no-print">
         {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/><em className="lgcode">{SCOPES[k].code}</em>{SCOPES[k].name}</span>)}
         <button className="legendbtn" onClick={()=>setModal({type:"legend"})} title="Full SOP color-coding standard — printable">Scope legend ↗</button>
-        <label className="switch"><input type="checkbox" checked={showOwned} onChange={e=>setShowOwned(e.target.checked)}/><i/><span>Equipment</span></label>
-        <label className="switch"><input type="checkbox" checked={showRental} onChange={e=>setShowRental(e.target.checked)}/><i/><span>Rental</span></label>
+        <label className="switch"><input type="checkbox" checked={showEquip} onChange={e=>setShowEquip(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
         {reflowOn && <button className="snapbtn" title="Re-slice every run with a logged over/under-run from its actuals, and push linked successors" onClick={()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}>Commit → plan</button>}
-        <span className="viewseg" title="Card view — HQ: labor $ vs pay · Field: qty & MH · Ops: loads & bedding tons">
-          {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView(v)}>{v}</button>)}
-        </span>
         <span className="tagswitch"><label>Tag style</label>
           <span className="viewseg">
             {[["bold","Bold sticky"],["highlighter","Highlight"],["flat","Flat brand"]].map(([k,l])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)}>{l}</button>)}
@@ -1141,7 +1116,7 @@ function LookAhead(){
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
       </div>
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap,runDayMap}}/> :
+      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,moveTask,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -1160,24 +1135,23 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
             {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
           </tbody>
         </table>
-        <DepLayer {...{deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef:depLayerRef}}/>
+        <DepLayer {...{deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef:depLayerRef}}/>
       </div>
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}}/>
       </div>}
       </>}
 
-      {tab==="dash" && <CommandCenter {...{crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal,savings,cfg}}/>}
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
       {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings}}/>}
       {tab==="catalog" && (catalogOK
@@ -1242,9 +1216,8 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,toggleSel,rescheduleDrop,reflow,reflowOn,boardView,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
+function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
-  const showEq = eqProps && (eqProps.showOwned || eqProps.showRental);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
   const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d); };
@@ -1263,52 +1236,11 @@ function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,eqProps,sel,to
         return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} prev={!!(rdm && rdm.idx>1)} onOpen={()=>setModal({type:"task",id:t.id})}/>; })}
+          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})}/>; })}
         </td>;
       })}
     </tr>
-    {showEq && <EquipRow res={res} {...eqProps}/>}
     </>
-  );
-}
-function EquipRow({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmEquip,renameEquip,setEqHrs}){
-  const items = equipment.filter(e=>e.res===res.id && ((e.kind==="owned"&&showOwned)||(e.kind==="rental"&&showRental)));
-  return (
-    <tr className="eqrow no-print">
-      <td className="rescol eqlabel">Equipment</td>
-      <td colSpan={7}>
-        <div className="eqwrap">
-          {items.map(e=>
-            <span key={e.id} className={"eqchip "+e.kind}>
-              <i className="eqdot"/>
-              <input className="eqname" value={e.name} onChange={ev=>renameEquip(e.id,ev.target.value)} aria-label="Equipment name"/>
-              <input className="eqhrs" type="number" min="0" step="0.5" placeholder="0" value={eqHours[e.id+"_"+wk]??""} onChange={ev=>setEqHrs(e.id,ev.target.value)} aria-label="Reported hours"/>
-              <span className="equ">hrs</span>
-              <button className="eqx" onClick={()=>rmEquip(e.id)} aria-label="Remove equipment">✕</button>
-            </span>)}
-          {showOwned && <button className="eqadd" onClick={()=>addEquip(res.id,"owned")}>+ Equipment</button>}
-          {showRental && <button className="eqadd rental" onClick={()=>addEquip(res.id,"rental")}>+ Rental</button>}
-        </div>
-      </td>
-    </tr>
-  );
-}
-function MobileEquip({res,equipment,eqHours,wk,showOwned,showRental,addEquip,rmEquip,renameEquip,setEqHrs}){
-  const items = equipment.filter(e=>e.res===res.id && ((e.kind==="owned"&&showOwned)||(e.kind==="rental"&&showRental)));
-  return (
-    <div className="meq">
-      <span className="meqlbl">Equipment hrs</span>
-      {items.map(e=>
-        <span key={e.id} className={"eqchip "+e.kind}>
-          <i className="eqdot"/>
-          <input className="eqname" value={e.name} onChange={ev=>renameEquip(e.id,ev.target.value)} aria-label="Equipment name"/>
-          <input className="eqhrs" type="number" min="0" step="0.5" placeholder="0" value={eqHours[e.id+"_"+wk]??""} onChange={ev=>setEqHrs(e.id,ev.target.value)} aria-label="Reported hours"/>
-          <span className="equ">hrs</span>
-          <button className="eqx" onClick={()=>rmEquip(e.id)} aria-label="Remove equipment">✕</button>
-        </span>)}
-      {showOwned && <button className="eqadd" onClick={()=>addEquip(res.id,"owned")}>+ Equipment</button>}
-      {showRental && <button className="eqadd rental" onClick={()=>addEquip(res.id,"rental")}>+ Rental</button>}
-    </div>
   );
 }
 function computeReflow(tasks, logs, baseline, crews, cfg){
@@ -1362,11 +1294,10 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,eqProps,moveTask,sel,rescheduleDrop,milestones,boardView,setBoardView,cardStyle,depMap,runDayMap}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,moveTask,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
-  const showEq = eqProps && (eqProps.showOwned||eqProps.showRental);
   const crewBlock = (res,kind)=>{
     const tks = weekTasks.filter(t=>t.res===res.id && t.day===day);
     return (
@@ -1377,7 +1308,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} prev={false} boardView={boardView} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
             <button className={"mqlog"+(taskCalc(t).done?" done":"")} onClick={()=>setModal({type:"qlog",id:t.id})}>{taskCalc(t).done?"✓ Logged — edit":"Log actuals"}</button>
             <div className="mmove">
               <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
@@ -1386,15 +1317,11 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
             </div>
           </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
-        {showEq && <MobileEquip res={res} {...eqProps}/>}
       </div>
     );
   };
   return (
     <div className="mboard">
-      <div className="viewseg mviewseg">
-        {["HQ","Field","Ops"].map(v=><button key={v} className={boardView===v?"on":""} onClick={()=>setBoardView&&setBoardView(v)}>{v}</button>)}
-      </div>
       <div className="mdaynav">
         <button className="mdaystep" onClick={()=>setDay(d=>Math.max(0,d-1))} disabled={day===0} aria-label="Previous day">‹</button>
         <div className="mdays">
@@ -1455,8 +1382,7 @@ function RhythmBanner({lastUpdated,setModal}){
   );
 }
 /* Card tag treatments — Bold sticky (solid scope fill) / Highlight (dark panel +
-   colored left border) / Flat brand (tinted panel). Container paint only — the
-   Ops/Field/HQ content layout is governed separately by boardView. */
+   colored left border) / Flat brand (tinted panel). Container paint only. */
 function cardVisual(scope, style){
   const s = scope || SCOPES.gen, bg=s.bg;
   if(style==="highlighter")
@@ -1465,8 +1391,8 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
-  const it=c.it, view=boardView||"Ops";
+function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
+  const it=c.it;
   const [resizing,setResizing]=useState(false);
   const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
   const resizable = !!resizeApi && run && run.idx===run.total && (run.total>1 || !!t.sta);  // last day of a re-sliceable run
@@ -1474,17 +1400,16 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
   const scope = SCOPES[skey] || SCOPES.gen;
   const cat = cardVisual(scope, cardStyle);
   const useRf = reflowOn && rf && !rf.logged;
-  const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH, bad = useRf && rf.overCap;
+  const qShown = useRf ? rf.reflowQ : t.qty, mhShown = useRf ? rf.reflowMH : c.planMH;
   const name = it[CI.TASK].length>30 ? it[CI.TASK].slice(0,29)+"…" : it[CI.TASK];
   const qtyStr = fmtN(qShown,qShown%1?1:0)+" "+it[CI.UM];
-  const startSta = t.sta ? staFmt(t.sta[0]) : null;
   const mhStr = fmtN(mhShown,mhShown%1?1:0)+" MH";
   const scale=t.qty?qShown/t.qty:1, lds=(c.loads||0)*scale;
   const trucksStr = (t.trucks!=null && t.trucks!=="") ? String(t.trucks) : (lds>=0.05?fmtN(lds,1)+" loads":"—");
   const multi = run && run.total>1;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
-    <button className={"card"+(selected?" sel":"")+(view==="HQ"?" hq":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
+    <button className={"card hq"+(selected?" sel":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
       data-run={runKey(t)} data-task={t.id} data-wdi={wdi(t.wk,t.day)}
       onDragStart={canDrag?(e=>{ if(linkApi && linkApi.active()){ e.preventDefault(); return; } e.currentTarget.classList.add("dragging"); e.dataTransfer.setData("text/plain",t.id); e.dataTransfer.effectAllowed="move"; }):undefined}
       onDragEnd={e=>e.currentTarget.classList.remove("dragging")}
@@ -1508,36 +1433,19 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
           const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
           if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
-      {view==="HQ" ? <>
-        <div className="hqcorners">
-          <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
-          <span className="hqmh">{mhStr}</span>
-        </div>
-        <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
-        <div className="hqbody">
-          <div><label>Loc</label><span>{t.loc||"—"}</span></div>
-          <div><label>Job #</label><span>{JOB_NO}</span></div>
-          <div><label>Item</label><span>{name}</span></div>
-          <div><label>Goal</label><span>{qtyStr}</span></div>
-          <div><label>Equipt</label><span>{t.equip||"—"}</span></div>
-          <div><label>Trucks</label><span>{trucksStr}</span></div>
-        </div>
-      </> : <>
-        <div className="cardtop">
-          <span className="ctleft">{chip}<span className="ct" style={{color:cat.titleColor}}>{name}</span></span>
-          {linked && <span className={"cdep"+(dep.broken||dep.conflict?" bad":"")} title={dep.broken?"A predecessor run is missing":dep.conflict?("Starts before a predecessor finishes — "+dep.label):("After: "+dep.label)}>↝</span>}
-          {c.done && <span className="ck">✓</span>}
-        </div>
-        {view==="Ops" ? <>
-          <div className="csub" style={{color:cat.subColor,opacity:cat.subOpacity}}>{prev?"→ cont.":(t.loc||"—")}</div>
-          <div className="cnums"><b>{startSta?"STA "+startSta:"—"}</b><span>{qtyStr}</span></div>
-        </> : <>
-          <div className="csub" style={{color:cat.subColor,opacity:cat.subOpacity}}>{prev?"→ cont.":(t.loc || (startSta?startSta+(t.sta?"–"+staFmt(t.sta[1]):""):it[CI.CC]))}</div>
-          <div className="cnums"><b className={bad?"cbad":""}>{qtyStr}</b><span className={bad?"cbad":""}>{mhStr}{bad?" ▲":""}</span></div>
-        </>}
-        {useRf && Math.abs(rf.reflowQ-rf.planQ)>0.5 && <div className="csub2">plan {fmtN(rf.planQ,rf.planQ%1?1:0)} → now {fmtN(rf.reflowQ,rf.reflowQ%1?1:0)}</div>}
-        {linked && !dep.broken && <div className="csub2" style={{opacity:.8}}>after: {dep.label}</div>}
-      </>}
+      <div className="hqcorners">
+        <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
+        <span className="hqmh">{mhStr}</span>
+      </div>
+      <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
+      <div className="hqbody">
+        <div><label>Loc</label><span>{t.loc||"—"}</span></div>
+        <div><label>Job #</label><span>{JOB_NO}</span></div>
+        <div><label>Item</label><span>{name}</span></div>
+        <div><label>Goal</label><span>{qtyStr}</span></div>
+        {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
+        <div><label>Trucks</label><span>{trucksStr}</span></div>
+      </div>
     </button>
   );
 }
@@ -1547,7 +1455,7 @@ function Card({t,c,prev,onOpen,canDrag,selected,onSelect,rf,reflowOn,boardView,r
    both have cards on the visible week, draws a bezier from the predecessor's latest-day
    card (right edge) to the successor's earliest-day card (left edge) — red on conflict.
    apiRef exposes an imperative rubber-band used while dragging a corner link handle. */
-function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}){
+function DepLayer({deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef}){
   const svgRef=useRef(null), rubberRef=useRef(null);
   const [st,setSt]=useState({W:0,H:0,paths:[]});
   const compute=React.useCallback(()=>{
@@ -1589,7 +1497,7 @@ function DepLayer({deps,depMap,weekTasks,wk,boardView,cardStyle,reflowOn,apiRef}
     });
     setSt({W:wrap.scrollWidth, H:wrap.scrollHeight, paths:arr});
   },[deps,depMap]);
-  React.useLayoutEffect(()=>{ compute(); },[compute,weekTasks,wk,boardView,cardStyle,reflowOn]);
+  React.useLayoutEffect(()=>{ compute(); },[compute,weekTasks,wk,cardStyle,reflowOn]);
   useEffect(()=>{
     const svg=svgRef.current; if(!svg) return; const wrap=svg.parentNode;
     const ro=new ResizeObserver(()=>compute());
@@ -2346,208 +2254,6 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
   );
 }
 
-/* ============ COMMAND CENTER (Earned-Value) ============ */
-function evTone(v){ return v>=1 ? "good" : v>=0.9 ? "warn" : "bad"; }
-function Tile({label,value,sub,tone,big}){
-  return <div className={"evtile"+(big?" big":"")+(tone?" "+tone:"")}>
-    <label>{label}</label><b>{value}</b>{sub!=null&&<span>{sub}</span>}
-  </div>;
-}
-function SCurve({data}){
-  const [hi,setHi]=useState(null);
-  const n=data.length;
-  if(n===0) return <div className="empty">No production logged yet — the burn-up curve builds as crews report quantities.</div>;
-  const W=820,H=300,padL=52,padR=16,padT=16,padB=34;
-  const iw=W-padL-padR, ih=H-padT-padB;
-  const maxY=Math.max(1,...data.map(d=>Math.max(d.pv,d.ev,d.ac)));
-  const X=i=> n===1? padL+iw/2 : padL+i*iw/(n-1);
-  const Y=v=> padT+(1-v/maxY)*ih;
-  const path=key=>data.map((d,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(d[key]).toFixed(1)).join(" ");
-  const area=key=>path(key)+` L ${X(n-1).toFixed(1)} ${Y(0).toFixed(1)} L ${X(0).toFixed(1)} ${Y(0).toFixed(1)} Z`;
-  const ticks=[0,.25,.5,.75,1].map(f=>Math.round(maxY*f));
-  const H0=hi==null?null:data[hi];
-  return (
-    <div className="scurve">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
-        onMouseLeave={()=>setHi(null)}
-        onMouseMove={e=>{ const r=e.currentTarget.getBoundingClientRect(); const x=(e.clientX-r.left)/r.width*W;
-          let best=0,bd=1e9; for(let i=0;i<n;i++){const d=Math.abs(X(i)-x); if(d<bd){bd=d;best=i;}} setHi(best); }}>
-        {ticks.map((t,i)=><g key={i}>
-          <line x1={padL} x2={W-padR} y1={Y(t)} y2={Y(t)} className="grid"/>
-          <text x={padL-8} y={Y(t)+4} className="axt" textAnchor="end">{fmtN(t)}</text>
-        </g>)}
-        <path d={area("ev")} className="ar ev"/>
-        <path d={path("pv")} className="ln pv"/>
-        <path d={path("ac")} className="ln ac"/>
-        <path d={path("ev")} className="ln ev"/>
-        {["pv","ac","ev"].map(k=>data.map((d,i)=><circle key={k+i} cx={X(i)} cy={Y(d[k])} r={n===1?4.5:3} className={"pt "+k}/>))}
-        {data.map((d,i)=>(i%Math.ceil(n/8||1)===0||i===n-1)&&<text key={i} x={X(i)} y={H-12} className="axt" textAnchor="middle">{d.label}</text>)}
-        {hi!=null&&<g>
-          <line x1={X(hi)} x2={X(hi)} y1={padT} y2={padT+ih} className="guide"/>
-          <circle cx={X(hi)} cy={Y(H0.pv)} r="3.5" className="dot pv"/>
-          <circle cx={X(hi)} cy={Y(H0.ev)} r="3.5" className="dot ev"/>
-          <circle cx={X(hi)} cy={Y(H0.ac)} r="3.5" className="dot ac"/>
-        </g>}
-      </svg>
-      <div className="sclegend">
-        <span><i className="pv"/>Planned {H0&&"· "+fmtN(H0.pv)}</span>
-        <span><i className="ev"/>Earned {H0&&"· "+fmtN(H0.ev)}</span>
-        <span><i className="ac"/>Actual {H0&&"· "+fmtN(H0.ac)}</span>
-        <span className="scwk">{H0? H0.label : "cumulative man-hours"}</span>
-      </div>
-    </div>
-  );
-}
-function CommandCenter({crews,tasks,logs,notes,taskCalc,fcst,installedFor,wk,setWk,setTab,setModal,savings,cfg}){
-  const laborRate = (cfg&&cfg.laborRate)||58;
-  const eng = useMemo(()=>{
-    const wkEnd=addDays(wk,6);
-    const savWk=(savings||[]).filter(x=>x.date>=wk&&x.date<=wkEnd).reduce((a,x)=>a+(+x.amount||0),0);
-    const savAll=(savings||[]).reduce((a,x)=>a+(+x.amount||0),0);
-    const pfFor=(cid,w)=>{let a=0,e=0;tasks.filter(t=>t.res===cid&&t.wk===w).forEach(t=>{const c=taskCalc(t);a+=c.actMH;e+=c.earnMH;});return {a,pf:a>0?e/a:0};};
-    const prevWk=addDays(wk,-7);
-    const cotw=crews.map(c=>{const cur=pfFor(c.id,wk),prev=pfFor(c.id,prevWk); if(cur.a<=0||prev.a<=0)return null; const d=cur.pf-prev.pf; return {c,cur,prev,d,impact:d*cur.a*laborRate};}).filter(Boolean).sort((x,y)=>y.d-x.d)[0];
-    const rows=crews.filter(c=>c.type!=="site").map(c=>{
-      const days=DAYS.map((_,d)=>{let w=0;tasks.filter(t=>t.res===c.id&&t.wk===wk&&t.day===d).forEach(t=>{const x=taskCalc(t);if(logs[t.id])w+=Math.max(0,x.actMH-x.earnMH)*laborRate;});return w;});
-      return {c,days,tot:days.reduce((a,b)=>a+b,0)};
-    }).filter(r=>r.tot>0 || tasks.some(t=>t.res===r.c.id&&t.wk===wk));
-    const maxCell=Math.max(1,...rows.flatMap(r=>r.days));
-    return {savWk,savAll,cotw,heat:rows,maxCell};
-  },[crews,tasks,logs,wk,savings,laborRate]);
-  const [scope,setScope]=useState("week");
-  const [asOf,setAsOf]=useState(null); const [playing,setPlaying]=useState(false); const playRef=useRef(null);
-  useEffect(()=>()=>{ if(playRef.current) clearInterval(playRef.current); },[]);
-
-  const ev = useMemo(()=>{
-    let PV=0,EV=0,AC=0;
-    tasks.forEach(t=>{ const c=taskCalc(t); PV+=c.planMH; EV+=c.earnMH; AC+=c.actMH; });
-    let BACmh=0,BAC$=0;
-    CATALOG.forEach(r=>{ const est=r[CI.EST]||0; BACmh+=est*r[CI.MH]; BAC$+=est*unitCost(r); });
-    const CPI=AC>0?EV/AC:0, SPI=PV>0?EV/PV:0;
-    const EACmh=CPI>0?BACmh/CPI:BACmh, EAC$=CPI>0?BAC$/CPI:BAC$;
-    return { PV,EV,AC, CPI,SPI, CV:EV-AC, SV:EV-PV, BACmh,BAC$, EACmh, VACmh:BACmh-EACmh, VAC$:BAC$-EAC$, pctC:BACmh>0?EV/BACmh:0 };
-  },[tasks,logs]);
-
-  /* Target PPC (Percent Plan Complete) = tasks completed ÷ tasks committed, for the
-     week under Weekly Work Planning. Below 80% flags a project-team review. */
-  const ppc = useMemo(()=>{
-    const committed = tasks.filter(t=>t.wk===wk && (crews.find(c=>c.id===t.res)||{}).type!=="site");
-    const done = committed.filter(t=>logs[t.id] && logs[t.id].done);
-    return { committed:committed.length, done:done.length, pct: committed.length? done.length/committed.length : 0 };
-  },[tasks,logs,wk,crews]);
-
-  const curve = useMemo(()=>{
-    const set=[...new Set(tasks.map(t=>t.wk))].sort();
-    let pv=0,ev=0,ac=0;
-    return set.map(w=>{
-      tasks.filter(t=>t.wk===w).forEach(t=>{const c=taskCalc(t); pv+=c.planMH; ev+=c.earnMH; ac+=c.actMH;});
-      return { label:w.slice(5).replace("-","/"), pv,ev,ac };
-    });
-  },[tasks,logs]);
-
-  const board = useMemo(()=>{
-    const src = scope==="week" ? tasks.filter(t=>t.wk===wk) : tasks;
-    return crews.map(c=>{
-      let p=0,a=0,e=0;
-      src.filter(t=>t.res===c.id).forEach(t=>{const x=taskCalc(t); p+=x.planMH; a+=x.actMH; e+=x.earnMH;});
-      return {c,p,a,e,pf:a>0?e/a:0};
-    }).filter(r=>r.p>0||r.a>0).sort((x,y)=>y.pf-x.pf);
-  },[crews,tasks,logs,scope,wk]);
-
-  const alerts = useMemo(()=>{
-    const out=[];
-    const cis=[...new Set(tasks.map(t=>t.ci))];
-    cis.forEach(ci=>{
-      const it=CATALOG[ci], f=fcst(ci), est=it[CI.EST]||0, inst=installedFor(ci);
-      if(f.drift>0.03*Math.max(1,unitCost(it)) && f.drift>0.5)
-        out.push({sev:2,tag:"COST",text:`${it[CI.TASK].slice(0,42)} forecasting ${fmt$(f.uc,2)}/${it[CI.UM]} — ${fmt$(f.drift,2)} over budget UC.`,go:()=>setTab("catalog")});
-      if(est>0 && inst>est)
-        out.push({sev:1,tag:"QTY",text:`${it[CI.TASK].slice(0,42)} installed ${fmtN(inst)} of ${fmtN(est)} ${it[CI.UM]} — over budget qty.`,go:()=>setTab("catalog")});
-    });
-    tasks.filter(t=>t.wk===wk&&logs[t.id]).forEach(t=>{
-      const c=taskCalc(t); if(t.qty>0 && c.actQty/t.qty<0.9)
-        out.push({sev:1,tag:"PROD",text:`${(crews.find(x=>x.id===t.res)?.name||"?")}: ${c.it[CI.TASK].slice(0,34)} at ${pct(c.actQty/t.qty)} of plan.`,go:()=>setTab("board")});
-    });
-    board.forEach(r=>{ if(r.a>0 && r.pf<0.9) out.push({sev:1,tag:"PF",text:`${r.c.name} PF ${r.pf.toFixed(2)} — below target.`,go:()=>setTab("board")}); });
-    notes.filter(n=>n.level!=="info").forEach(n=>
-      out.push({sev:n.level==="crit"?2:1,tag:n.level==="crit"?"CRIT":"NOTE",text:n.text,go:()=>setTab("board")}));
-    return out.sort((a,b)=>b.sev-a.sev).slice(0,14);
-  },[tasks,logs,notes,wk,board]);
-
-  const cpiTxt=ev.CPI?ev.CPI.toFixed(2):"—", spiTxt=ev.SPI?ev.SPI.toFixed(2):"—";
-  return (
-    <div className="page cc">
-      <div className="cchead">
-        <div><h2>Command Center</h2><p className="dim2">Weekly Work Planning performance — live from field-reported production.</p></div>
-        <div className={"ccpct"+(ppc.committed&&ppc.pct<0.8?" ppcbad":"")} title="PPC = Tasks Completed ÷ Tasks Committed × 100% — measured at Weekly Work Planning. Below 80% triggers a project-team review.">
-          <b>{ppc.committed?pct(ppc.pct):"—"}</b>
-          <label>Target PPC · Percent Plan Complete</label>
-          <span className="ppcsub">{ppc.done}/{ppc.committed} tasks · target 80%{ppc.committed&&ppc.pct<0.8?" · ▼ review":""}</span>
-        </div>
-      </div>
-
-      <div className="engbar">
-        <div className="savtick">
-          <label>$ Saved this week</label>
-          <b>{fmt$(eng.savWk)}</b>
-          <span>all-time {fmt$(eng.savAll)} · logged from the Trucking optimizer</span>
-        </div>
-        {eng.cotw && eng.cotw.d>0.001 ? (
-          <div className="cotw">
-            <div className="cotwtag">🏆 Crew of the Week</div>
-            <b>{eng.cotw.c.name}</b>
-            <span>PF {eng.cotw.prev.pf.toFixed(2)} → {eng.cotw.cur.pf.toFixed(2)} (+{eng.cotw.d.toFixed(2)}) · ≈ {fmt$(eng.cotw.impact)} better than last week</span>
-          </div>
-        ) : <div className="cotw dim"><div className="cotwtag">🏆 Crew of the Week</div><span className="dim2">Most-improved crew shows here once two weeks of production are logged.</span></div>}
-      </div>
-
-      <div className="evgrid">
-        <Tile big label="Tasks complete (PPC)" value={ppc.committed?ppc.done+"/"+ppc.committed:"—"} tone={ppc.committed?(ppc.pct>=0.8?"good":"bad"):""} sub={ppc.committed?pct(ppc.pct)+" of committed · target 80%":"nothing committed this week"}/>
-        <Tile label="Earned MH (EV)" value={fmtN(ev.EV)} sub={"of "+fmtN(ev.BACmh)+" budget"}/>
-        <Tile label="Actual MH (AC)" value={fmtN(ev.AC)} sub={"planned "+fmtN(ev.PV)}/>
-        <Tile label="Cost var (CV)" value={fmtN(ev.CV)+" MH"} tone={ev.CV>=0?"good":"bad"} sub={ev.CV>=0?"earned ≥ spent":"spent > earned"}/>
-      </div>
-
-      <div className="ccrow">
-        <div className="panel cc-curve">
-          <div className="ph">Burn-up — planned vs earned vs actual (MH) <em className="dim2">— drag or ▶ play the time machine</em></div>
-          <SCurve data={asOf==null?curve:curve.slice(0,asOf+1)}/>
-          {curve.length>1 && <div className="tmach">
-            <button className="ghost sm" onClick={()=>{ if(playing){clearInterval(playRef.current);setPlaying(false);setAsOf(null);return;} setPlaying(true); let k=0; setAsOf(0); playRef.current=setInterval(()=>{ k++; if(k>=curve.length){clearInterval(playRef.current);setPlaying(false);setAsOf(null);} else setAsOf(k); },650); }}>{playing?"■ Stop":"▶ Play"}</button>
-            <input type="range" min="0" max={curve.length-1} value={asOf==null?curve.length-1:asOf} onChange={e=>{setAsOf(+e.target.value); setPlaying(false); if(playRef.current)clearInterval(playRef.current);}}/>
-            <span className="dim2">{(asOf==null?curve[curve.length-1]:curve[asOf]||{}).label}{asOf==null?" · to date":""}</span>
-          </div>}
-        </div>
-        <div className="panel cc-alerts">
-          <div className="ph">Attention feed <em className="dim2">— {alerts.length}</em></div>
-          <div className="alerts">
-            {alerts.length? alerts.map((a,i)=>
-              <button key={i} className={"alert sev"+a.sev} onClick={a.go}>
-                <span className="atag">{a.tag}</span><span className="atx">{a.text}</span>
-              </button>)
-              : <div className="empty">All clear — no items need attention.</div>}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="ph">Idle-cost heatmap <em className="dim2">— labor $ spent beyond earned value, by crew &amp; day (where money leaked)</em></div>
-        <div className="heatwrap">
-          <table className="heat"><thead><tr><th></th>{DAYS.map((d,i)=><th key={d} className={i>4?"wknd":""}>{d}</th>)}<th className="r">Week</th></tr></thead>
-            <tbody>{eng.heat.length? eng.heat.map(r=>
-              <tr key={r.c.id}><td className="hname">{r.c.name}</td>
-                {r.days.map((w,i)=>{const t=eng.maxCell?w/eng.maxCell:0;
-                  return <td key={i} className="hcell" title={w>0?fmt$(w)+" over-spend":"on/under budget"} style={{background:w>0?`rgba(229,72,77,${(0.12+0.72*t).toFixed(2)})`:"transparent"}}>{w>0?fmt$(w):""}</td>;})}
-                <td className="r hweek">{r.tot>0?fmt$(r.tot):"—"}</td></tr>)
-              : <tr><td colSpan={9} className="empty">No logged production this week.</td></tr>}
-            </tbody></table>
-        </div>
-      </div>
-
-    </div>
-  );
-}
-
 /* ============ TRENDS ============ */
 function Trends({crews,tasks,logs,taskCalc,wk}){
   const weeks = useMemo(()=>{
@@ -3265,7 +2971,6 @@ function celebrate(msg){
 function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}){
   const [q,setQ]=useState(""); const [i,setI]=useState(0);
   const cmds=[
-    {label:"Go to Command Center",hint:"tab",run:()=>setTab("dash")},
     {label:"Go to Board",hint:"tab",run:()=>setTab("board")},
     {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
     {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
@@ -3530,25 +3235,6 @@ const CSS = `
 .rlcard .cstat{margin-top:6px}
 .rltruck{margin-top:5px;font:600 11px "IBM Plex Mono";color:var(--dm2)}
 .rltruck.short{color:var(--bad)}
-.engbar{display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:14px}
-.savtick{background:var(--pn);border:1px solid var(--brand);border-radius:14px;padding:12px 16px}
-.savtick label{display:block;font:700 12px "Saira Condensed";letter-spacing:.07em;text-transform:uppercase;color:var(--dm)}
-.savtick b{display:block;font:800 34px "Saira Condensed";color:var(--good);line-height:1.05}
-.savtick span{font-size:11.5px;color:var(--dm2)}
-.cotw{background:var(--pn);border:1px solid var(--lime);border-radius:14px;padding:12px 16px;display:flex;flex-direction:column;justify-content:center}
-.cotw.dim{border-color:var(--ln)}
-.cotwtag{font:700 12px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--lime)}
-.la-root[data-theme="light"] .cotwtag{color:var(--warn)}
-.cotw b{font:800 22px "Saira Condensed";color:var(--tx)}
-.cotw span{font-size:12px;color:var(--dm)}
-.heatwrap{overflow-x:auto}
-.heat{width:100%;border-collapse:collapse;font-size:12px}
-.heat th{color:var(--dm);font:700 11px "Saira Condensed";text-transform:uppercase;letter-spacing:.05em;padding:5px 6px;text-align:center}
-.heat th.wknd{opacity:.6}
-.heat .hname{font:700 13px "Saira Condensed";color:var(--tx);white-space:nowrap;padding-right:10px}
-.heat .hcell{text-align:center;border:1px solid var(--ln);font:11px "IBM Plex Mono";color:#fff;min-width:54px;height:30px}
-.heat .hweek{font:600 12px "IBM Plex Mono";color:var(--bad);padding-left:8px}
-@media(max-width:760px){.engbar{grid-template-columns:1fr}}
 .trk .panel{margin-bottom:14px}
 .trkrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px}
 .trkrow label{display:flex;flex-direction:column;gap:4px;font:600 11px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;color:var(--dm)}
@@ -3587,8 +3273,6 @@ thead .rescol{z-index:12}
 .card.dragging{opacity:.38}
 .cell.drop{outline:2px dashed var(--brand);outline-offset:-3px;background:var(--cellhov)}
 .card.sel{outline:3px solid var(--lime);outline-offset:-1px}
-.cbad{color:#b00020!important;font-weight:800}
-.csub2{font-size:10px;font-weight:700;opacity:.9;margin-top:1px}
 .cstat{display:inline-block;margin-top:4px;font:700 10px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px;white-space:nowrap}
 .cstat.on{background:var(--pillGoodBg);color:var(--good)}
 .cstat.over{background:var(--noteWbg);color:var(--warn)}
@@ -3600,8 +3284,6 @@ thead .rescol{z-index:12}
 .viewseg button{background:transparent;border:0;color:var(--dm);padding:5px 11px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-left:1px solid var(--ln)}
 .viewseg button:first-child{border-left:0}
 .viewseg button.on{background:var(--brand);color:#fff}
-.mviewseg{display:flex;margin:0 12px 8px;width:calc(100% - 24px)}
-.mviewseg button{flex:1}
 .snapbtn:hover{border-color:var(--brand);color:var(--brand)}
 .capfield{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dm);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
 .capfield input{width:74px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:13px "IBM Plex Mono"}
@@ -3624,8 +3306,6 @@ thead .rescol{z-index:12}
 .palrow.on{background:var(--brand);color:#fff}
 .palrow em{font:700 10px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2);font-style:normal}
 .palrow.on em{color:rgba(255,255,255,.8)}
-.tmach{display:flex;align-items:center;gap:12px;margin-top:8px}
-.tmach input[type=range]{flex:1;accent-color:var(--brand)}
 .msdone td{opacity:.6;text-decoration:line-through}
 .confetti{position:fixed;inset:0;pointer-events:none;z-index:200;overflow:hidden}
 .confetti i{position:absolute;top:-12px;width:8px;height:13px;border-radius:2px;animation:cfall 1.9s linear forwards}
@@ -3654,15 +3334,9 @@ thead .rescol{z-index:12}
 .chip.sub{background:#fbe08a;color:#3d3005}
 .chip.site{background:var(--pn2);color:var(--dm);border:1px solid var(--ln);cursor:default}
 .card{display:block;width:100%;text-align:left;border:0;border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-family:"IBM Plex Mono";position:relative}
-.cardtop{display:flex;justify-content:space-between;gap:4px}
-.ctleft{display:flex;align-items:baseline;gap:5px;min-width:0}
 .cscope{flex:none;font:800 8.5px "Saira Condensed";letter-spacing:.06em;padding:1px 4px;border-radius:3px;align-self:flex-start;print-color-adjust:exact;-webkit-print-color-adjust:exact}
 .hqcorners .cscope{font-size:8px;padding:1px 3px}
-.ct{font-family:"Saira Condensed";font-weight:600;font-size:13.5px;line-height:1.15}
 .ck{font-weight:700}
-.csub{font-size:10.5px;opacity:.75;margin:1px 0 2px}
-.cnums{display:flex;justify-content:space-between;font-size:12px}
-.cnums b{font-weight:600}.cnums span{opacity:.7;font-size:10.5px}
 /* HQ view — RNGD standard sticky note */
 .card.hq{padding:5px 8px 7px}
 .hqcorners{display:flex;justify-content:space-between;font:700 9px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase;min-height:11px}
@@ -3810,58 +3484,9 @@ thead .rescol{z-index:12}
 .rowtoggles{display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--ln);padding-top:12px;margin-top:6px}
 .rowtoggles label{display:flex;gap:8px;align-items:center;font:15px "Saira Condensed";color:var(--tx);cursor:pointer}
 
-/* ===== Command Center ===== */
-.cc{max-width:1280px}
 .cchead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px}
 .cchead h2{margin:0;font-size:30px;text-transform:uppercase;letter-spacing:.04em}
 .cchead p{margin:2px 0 0}
-.ccpct{text-align:right;line-height:1}
-.ccpct b{font:800 40px "Saira Condensed";color:var(--lime);display:block}
-.la-root[data-theme="light"] .ccpct b{color:var(--brand)}
-@media (prefers-color-scheme: light){.la-root[data-theme="system"] .ccpct b{color:var(--brand)}}
-.ccpct label{color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.1em;font-weight:700}
-.ccpct .ppcsub{display:block;color:var(--dm);font-size:11px;font-weight:600;margin-top:2px}
-.ccpct.ppcbad b{color:#ff5a5f}
-.ccpct.ppcbad .ppcsub{color:#ff5a5f}
-.evgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
-.evtile{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
-.evtile:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--dm2)}
-.evtile.good:before{background:var(--good)} .evtile.warn:before{background:var(--lime)} .evtile.bad:before{background:var(--bad)}
-.evtile label{display:block;color:var(--dm);font-size:12px;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
-.evtile b{display:block;font:600 26px "IBM Plex Mono";margin-top:4px;color:var(--tx)}
-.evtile.big b{font-size:40px;line-height:1}
-.evtile.good b{color:var(--good)} .evtile.warn b{color:var(--lime)} .evtile.bad b{color:var(--bad)}
-.la-root[data-theme="light"] .evtile.warn b{color:var(--warn)}
-@media (prefers-color-scheme: light){.la-root[data-theme="system"] .evtile.warn b{color:var(--warn)}}
-.evtile span{display:block;color:var(--dm2);font-size:11.5px;margin-top:3px;font-family:"Montserrat"}
-.evtile.big{grid-column:span 2}
-.ccrow{display:grid;grid-template-columns:1.7fr 1fr;gap:12px;margin-bottom:14px}
-.cc-curve,.cc-alerts{margin-bottom:0}
-.scurve svg{width:100%;height:auto;display:block}
-.scurve .grid{stroke:var(--ln);stroke-width:1;opacity:.55}
-.scurve .axt{fill:var(--dm2);font:11px "IBM Plex Mono"}
-.scurve .guide{stroke:var(--dm);stroke-width:1;stroke-dasharray:3 3;opacity:.6}
-.scurve .ln{fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
-.scurve .ln.pv{stroke:var(--dm2);stroke-dasharray:5 4;stroke-width:2}
-.scurve .ln.ev{stroke:var(--brand)}
-.scurve .ln.ac{stroke:var(--lime)}
-.la-root[data-theme="light"] .scurve .ln.ac{stroke:#a08a00}
-.scurve .ar.ev{fill:var(--brand);opacity:.10;stroke:none}
-.scurve .dot{stroke:var(--pn);stroke-width:2}
-.scurve .dot.pv{fill:var(--dm2)} .scurve .dot.ev{fill:var(--brand)} .scurve .dot.ac{fill:var(--lime)}
-.scurve .pt.pv{fill:var(--dm2)} .scurve .pt.ev{fill:var(--brand)} .scurve .pt.ac{fill:var(--lime)}
-.la-root[data-theme="light"] .scurve .pt.ac{fill:#a08a00}
-.sclegend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;color:var(--dm);font-size:12px;font-weight:600}
-.sclegend i{display:inline-block;width:14px;height:4px;border-radius:2px;margin-right:6px;vertical-align:middle}
-.sclegend i.pv{background:var(--dm2)} .sclegend i.ev{background:var(--brand)} .sclegend i.ac{background:var(--lime)}
-.sclegend .scwk{margin-left:auto;color:var(--dm2);text-transform:uppercase;letter-spacing:.08em}
-.alerts{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto}
-.alert{display:flex;gap:9px;align-items:flex-start;text-align:left;background:var(--pn2);border:1px solid var(--ln);border-left-width:3px;border-radius:9px;padding:8px 10px;color:var(--tx);cursor:pointer;font-family:"Montserrat"}
-.alert:hover{border-color:var(--dm2)}
-.alert.sev2{border-left-color:var(--bad)} .alert.sev1{border-left-color:var(--lime)} .alert.sev0{border-left-color:var(--brand)}
-.atag{font:700 10px "Saira Condensed";letter-spacing:.08em;padding:2px 6px;border-radius:5px;background:var(--pn);color:var(--dm);flex:none;margin-top:1px}
-.alert.sev2 .atag{background:var(--bad);color:#fff} .alert.sev1 .atag{background:var(--lime);color:#111314}
-.atx{font-size:12.5px;line-height:1.35}
 .lbhead{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .qmode.sm button{padding:3px 10px;font-size:12px}
 .lboard{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}
@@ -3876,9 +3501,9 @@ thead .rescol{z-index:12}
 .lbpf{text-align:right;min-width:78px}
 .lbpf b{font:600 18px "IBM Plex Mono"}
 .lbpf span{display:block;color:var(--dm2);font-size:10.5px;font-family:"IBM Plex Mono"}
-@media(max-width:900px){.evgrid{grid-template-columns:repeat(2,1fr)}.evtile.big{grid-column:span 2}.ccrow{grid-template-columns:1fr}.lboard{grid-template-columns:1fr}}
+@media(max-width:900px){.lboard{grid-template-columns:1fr}}
 
-/* ===== switch toggle + equipment rows ===== */
+/* ===== switch toggle ===== */
 .switch{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--tx);font-size:12.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 .switch input{position:absolute;opacity:0;width:0;height:0}
 .switch i{width:34px;height:19px;border-radius:20px;background:var(--pn2);border:1px solid var(--ln);position:relative;transition:background .15s,border-color .15s}
@@ -3886,22 +3511,8 @@ thead .rescol{z-index:12}
 .switch input:checked + i{background:var(--brand);border-color:var(--brand)}
 .switch input:checked + i:after{transform:translateX(15px);background:#fff}
 .switch input:focus-visible + i{outline:2px solid var(--lime);outline-offset:2px}
-.eqrow td{border-bottom:1px solid var(--cellln);background:color-mix(in srgb,var(--pn) 55%,transparent)}
-.eqlabel{font:700 10px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--dm2);vertical-align:middle}
-.eqwrap{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px 4px}
-.eqchip{display:inline-flex;align-items:center;gap:6px;background:var(--pn2);border:1px solid var(--ln);border-radius:8px;padding:3px 6px 3px 8px}
-.eqchip .eqdot{width:8px;height:8px;border-radius:2px;background:var(--brand);flex:none}
-.eqchip.rental .eqdot{background:var(--lime)}
-.eqname{background:none;border:0;color:var(--tx);font:600 12.5px "Montserrat";width:120px;padding:2px}
-.eqname:focus{outline:none;border-bottom:1px solid var(--acc)}
-.eqhrs{width:48px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 5px;font:12px "IBM Plex Mono";text-align:right}
-.eqhrs:focus{outline:none;border-color:var(--acc)}
-.eqchip .equ{color:var(--dm2);font-size:10.5px;font-family:"IBM Plex Mono"}
 .eqx{background:none;border:0;color:var(--dm2);cursor:pointer;font-size:11px;padding:2px 3px}
 .eqx:hover{color:var(--bad)}
-.eqadd{background:transparent;border:1px dashed var(--ln);color:var(--dm);border-radius:8px;padding:3px 10px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
-.eqadd:hover{color:var(--brand);border-color:var(--brand)}
-.eqadd.rental:hover{color:var(--lime);border-color:var(--lime)}
 
 /* ===== mobile day-view board ===== */
 .mboard{padding:0 12px 40px}
@@ -3922,8 +3533,6 @@ thead .rescol{z-index:12}
 .mlog{background:transparent;border:1px dashed var(--ln);color:var(--brand);border-radius:9px;padding:6px 12px;font:600 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer;min-height:38px}
 .mempty{color:var(--dm2);font-size:13px;padding:6px 2px}
 .mcrew .card{margin-bottom:6px}
-.meq{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--cellln)}
-.meqlbl{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:var(--dm2);width:100%}
 
 /* ===== responsive (phones/tablets ≤760px) ===== */
 @media (max-width:760px){
@@ -3943,14 +3552,8 @@ thead .rescol{z-index:12}
  .kpi{flex:0 0 auto;scroll-snap-align:start}
  .legend{padding:8px 12px;gap:10px}
  .page{padding:14px 12px}
- .cc{max-width:100%}
  .cchead{flex-direction:column;align-items:flex-start;gap:8px}
  .cchead h2{font-size:24px}
- .ccpct{text-align:left}
- .evgrid{grid-template-columns:1fr 1fr;gap:8px}
- .evtile.big{grid-column:span 2}
- .evtile b{font-size:22px} .evtile.big b{font-size:32px}
- .ccrow{grid-template-columns:1fr}
  .lboard{grid-template-columns:1fr}
  .page h2{font-size:22px}
  /* modals become bottom sheets */
@@ -3964,10 +3567,6 @@ thead .rescol{z-index:12}
  .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea,.search,.namein{font-size:16px}
  .card{padding:8px 10px}
  .chip{min-height:34px}
-}
-@media (max-width:420px){
- .evgrid{grid-template-columns:1fr}
- .evtile.big{grid-column:span 1}
 }
 
 /* --- 4x4 card export (Print Cards) --- */
