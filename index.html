@@ -981,7 +981,6 @@ function LookAhead(){
     else if((key==="z" && e.shiftKey) || key==="y"){ e.preventDefault(); doRedo(); }
   }; window.addEventListener("keydown",on); return ()=>window.removeEventListener("keydown",on); },[undoStack,redoStack,tasks,logs,deps]);
   const upTask = (id,patch)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
-  const moveTask = (id,res,day)=> setTasks(ts=>ts.map(t=>t.id===id?{...t,res,day}:t)); // drag / nudge to another day or crew
   const toggleSel = id => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
   // Drop handler: a single card moves to the target day (+crew if given); a multi-
   // selection shifts every selected task by the same day delta, keeping each crew.
@@ -1255,24 +1254,17 @@ function LookAhead(){
   const crewsOnly = crews.filter(c=>c.type==="crew").slice().sort(pinSort);
   const subsOnly  = crews.filter(c=>c.type==="sub").slice().sort(pinSort);
   const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
-  /* Board Snapshot for Procore — print just the board grid (landscape) to save as a
-     PDF for the weekly Procore photo album. Uses the browser print dialog, no library. */
-  const snapshotBoard = ()=>{
-    setTab("board");
-    const prevTitle = document.title;
-    document.title = "DPW547_Board_"+wk;
-    document.body.classList.add("board-print");
-    const done = ()=>{ document.body.classList.remove("board-print"); document.title = prevTitle; window.removeEventListener("afterprint", done); };
-    window.addEventListener("afterprint", done);
-    setTimeout(()=>window.print(), 80);
-  };
   const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews, cfg) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews,cfg]);
+  const wx = useForecast((cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site);
+  const wxForDate = date => { if(!wx) return null; const i=wx.time.indexOf(date); if(i<0) return null;
+    return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
 
   return (
     <div className="la-root" data-theme={theme}>
       <style>{CSS}</style>
       {palette && <CommandPalette {...{setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}}/>}
 
+      <div className="topzone">
       {/* ============ TOP BAR ============ */}
       <header className="top no-print">
         <div className="brand" onMouseEnter={()=>setLogoHover(true)} onMouseLeave={()=>setLogoHover(false)}>
@@ -1289,7 +1281,7 @@ function LookAhead(){
           </span>
         </div>
         <nav className="tabs">
-          {[["board","Board"],["trends","Trends"],["catalog","Catalog / CTC"],["trucking","Trucking"]].map(([k,l])=>
+          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="histnav no-print">
@@ -1297,6 +1289,10 @@ function LookAhead(){
             title={undoStack.length?("Undo "+undoStack[undoStack.length-1].label):"Nothing to undo"}>↶</button>
           <button className="histbtn" disabled={!redoStack.length} onClick={doRedo} aria-label="Redo"
             title={redoStack.length?("Redo "+redoStack[redoStack.length-1].label):"Nothing to redo"}>↷</button>
+          <button className="histbtn themebtn" title={"Theme: "+theme+" — click to change"}
+            onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
+            {theme==="light"?"☀":theme==="dark"?"☾":"⚙"}
+          </button>
         </div>
         <div className="weeknav">
           <button onClick={()=>setWk(addDays(wk,-7))} aria-label="Previous week">‹</button>
@@ -1307,19 +1303,25 @@ function LookAhead(){
               title={undoStack.length?("Undo "+undoStack[undoStack.length-1].label):"Nothing to undo"}>↶</button>
             <button className="histbtn" disabled={!redoStack.length} onClick={doRedo} aria-label="Redo"
               title={redoStack.length?("Redo "+redoStack[redoStack.length-1].label):"Nothing to redo"}>↷</button>
+            <button className="histbtn themebtn" title={"Theme: "+theme+" — click to change"}
+              onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
+              {theme==="light"?"☀":theme==="dark"?"☾":"⚙"}
+            </button>
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
         </div>
         <div className="actions">
-          <button className="cta" onClick={()=>setModal({type:"sched"})}>+ Schedule</button>
+          {tab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
+          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
+          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
-          <button onClick={snapshotBoard} title="Print the board grid for the Procore album (Save as PDF)">Snapshot</button>
-          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
-          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
-          <button onClick={()=>setModal({type:"data"})}>Data</button>
-          <button onClick={()=>setModal({type:"milestones"})}>Milestones</button>
+          <button onClick={()=>setModal({type:"trucking"})}>Trucking</button>
+          <button onClick={()=>setModal({type:"rhythm"})} title="Weekly SOP touchpoints and last-updated status">📋 Rhythm</button>
+          <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
+          </>}
+          {tab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <button className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
             onClick={()=>setSyncPop(v=>!v)}
@@ -1336,10 +1338,6 @@ function LookAhead(){
               <button className="ghost sm" onClick={()=>{ setSyncPop(false); setModal({type:"boardkey"}); }}>Board key</button>
             </div>
           </div>}
-          <button className="themebtn" title={"Theme: "+theme+" — click to change"}
-            onClick={()=>setTheme(t=>t==="system"?"light":t==="light"?"dark":"system")}>
-            {theme==="light"?"☀":theme==="dark"?"☾":"⚙"} {theme[0].toUpperCase()+theme.slice(1)}
-          </button>
         </div>
       </header>
 
@@ -1349,25 +1347,7 @@ function LookAhead(){
         <button className="dgx" onClick={()=>{ try{localStorage.setItem("lafable-digest",new Date().toISOString().slice(0,10));}catch(e){} setDigest(null); }}>Got it</button>
       </div>}
 
-      {tab==="board" && <RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/>}
-      {tab==="board" && <WeatherStrip site={(cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site}/>}
-
-      {/* ============ KPI STRIP ============ */}
       {tab==="board" && <>
-      <div className="kpis no-print">
-        <div className="kpi"><label>Planned MH</label><b>{fmtN(kpi.p)}</b></div>
-        <div className="kpi"><label>Actual MH</label><b>{fmtN(kpi.a)}</b></div>
-        <div className="kpi"><label>Earned MH</label><b>{fmtN(kpi.e)}</b></div>
-        <div className="kpi"><label>PF</label><b className={kpi.pf>=1?"good":kpi.pf>0?"bad":""}>{kpi.pf?kpi.pf.toFixed(2):"—"}</b></div>
-        <div className="kpi"><label>Days Logged</label><b>{kpi.logged}/{kpi.cells}</b></div>
-        <div className="kpi" title="Percent Plan Complete = tasks done ÷ tasks committed this week. SOP target ≥ 80%; below triggers a team review."><label>PPC {kpi.done}/{kpi.cells}</label><b className={kpi.cells===0?"":kpi.ppc>=0.8?"good":"bad"}>{kpi.cells?pct(kpi.ppc):"—"}{kpi.cells>0&&kpi.ppc<0.8?" ⚠":""}</b></div>
-        <div className={"kpi ts"+(kpi.ts?" hot":"")}><label>Time-Sensitive</label><b>{kpi.ts} {kpi.ts>0&&"⚠"}</b></div>
-      </div>
-      <div className="weekprog no-print" title="How staged this week is — crews with scheduled work vs total crews.">
-        <div className="wpbar"><i style={{width:Math.round(weekPlan.pctPlan*100)+"%"}}/></div>
-        <span className="wptxt"><b>This week is {pct(weekPlan.pctPlan)} planned</b> — {weekPlan.staged} of {weekPlan.crewN} crews staged{weekPlan.ms>0?" · "+weekPlan.ms+" milestone"+(weekPlan.ms>1?"s":""):""}. Keep sequencing 4–5 weeks out.</span>
-      </div>
-
       <div className="legend no-print">
         <span className="legendswatches">
           {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/><em className="lgcode">{SCOPES[k].code}</em>{SCOPES[k].name}</span>)}
@@ -1376,9 +1356,9 @@ function LookAhead(){
         <label className="switch"><input type="checkbox" checked={showEquip} onChange={e=>setShowEquip(e.target.checked)}/><i/><span>Equipment</span></label>
         <label className="switch"><input type="checkbox" checked={reflowOn} onChange={e=>setReflowOn(e.target.checked)}/><i/><span>Re-flow</span></label>
         {reflowOn && <button className="snapbtn" title="Re-slice every run with a logged over/under-run from its actuals, and push linked successors" onClick={()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}>Commit → plan</button>}
-        <span className="tagswitch"><label className="tagswitch-lbl">Tag style</label>
+        <span className="tagswitch">
           <span className="viewseg">
-            {[["bold","Bold sticky","#2F82DB"],["highlighter","Highlight","#F0C22E"],["flat","Flat brand","#12A150"]].map(([k,l,c])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)} title={l}><span className="tagswitch-txt">{l}</span><i className="tagswitch-dot" style={{background:c}}/></button>)}
+            {[["bold","HQ","#2F82DB"],["highlighter","Ops","#F0C22E"],["flat","CNO","#12A150"]].map(([k,l,c])=><button key={k} className={cardStyle===k?"on":""} onClick={()=>setCardStyle(k)} title={l}><span className="tagswitch-txt">{l}</span><i className="tagswitch-dot" style={{background:c}}/></button>)}
           </span>
         </span>
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
@@ -1399,8 +1379,12 @@ function LookAhead(){
         <div className="bphtitle">DPW547 · Job 2124013 — Look-Ahead Board · {wkTitle(wk)}</div>
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
       </div>
+      </>}
+      </div>
+
+      <div className="bodyzone">
       {/* ============ BOARD GRID ============ */}
-      {isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,moveTask,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}}/> :
+      {tab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}}/> :
       <div className="boardmain">
       <div className="boardwrap">
         <table className="board">
@@ -1410,7 +1394,9 @@ function LookAhead(){
               {DAYS.map((d,i)=>{
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
                 const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date];
+                const w = wxForDate(date);
                 return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                  {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°</span>}
                   {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
                   {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
@@ -1419,11 +1405,11 @@ function LookAhead(){
           <tbody>
             <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
             {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map(c=><ResRow key={c.id} res={c} kind="crew" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {crewsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="crew" idx={idx} {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
             {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map(c=><ResRow key={c.id} res={c} kind="sub" {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
+            {subsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="sub" idx={idx} {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
 
             <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
             {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
@@ -1432,15 +1418,15 @@ function LookAhead(){
         </table>
         <DepLayer {...{deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef:depLayerRef}}/>
       </div>
-      <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}}/>
-      </div>}
-      </>}
+      <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
+      </div>)}
 
       {tab==="trends" && <Trends {...{crews,tasks,logs,taskCalc,wk}}/>}
-      {tab==="trucking" && <TruckingView {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg}}/>}
+      {tab==="milestones" && <MilestoneView {...{milestones,setMilestones}}/>}
       {tab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
+      </div>
 
 
       {/* ============ MODALS ============ */}
@@ -1458,7 +1444,9 @@ function LookAhead(){
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
-      {modal?.type==="milestones" && <MilestoneModal {...{milestones,setMilestones,close:()=>setModal(null)}}/>}
+      {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="rhythm" && <RhythmModal lastUpdated={lastUpdated} setModal={setModal} close={()=>setModal(null)}/>}
+      {modal?.type==="kpisummary" && <KpiModal kpi={kpi} weekPlan={weekPlan} close={()=>setModal(null)}/>}
       {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
           del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
@@ -1479,12 +1467,16 @@ function AddRow({ph,onAdd,onX}){
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
 }
-function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal}){
+function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}){
   const recap = res => { let p=0,a=0,e=0,q=0,pq=0,cells=0,logged=0;
     weekTasks.filter(t=>t.res===res.id).forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; pq+=t.qty; q+=c.actQty; cells++; if(c.actMH||c.actQty)logged++; });
     return {p,a,e,q,pq,cells,logged,pf:a>0?e/a:0}; };
+  const equipFor = res => { const set=new Set();
+    weekTasks.filter(t=>t.res===res.id && t.equip).forEach(t=> String(t.equip).split(",").map(s=>s.trim()).filter(Boolean).forEach(e=>set.add(e)));
+    return [...set]; };
   const card = (res,kind)=>{ const r=recap(res); if(!r.cells) return null;
     const st = reflowOn ? reflow.byCrew[res.id] : null;
+    const eq = showEquip ? equipFor(res) : [];
     const tone = r.pf>=1?"good":r.pf>=0.9?"warn":r.pf>0?"bad":"";
     return <button key={res.id} className="rlcard" onClick={()=>setModal({type:"crew",id:res.id})}>
       <div className="rltop"><b>{res.name}</b><span className={"pill "+(r.pf>=1?"pgood":r.pf>0?"pbad":"dim")}>{r.pf?r.pf.toFixed(2):"—"}</span></div>
@@ -1493,6 +1485,7 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
       {st && <span className={"cstat "+st.status}>{st.status==="behind"?("Behind +"+st.extraDays+"d"):st.status==="over"?"Over cap":"On plan"}</span>}
       {st && st.trucksNeeded>0 && (()=>{ const smart=st.smartTrucks??st.trucksNeeded, saved=st.hoursSaved||0;
         return <div className={"rltruck"+(st.truckShort?" short":"")} title={`Dedicated ${st.trucksNeeded}/day${smart<st.trucksNeeded?` · back-haul ${smart}`:""}${st.trucksAvail?` · have ${st.trucksAvail}`:""}`}>🚚 {smart} truck{smart!==1?"s":""}/day{saved>0.05?` · saves ~${fmtN(saved,1)}h`:""}{st.trucksAvail?(" · have "+st.trucksAvail):""}{st.truckShort?" — short":""}</div>; })()}
+      {eq.length>0 && <div className="rlequip">🔧 {eq.join(" · ")}</div>}
     </button>; };
   const crewCards = crewsOnly.map(c=>card(c,"crew")).filter(Boolean);
   const subCards = subsOnly.map(c=>card(c,"sub")).filter(Boolean);
@@ -1502,14 +1495,14 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
-function ResRow({res,kind,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
+function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
   const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d); };
   return (
     <>
-    <tr>
+    <tr className={idx%2?"altrow":""}>
       <td className="rescol">
         <button className={"chip "+kind+(res.pinned?" pinned":"")} onClick={()=>setModal({type:"crew",id:res.id})}>{res.pinned&&<span className="pinstar">★ </span>}{res.name}</button>
         {reflowOn && (()=>{ const st=reflow.byCrew[res.id]; if(!st) return null;
@@ -1607,7 +1600,7 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
   });
   return {byTask, byCrew};
 }
-function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,moveTask,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}){
+function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,depMap,runDayMap}){
   const msFor = i => (milestones||[]).filter(m=>m.date===addDays(wk,i));
   const todayIdx = (()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<7;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(todayIdx);
@@ -1622,12 +1615,6 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
             <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
-            <button className={"mqlog"+(taskCalc(t).done?" done":"")} onClick={()=>setModal({type:"qlog",id:t.id})}>{taskCalc(t).done?"✓ Logged — edit":"Log actuals"}</button>
-            <div className="mmove">
-              <button disabled={t.day===0} onClick={()=>moveTask(t.id,res.id,t.day-1)} aria-label="Move to previous day">‹ {t.day>0?DAYS[t.day-1]:""}</button>
-              <span>move day</span>
-              <button disabled={t.day===6} onClick={()=>moveTask(t.id,res.id,t.day+1)} aria-label="Move to next day">{t.day<6?DAYS[t.day+1]:""} ›</button>
-            </div>
           </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
       </div>
@@ -1674,25 +1661,20 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
 /* Weekly-rhythm banner — loss-framed nudge when the board has gone stale (a shared
    board that no one has touched in 3+ days is drifting from the field), else a calm
    strip showing the SOP touchpoints. lastUpdated is the shared last-edit timestamp. */
-/* 7-day forecast at the project site (Open-Meteo — free, no key). Temps + rain % so the
-   super can plan around weather / rain-outs. Silent if offline or coords unset. */
-function WeatherStrip({site}){
+/* 7-day forecast at the project site (Open-Meteo — free, no key), shared by any component
+   that wants per-day weather. Returns Open-Meteo's raw `daily` block (or null while
+   loading / offline / coords unset) — index-aligned arrays keyed by .time (ISO dates). */
+function useForecast(site){
   const [wx,setWx]=useState(null);
-  useEffect(()=>{ let dead=false; if(!site||site.lat==null) return;
+  useEffect(()=>{ let dead=false; setWx(null);
+    if(!site||site.lat==null) return;
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=7`;
     fetch(url).then(r=>r.json()).then(j=>{ if(!dead && j&&j.daily&&j.daily.time) setWx(j.daily); }).catch(()=>{});
     return ()=>{dead=true;};
   },[site&&site.lat, site&&site.lng]);
-  if(!wx) return null;
-  const icon=c=> c==null?"·":(c>=95?"⛈":c>=80?"🌧":c>=71?"❄":c>=51?"🌦":c>=45?"🌫":c>=1?"⛅":"☀");
-  const dow=d=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(d+"T12:00:00").getDay()];
-  return <div className="wxstrip no-print"><span className="wxlab">🌤 7-day forecast <em>· project site</em></span>
-    <div className="wxdays">{wx.time.slice(0,7).map((d,i)=>{ const rain=wx.precipitation_probability_max[i];
-      return <div key={i} className={"wxday"+(rain>=60?" wet":"")} title={rain>=60?"High rain chance — consider a rain-out plan":""}>
-        <span className="wxd">{dow(d)}</span><span className="wxic">{icon(wx.weathercode&&wx.weathercode[i])}</span>
-        <span className="wxt">{Math.round(wx.temperature_2m_max[i])}°<em>/{Math.round(wx.temperature_2m_min[i])}°</em></span>
-        <span className="wxr">{rain==null?"":rain+"%"}</span></div>; })}</div></div>;
+  return wx;
 }
+const wxIcon = c=> c==null?"·":(c>=95?"⛈":c>=80?"🌧":c>=71?"❄":c>=51?"🌦":c>=45?"🌫":c>=1?"⛅":"☀");
 function RhythmBanner({lastUpdated,setModal}){
   const days = lastUpdated==null ? Infinity : Math.floor((Date.now()-lastUpdated)/86400000);
   const stale = days>=3;
@@ -1713,8 +1695,30 @@ function RhythmBanner({lastUpdated,setModal}){
     </div>
   );
 }
-/* Card tag treatments — Bold sticky (solid scope fill) / Highlight (dark panel +
-   colored left border) / Flat brand (tinted panel). Container paint only. */
+function RhythmModal({lastUpdated,setModal,close}){
+  return <Modal close={close} w={560}><h3>Weekly rhythm</h3><RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/></Modal>;
+}
+function KpiModal({kpi,weekPlan,close}){
+  return <Modal close={close} w={640}>
+    <h3>This week at a glance</h3>
+    <div className="kpis no-print">
+      <div className="kpi"><label>Planned MH</label><b>{fmtN(kpi.p)}</b></div>
+      <div className="kpi"><label>Actual MH</label><b>{fmtN(kpi.a)}</b></div>
+      <div className="kpi"><label>Earned MH</label><b>{fmtN(kpi.e)}</b></div>
+      <div className="kpi"><label>PF</label><b className={kpi.pf>=1?"good":kpi.pf>0?"bad":""}>{kpi.pf?kpi.pf.toFixed(2):"—"}</b></div>
+      <div className="kpi"><label>Days Logged</label><b>{kpi.logged}/{kpi.cells}</b></div>
+      <div className="kpi" title="Percent Plan Complete = tasks done ÷ tasks committed this week. SOP target ≥ 80%; below triggers a team review."><label>PPC {kpi.done}/{kpi.cells}</label><b className={kpi.cells===0?"":kpi.ppc>=0.8?"good":"bad"}>{kpi.cells?pct(kpi.ppc):"—"}{kpi.cells>0&&kpi.ppc<0.8?" ⚠":""}</b></div>
+      <div className={"kpi ts"+(kpi.ts?" hot":"")}><label>Time-Sensitive</label><b>{kpi.ts} {kpi.ts>0&&"⚠"}</b></div>
+    </div>
+    <div className="weekprog no-print" title="How staged this week is — crews with scheduled work vs total crews.">
+      <div className="wpbar"><i style={{width:Math.round(weekPlan.pctPlan*100)+"%"}}/></div>
+      <span className="wptxt"><b>This week is {pct(weekPlan.pctPlan)} planned</b> — {weekPlan.staged} of {weekPlan.crewN} crews staged{weekPlan.ms>0?" · "+weekPlan.ms+" milestone"+(weekPlan.ms>1?"s":""):""}. Keep sequencing 4–5 weeks out.</span>
+    </div>
+  </Modal>;
+}
+/* Card tag treatments — HQ (solid scope fill, full detail) / Ops (dark panel +
+   colored left border, loc/item/goal only) / CNO (tinted panel, loc + scope of
+   work only — for sharing outside the crew, e.g. with the city). */
 function cardVisual(scope, style){
   const s = scope || SCOPES.gen, bg=s.bg;
   if(style==="highlighter")
@@ -1741,6 +1745,8 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
     : (c.trucks!=null ? c.trucks+" truck"+(c.trucks===1?"":"s")
     : (lds>=0.05?fmtN(lds,1)+" loads":"—"));
   const multi = run && run.total>1;
+  const isOps = cardStyle==="highlighter", isCNO = cardStyle==="flat";
+  const minimal = isOps || isCNO;
   const chip = <span className="cscope" title={scope.name} style={{background:cat.chipBg,color:cat.chipTx}}>{scope.code}</span>;
   return (
     <button className={"card hq"+(selected?" sel":"")+(linked?" linked":"")+(resizing?" resizing":"")} draggable={!!canDrag && !resizing}
@@ -1767,21 +1773,33 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
           const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
           if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
-      <div className="hqcorners">
+      {!minimal && <div className="hqcorners">
         <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
         <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
-      </div>
-      <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>
-      <div className="hqbody">
-        <div><label>Loc</label><span>{t.loc||"—"}</span></div>
-        <div><label>Job #</label><span>{JOB_NO}</span></div>
-        <div><label>Item</label><span>{name}</span></div>
-        <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
-        {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
-        <div><label>Trucks</label><span>{trucksStr}</span></div>
-        {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
-          <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
-      </div>
+      </div>}
+      {!minimal && <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>}
+      {isCNO ? (
+        <div className="hqbody cno">
+          <div className="cnoloc">{t.loc||"—"}</div>
+          <div className="cnocat" style={{color:cat.titleColor}}>{scope.name}</div>
+        </div>
+      ) : isOps ? (
+        <div className="hqbody ops">
+          <div className="opsloc">{t.loc||"—"}</div>
+          <div className="opsitem">{it[CI.TASK]}</div>
+        </div>
+      ) : (
+        <div className="hqbody">
+          <div><label>Loc</label><span>{t.loc||"—"}</span></div>
+          <div><label>Job #</label><span>{JOB_NO}</span></div>
+          <div><label>Item</label><span>{name}</span></div>
+          <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
+          {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
+          <div><label>Trucks</label><span>{trucksStr}</span></div>
+          {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
+            <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
+        </div>
+      )}
     </button>
   );
 }
@@ -1968,12 +1986,10 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   ].filter(x=>x.lbl && (x.s.cy>0 || x.s.trucks>0)) : [];
   const cat=SCOPES[scopeOf(t,crews)];
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
-  const budUC=unitCost(it), f=fcstFor(t);
+  const f=fcstFor(t);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
   const dayRate = it[CI.MH]>0 ? (ecfg.crewSize*ecfg.shiftHrs)/it[CI.MH] : t.qty;
   const loads = ecfg.truckRate>0 ? (t.qty*it[CI.UT])/ecfg.truckRate : 0;
-  const fac=f.uc*est, budTot=budUC*est, cvar=budTot-fac;
-  const margin=(it[CI.BID]-f.uc)*est;
   const setOv=(k,v)=>{ const o={...(t.ov||{})}; if(v==null||v==="") delete o[k]; else o[k]=v; upTask(t.id,{ov:Object.keys(o).length?o:null}); };
   const results = useMemo(()=>{
     const s=q.trim().toLowerCase(); if(!s) return [];
@@ -1990,7 +2006,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   );
   return (
     <Modal close={close} w={640}>
-      <h3>{it[CI.TASK]}</h3>
+      <BlurInput className="h3edit" title="Edit this card's item name — the catalog item is unaffected"
+        value={it[CI.TASK]} onCommit={v=>setOv("task", String(v).trim()||null)}/>
       <div className="chiprow">
         <span className="pill" style={{background:cat.bg,color:cat.tx}}>{cat.code} · {cat.name}</span>
         <span className="pill dim">Cost {it[CI.CC]}</span>
@@ -2013,10 +2030,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
 
       <table className="dt fcst">
         <tbody>
-          <tr><th>Budget UC</th><td>{fmt$(budUC,2)}</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
-          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>FAC</th><td>{fmt$(fac)}</td></tr>
-          <tr><th>Cost var</th><td className={cvar<0?"neg":"pos"}>{fmt$(cvar)}</td><th>Pay / {it[CI.UM]}</th><td>{fmt$(it[CI.BID],2)}</td></tr>
-          <tr><th>Proj. margin</th><td className={margin<0?"neg":"pos"} colSpan={3}>{fmt$(margin)}</td></tr>
+          <tr><th>Installed</th><td>{fmtN(inst)}/{fmtN(est)} {it[CI.UM]} ({est?pct(inst/est):"—"})</td><th>Forecast UC</th><td className={f.drift>0.005?"neg":f.drift<-0.005?"pos":""}>{fmt$(f.uc,2)}</td></tr>
+          <tr><th>Pay / {it[CI.UM]}</th><td colSpan={3}>{fmt$(it[CI.BID],2)}</td></tr>
         </tbody>
       </table>
 
@@ -2184,10 +2199,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
       </div>}
 
       <div className="loghdr">Overrides — this card only</div>
-      <div className="ovnote">Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
-      <div className="logrow">
-        {ovIn("task","Task name",bit[CI.TASK],false)}
-      </div>
+      <div className="ovnote">Item name is edited at the top of this card. Blank = catalog value (shown grey). Overrides never touch the catalog or other cards.</div>
       <div className="logrow">
         <label>Scope color
           <select className={t.ov&&t.ov.scope?"ovon":""} value={t.ov?.scope ?? ""} onChange={e=>setOv("scope", e.target.value||null)}>
@@ -2306,6 +2318,23 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
       .filter(({r})=>r[CI.TASK].toLowerCase().includes(s)||r[CI.CC].toLowerCase().includes(s)||r[CI.PAY].toLowerCase().includes(s))
       .slice(0,30);
   },[q]);
+  // One-click quick-picks shown before anything is typed: most-recently-scheduled items
+  // first (last-in-array = newest, matching lastRes's convention), then whatever else is
+  // used most often on this board overall — so the common items never need retyping.
+  const {recentCis,suggestedCis} = useMemo(()=>{
+    const seen=new Set(), recent=[];
+    for(let i=tasks.length-1;i>=0 && recent.length<10;i--){ const c=tasks[i].ci; if(c!=null && !seen.has(c)){ seen.add(c); recent.push(c); } }
+    const freq={}; tasks.forEach(t=>{ if(t.ci!=null) freq[t.ci]=(freq[t.ci]||0)+1; });
+    const suggested = Object.keys(freq).map(Number).filter(c=>!seen.has(c))
+      .sort((a,b)=>freq[b]-freq[a]).slice(0,10);
+    return {recentCis:recent, suggestedCis:suggested};
+  },[tasks]);
+  const quickBtn = i => { const r=CATALOG[i]; return (
+    <button key={i} onClick={()=>setCi(i)}>
+      <i style={{background:SCOPES[scopeKeyOf(r[CI.CC])].bg}}/>
+      <span>{r[CI.TASK]}</span>
+      <em>{r[CI.CC]} · {r[CI.PAY]} · {r[CI.UM]}</em>
+    </button>); };
 
   const it = ci!=null ? CATALOG[ci] : null;
   // End field is dual-purpose in station mode: a station (has "+") ends a run and the qty is
@@ -2339,14 +2368,18 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
       {!it && <>
         <input autoFocus className="search" placeholder="Search item, cost code, or pay item — e.g. 51x31, HPPP, 33.40" value={q} onChange={e=>setQ(e.target.value)}/>
         <div className="results">
-          {results.map(({r,i})=>
+          {q && results.map(({r,i})=>
             <button key={i} onClick={()=>setCi(i)}>
               <i style={{background:SCOPES[scopeKeyOf(r[CI.CC])].bg}}/>
               <span>{r[CI.TASK]}</span>
               <em>{r[CI.CC]} · {r[CI.PAY]} · {r[CI.UM]}</em>
             </button>)}
           {q && results.length===0 && <div className="empty">No catalog match — try part of the cost code or pay item.</div>}
-          {!q && <div className="empty">319 items loaded from QPC (MHs + tracking account).</div>}
+          {!q && recentCis.length===0 && suggestedCis.length===0 && <div className="empty">319 items loaded from QPC (MHs + tracking account).</div>}
+          {!q && recentCis.length>0 && <div className="reslabel">Recently used</div>}
+          {!q && recentCis.map(quickBtn)}
+          {!q && suggestedCis.length>0 && <div className="reslabel">Frequently used</div>}
+          {!q && suggestedCis.map(quickBtn)}
         </div>
       </>}
 
@@ -2658,13 +2691,13 @@ function Trends({crews,tasks,logs,taskCalc,wk}){
 }
 
 /* ============ CATALOG / CTC ============ */
-function MilestoneModal({milestones,setMilestones,close}){
+function MilestoneView({milestones,setMilestones}){
   const [date,setDate]=useState(""); const [label,setLabel]=useState("");
   const add=()=>{ if(!date||!label.trim())return; setMilestones(m=>[...m,{id:"m"+Math.random().toString(36).slice(2,7),date,label:label.trim()}].sort((a,b)=>a.date.localeCompare(b.date))); setDate(""); setLabel(""); };
   const del=id=>setMilestones(m=>m.filter(x=>x.id!==id));
   return (
-    <Modal close={close} w={540}>
-      <h3>Milestones</h3>
+    <div className="page">
+      <h2>Milestones</h2>
       <p className="dim2">Dated markers shown on the board — end of a block, end of a drain run, inspections, deadlines, anything worth flagging.</p>
       <div className="logrow">
         <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
@@ -2680,8 +2713,7 @@ function MilestoneModal({milestones,setMilestones,close}){
           : <tr><td colSpan={4} className="empty">No milestones yet — add one above.</td></tr>}
         </tbody>
       </table>
-      <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
-    </Modal>
+    </div>
   );
 }
 function CatalogGate({onUnlock}){
@@ -2761,7 +2793,9 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     quantities:{label:"Quantities — plan vs actual", cols:["day","crew","pay","desc","loc","planq","actq","qvar","pct"]},
     cost:{label:"Cost — budget vs actual vs forecast", cols:["day","crew","pay","desc","buduc","fuc","actd","budi","cvar","fac"]},
     field:{label:"Field — installed vs plan", cols:["day","crew","pay","desc","loc","planq","actq","pct","planmh","actmh"]},
+    actuals:{label:"Actual log — date, pay item, qty, UM, location, crew", cols:["day","pay","actq","um","loc","crew"], loggedOnly:true},
   };
+  const [mode,setMode]=useState("table");   // "table" (data reports) | "board" (Ops snapshot)
   const [report,setReport]=useState("quantities");
   const [sel,setSel]=useState(()=>new Set(REPORTS.quantities.cols));
   const [inclCrews,setInclCrews]=useState(true);
@@ -2785,6 +2819,7 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     {k:"loc",   label:"Location",         get:r=>r.sta},
     {k:"pay",   label:"Pay Item",         get:r=>r.it[CI.PAY]},
     {k:"desc",  label:"Description",      get:r=>r.it[CI.TASK]},
+    {k:"um",    label:"UM",               get:r=>r.um},
     {k:"planq", label:"Plan Qty (wk)",  n:1, get:r=>fmtN(r.t.qty)+" "+r.um},
     {k:"actq",  label:"Actual Qty (wk)",n:1, get:r=>r.lg?fmtN(r.c.actQty):"—"},
     {k:"qvar",  label:"Qty Var",        n:1, get:r=>r.lg?fmtN(r.c.actQty-r.t.qty):"—"},
@@ -2810,9 +2845,13 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
       um:(t.ov && t.ov.um) || umOverrides[ci] || it[CI.UM],  // task override > catalog UM override > base
       sta:t.sta?`${fmtN(t.sta[0],2)}–${fmtN(t.sta[1],2)}`:"—",
       f, td, fac:f.uc*(it[CI.EST]||0) };
-  }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs));
+  }).filter(r=> (r.ctype==="crew"&&inclCrews) || (r.ctype==="sub"&&inclSubs))
+    .filter(r=> !REPORTS[report].loggedOnly || r.lg);
 
-  const active = COLS.filter(c=>sel.has(c.k));
+  // Column order follows the active report's own cols list (its intent), with any
+  // manually-toggled extras appended after in their natural COLS declaration order.
+  const active = REPORTS[report].cols.filter(k=>sel.has(k)).map(k=>COLS.find(c=>c.k===k))
+    .concat(COLS.filter(c=>sel.has(c.k) && !REPORTS[report].cols.includes(c.k)));
   const rowName = id => (siteRows.find(s=>s.id===id)||crews.find(c=>c.id===id)||{}).name || "";
   const noteList = inclNotes ? notes.slice().sort((a,b)=>a.day-b.day) : [];
 
@@ -2820,6 +2859,11 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
     <Modal close={close} w={860}>
       <div className="prcfg no-print">
         <div className="crewhead"><h3 style={{margin:0}}>Print / export to PDF — {wkTitle(wk)}</h3></div>
+        <div className="repbtns">
+          <button className={mode==="table"?"on":""} onClick={()=>setMode("table")}>Data report</button>
+          <button className={mode==="board"?"on":""} onClick={()=>setMode("board")}>Ops snapshot</button>
+        </div>
+        {mode==="table" ? <>
         <div className="repbtns">
           {Object.entries(REPORTS).map(([k,v])=>
             <button key={k} className={report===k?"on":""} onClick={()=>pick(k)}>{v.label}</button>)}
@@ -2835,6 +2879,9 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
           <label><input type="checkbox" checked={inclNotes} onChange={e=>setInclNotes(e.target.checked)}/>Notes / deliveries</label>
         </div>
         <p className="dim2" style={{fontSize:12,margin:"10px 0 0"}}>Report covers the week on screen. Qty/MH = this week; UC / FAC / earned = item to-date (live CTC). Save as PDF from the browser dialog (landscape).</p>
+        </> : (
+        <p className="dim2" style={{fontSize:12,margin:"10px 0 0"}}>One page — the board grid (crews, subs, and their scheduled work) plus each crew's weekly MH total, nothing else. Weekend columns only appear if something's scheduled on Sat/Sun. Print landscape to fit on letter paper.</p>
+        )}
         <div className="btnrow">
           <button className="cta" onClick={()=>window.print()}>Generate &amp; print</button>
           <button className="ghost" onClick={close}>Cancel</button>
@@ -2842,12 +2889,13 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
       </div>
 
       <div className="printarea">
+        {mode==="table" ? <>
         <div className="ptitle">DPW547 · Job 2124013 — Look-Ahead · {wkTitle(wk)} · {REPORTS[report].label}</div>
         <table className="dt list">
           <thead><tr>{active.map(c=><th key={c.k} className={c.n?"r":""}>{c.label}</th>)}</tr></thead>
           <tbody>{rows.length? rows.map(r=>
             <tr key={r.t.id}>{active.map(c=><td key={c.k} className={c.n?"r":""}>{c.get(r)}</td>)}</tr>)
-            : <tr><td colSpan={Math.max(1,active.length)} className="empty">No matching tasks scheduled this week.</td></tr>}
+            : <tr><td colSpan={Math.max(1,active.length)} className="empty">{REPORTS[report].loggedOnly?"No actuals logged this week.":"No matching tasks scheduled this week."}</td></tr>}
           </tbody>
         </table>
         {inclNotes && noteList.length>0 && <>
@@ -2859,8 +2907,62 @@ function PrintModal({crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installe
             </tbody>
           </table>
         </>}
+        </> : <OpsSnapshot crews={crews} weekTasks={weekTasks} taskCalc={taskCalc} wk={wk}/>}
       </div>
     </Modal>
+  );
+}
+/* One-page board-only print: crew/sub rows × day columns (5, +weekend if used), each cell a
+   minimal Loc/Item snippet, plus a crew-totals column on the right. No cost/budget data —
+   this is the version meant to go outside the crew (e.g. to the city). Logo + job name kept. */
+function OpsSnapshot({crews,weekTasks,taskCalc,wk}){
+  const pinSort = (a,b)=> (b.pinned?1:0)-(a.pinned?1:0);
+  const crewsOnly = crews.filter(c=>c.type==="crew").slice().sort(pinSort);
+  const subsOnly = crews.filter(c=>c.type==="sub").slice().sort(pinSort);
+  const hasWeekend = weekTasks.some(t=>t.day>4);
+  const dayIdxs = hasWeekend ? [0,1,2,3,4,5,6] : [0,1,2,3,4];
+  const recap = res => { let p=0,a=0,e=0; weekTasks.filter(t=>t.res===res.id).forEach(t=>{ const c=taskCalc(t); p+=c.planMH; a+=c.actMH; e+=c.earnMH; }); return {p,a,pf:a>0?e/a:0}; };
+  const row = res => (
+    <tr key={res.id}>
+      <td className="opssres">{res.name}</td>
+      {dayIdxs.map(d=>{
+        const list = weekTasks.filter(t=>t.res===res.id && t.day===d);
+        return <td key={d} className="opsscell">
+          {list.map(t=>{ const it=itemFor(t); const scope=SCOPES[scopeKeyOf(it[CI.CC])]||SCOPES.gen;
+            return <div key={t.id} className="opssitem" style={{borderLeftColor:scope.bg}}>
+              <b>{t.loc||"—"}</b>
+              <span>{it[CI.TASK]}</span>
+            </div>; })}
+        </td>;
+      })}
+    </tr>
+  );
+  const allRes = crewsOnly.concat(subsOnly);
+  return (
+    <div className="opssnap">
+      <div className="opssnaphdr">
+        <img className="opssnaplogo" src="assets/rngd-black.png" alt="RNGD" draggable="false"/>
+        <div className="opssnaptitle"><b>DPW547 · Job 2124013</b><span>Look-Ahead — {wkTitle(wk)}</span></div>
+      </div>
+      <div className="opssnapbody">
+        <table className="opssnaptable">
+          <thead><tr><th>Resource</th>{dayIdxs.map(d=><th key={d}>{DAYS[d]}<em>{dLabel(wk,d)}</em></th>)}</tr></thead>
+          <tbody>
+            {crewsOnly.map(row)}
+            {subsOnly.map(row)}
+          </tbody>
+        </table>
+        <div className="opssnaptotals">
+          <div className="opssnaptothdr">Crew totals</div>
+          {allRes.map(c=>{ const r=recap(c); return (
+            <div key={c.id} className="opsstot">
+              <b>{c.name}</b>
+              <span>{fmtN(r.a)}/{fmtN(r.p)} MH{r.pf?` · PF ${r.pf.toFixed(2)}`:""}</span>
+            </div>
+          ); })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3315,6 +3417,13 @@ function TruckMap({sources, setSource, plan}){
     </div>
   </>;
 }
+function TruckingModal({truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close}){
+  return (
+    <Modal close={close} w={960}>
+      <TruckingView {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg}}/>
+    </Modal>
+  );
+}
 function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
@@ -3653,16 +3762,18 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
   const cmds=[
     {label:"Go to Board",hint:"tab",run:()=>setTab("board")},
     {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
+    {label:"Go to Milestones",hint:"tab",run:()=>setTab("milestones")},
     {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
-    {label:"Go to Trucking",hint:"tab",run:()=>setTab("trucking")},
     {label:"Schedule work",hint:"action",run:()=>setModal({type:"sched"})},
     {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},
     {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
     {label:"Print / PDF",hint:"action",run:()=>setModal({type:"print"})},
     {label:"Print Cards — 4×4 notepad sheets",hint:"action",run:()=>setModal({type:"cards"})},
-    {label:"Milestones",hint:"action",run:()=>setModal({type:"milestones"})},
+    {label:"Trucking",hint:"action",run:()=>setModal({type:"trucking"})},
     {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
+    {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
+    {label:"KPI summary",hint:"action",run:()=>setModal({type:"kpisummary"})},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
   ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})));
   const f=cmds.filter(c=>c.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0,10);
@@ -3788,7 +3899,10 @@ const CSS = `
  --tabon:#00833e;--cellln:#1b1e1f;--cellhov:#121615;--mdln:#2e3335;--ovl:rgba(0,0,0,.74);--barfill:#00833e;--pillGoodBg:#0e2f1c;--pillBadBg:#3a1717;
  --noteWbg:#2c2f14;--noteWln:#5f6a1e;--noteWtx:#dce442;--noteCbg:#3a1717;--noteCln:#8a3237;--noteCtx:#ffb0b4;--noteIbg:#101d15;--noteIln:#2a4a37;--noteItx:#9fe0b6;
  color-scheme:dark;
- background:var(--bg);color:var(--tx);min-height:100vh;font:14px/1.45 "Montserrat",system-ui,sans-serif;padding-bottom:60px}
+ background:var(--bg);color:var(--tx);height:100vh;height:100dvh;font:14px/1.45 "Montserrat",system-ui,sans-serif;
+ display:flex;flex-direction:column;overflow:hidden}
+.topzone{flex:0 0 auto;max-height:225px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.bodyzone{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:40px}
 .la-root[data-theme="dark"]{color-scheme:dark}
 .la-root[data-theme="light"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
  --tabon:#00833e;--cellln:#e4e7ea;--cellhov:#eef1f4;--mdln:#cdd3d8;--ovl:rgba(17,19,20,.44);--barfill:#00833e;--pillGoodBg:#dcf3e6;--pillBadBg:#fde4e4;
@@ -3802,6 +3916,9 @@ const CSS = `
 .la-root *{box-sizing:border-box}
 .la-root h2,.la-root h3,.la-root .logo,.la-root label,.la-root th,.la-root .chip,.la-root .pill,.la-root button{font-family:"Saira Condensed","Oswald",sans-serif;letter-spacing:.04em}
 .la-root h3{font-size:20px;margin:0 0 10px;text-transform:none}
+.h3edit{display:block;width:100%;background:transparent;border:1px solid transparent;border-radius:6px;padding:2px 6px;margin:0 0 10px -7px;font:20px "Saira Condensed","Oswald",sans-serif;letter-spacing:.04em;text-transform:none;color:var(--tx);cursor:text}
+.h3edit:hover{border-color:var(--ln)}
+.h3edit:focus{outline:none;border-color:var(--brand);background:var(--pn2);cursor:text}
 .top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--ln);background:var(--pn);position:sticky;top:0;z-index:40}
 .brand{display:flex;align-items:center;gap:12px;position:relative;overflow:hidden;padding:4px 8px 4px 2px;border-radius:8px;cursor:pointer}
 .brandsweep{position:absolute;top:0;bottom:0;left:0;width:34%;pointer-events:none;background:linear-gradient(100deg,rgba(220,228,66,0) 0%,rgba(220,228,66,.16) 30%,rgba(220,228,66,.85) 50%,rgba(220,228,66,.16) 70%,rgba(220,228,66,0) 100%);mix-blend-mode:screen;opacity:0;z-index:3}
@@ -3836,13 +3953,14 @@ const CSS = `
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:16px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:15px}
-.actions{display:flex;gap:8px}
+.actions{display:flex;gap:8px;flex-wrap:nowrap;flex-shrink:1;min-width:0;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 13px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
 .cta{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important}
 .cta.hot{background:var(--lime)!important;border-color:var(--lime)!important;color:#111314!important}
 .cta:disabled{opacity:.4;cursor:default}
 .ghost{background:transparent}
-.themebtn{min-width:74px}
+.themebtn{min-width:0}
 .umin{width:60px;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:3px 6px;font:12px "IBM Plex Mono";text-transform:uppercase}
 .umin:focus{outline:none;border-color:var(--acc)}
 .ctcbar{display:flex;gap:14px;align-items:center;margin-bottom:8px}
@@ -3851,12 +3969,12 @@ const CSS = `
 .pctlbl{font:11px "IBM Plex Mono";color:var(--dm2);margin-left:6px}
 .danger{background:transparent;border:1px solid #7f2f2f;color:var(--bad);border-radius:8px;padding:7px 13px;font-weight:600;cursor:pointer}
 .sm{padding:4px 10px!important;font-size:13px!important}
-.kpis{display:flex;gap:10px;padding:12px 18px 4px;flex-wrap:wrap}
-.weekprog{display:flex;align-items:center;gap:12px;padding:2px 18px 6px}
+.kpis{display:flex;gap:10px;padding:12px 0 4px;flex-wrap:wrap}
+.weekprog{display:flex;align-items:center;gap:12px;padding:2px 0 6px}
 .wpbar{flex:0 0 160px;height:7px;background:var(--pn2);border:1px solid var(--ln);border-radius:6px;overflow:hidden}
 .wpbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand),var(--lime));transition:width .4s cubic-bezier(.2,.7,.2,1)}
 .wptxt{font-size:12px;color:var(--dm)}.wptxt b{color:var(--tx);font-family:"Saira Condensed";font-weight:700}
-.rhythm{display:flex;align-items:center;gap:12px;margin:10px 18px 0;padding:8px 14px;border-radius:10px;font-size:12.5px}
+.rhythm{display:flex;align-items:center;gap:12px;margin:10px 0 0;padding:8px 14px;border-radius:10px;font-size:12.5px;flex-wrap:wrap}
 .rhythm.loss{background:var(--pillBadBg);border:1px solid var(--bad);color:var(--tx)}
 .rhythm.loss .rdot{width:8px;height:8px;border-radius:50%;background:var(--bad);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 30%,transparent)}
 .rhythm .rmsg{flex:1}.rhythm .rmsg b{font-family:"Saira Condensed";font-weight:700}
@@ -3875,15 +3993,14 @@ const CSS = `
 .kpi b{font-size:17px;font-family:"IBM Plex Mono"}
 .kpi b.good{color:var(--good)}.kpi b.bad{color:var(--bad)}
 .kpi.ts.hot{border-color:#7f2f2f}.kpi.ts.hot b{color:var(--bad)}
-.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:wrap}
+.legend{display:flex;gap:14px;align-items:center;padding:8px 18px;color:var(--dm);font-size:12.5px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.legend>*,.legendswatches>*{flex:none;white-space:nowrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .lgcode{font:800 9px "Saira Condensed";letter-spacing:.05em;color:var(--dm2);margin-right:4px;font-style:normal}
-.legend .hint{margin-left:auto;color:var(--dm2)}
+.legend .hint{margin-left:auto;color:var(--dm2);white-space:nowrap;flex:none}
 .legendbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:8px;padding:4px 10px;font:700 11px "Saira Condensed";letter-spacing:.05em;cursor:pointer}
 .legendbtn:hover{border-color:var(--brand);color:var(--brand)}
-.tagswitch{display:inline-flex;align-items:center;gap:8px}
-.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
-.boardwrap{overflow:auto;padding:0 18px 30px;flex:1;min-width:0;position:relative}
+.boardwrap{overflow-x:auto;overflow-y:visible;padding:0 18px 30px;flex:1;min-width:0;position:relative}
 /* dependency arrows (SVG overlay, scrolls with the board) + drag-to-link handles */
 .deparrows{position:absolute;top:0;left:0;pointer-events:none;z-index:4;overflow:visible}
 .deparrow{fill:none;stroke:var(--lime);stroke-width:2;opacity:.6;stroke-linecap:round}
@@ -3915,6 +4032,7 @@ const CSS = `
 .rlnums{display:flex;justify-content:space-between;font:11px "IBM Plex Mono";color:var(--dm)}
 .rlcard .cstat{margin-top:6px}
 .rltruck{margin-top:5px;font:600 11px "IBM Plex Mono";color:var(--dm2)}
+.rlequip{margin-top:5px;font:600 11px "IBM Plex Mono";color:var(--dm2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rltruck.short{color:var(--bad)}
 .trk .panel{margin-bottom:14px}
 .truckmap{height:360px;border-radius:12px;overflow:hidden;border:1px solid var(--mdln);margin:4px 0 12px;z-index:0}
@@ -3956,19 +4074,23 @@ const CSS = `
 .trkline input,.trkline select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:12.5px "IBM Plex Mono"}
 @media(max-width:760px){.trkcards{grid-template-columns:1fr}}
 @media(max-width:980px){.crewrail{width:186px}}
-.board{border-collapse:separate;border-spacing:0;width:100%;min-width:1080px}
-.board thead th{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:2px solid var(--ln);padding:8px 6px 10px;text-align:center;font-size:13px;color:var(--dm)}
+.board{border-collapse:separate;border-spacing:0;width:100%;min-width:820px}
+.board thead th{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:3px solid var(--brand);border-left:2px solid var(--ln);padding:8px 6px 10px;text-align:center;font-size:13px;color:var(--dm)}
+.board thead th:first-child{border-left:0}
 .board thead th b{display:block;font-size:17px;color:var(--tx);font-family:"IBM Plex Mono"}
 .board thead th.today{color:var(--acc)}.board thead th.today b{color:var(--acc)}
 .board thead th.wknd,.cell.wknd{opacity:.55}
-.rescol{width:118px;min-width:118px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5}
-thead .rescol{z-index:12}
-.secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Saira Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:1px solid var(--ln)}
+.rescol{width:92px;min-width:92px;text-align:left!important;position:sticky;left:0;background:var(--bg);z-index:5;border-right:2px solid var(--ln)}
+thead .rescol{z-index:12;border-right:2px solid var(--ln)}
+.secrow td{padding:14px 4px 6px;color:var(--dm);font-family:"Saira Condensed";font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.14em;border-bottom:2px solid var(--ln)}
 .secrow .addbtn{margin-left:10px;background:none;border:1px dashed var(--ln);color:var(--dm);border-radius:6px;padding:1px 8px;font-size:12px;cursor:pointer}
 .secrow .addbtn:hover{color:var(--acc);border-color:var(--acc)}
 .addrow td{padding:8px 4px}
 .addrow input{background:var(--pn2);border:1px solid var(--acc);color:var(--tx);border-radius:8px;padding:6px 10px;width:280px;margin-right:8px;font:inherit}
-.cell{border-bottom:1px solid var(--cellln);border-left:1px solid var(--cellln);vertical-align:top;padding:4px;min-width:128px;height:52px;cursor:cell}
+.cell{border-bottom:2px solid var(--ln);border-left:2px solid var(--ln);vertical-align:top;padding:4px;min-width:104px;height:52px;cursor:cell}
+.cell:first-of-type{border-left:0}
+tr.altrow .cell,tr.altrow .rescol{background:var(--pn)}
+tr.altrow .cell:hover{background:var(--cellhov)}
 .cell:hover{background:var(--cellhov)}
 .card[draggable="true"]{cursor:grab}
 .card.dragging{opacity:.38}
@@ -3981,7 +4103,6 @@ thead .rescol{z-index:12}
 .cstat.behind{background:var(--pillBadBg);color:var(--bad)}
 .snapbtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
 .tagswitch{display:inline-flex;align-items:center;gap:8px}
-.tagswitch label{font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm2)}
 .tagswitch .tagswitch-dot{display:none;width:11px;height:11px;border-radius:50%;flex:none;margin:0}
 .legendswatches{display:contents}
 .viewseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2)}
@@ -3994,6 +4115,8 @@ thead .rescol{z-index:12}
 .msflag{display:inline-flex;align-items:center;gap:3px;margin-top:4px;font:700 9px "Saira Condensed";letter-spacing:.02em;color:#0c0d0c;background:var(--lime);padding:2px 6px 2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .board thead th.rain{background:linear-gradient(var(--bg),rgba(90,120,170,.14))}
 .rainflag{display:block;margin-top:3px;font:700 9px "Saira Condensed";letter-spacing:.04em;color:#bcd0ea;background:rgba(70,100,150,.28);border:1px solid rgba(120,150,200,.5);padding:1px 6px;border-radius:3px;white-space:nowrap}
+.wxflag{display:block;margin-top:3px;font:700 10px "IBM Plex Mono";color:var(--dm);white-space:nowrap}
+.wxflag.wet{color:#bcd0ea}
 .msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
 .msdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-left:5px;vertical-align:middle}
 .msline{background:var(--noteWbg);color:var(--noteWtx);border:1px solid var(--noteWln);border-radius:8px;padding:6px 10px;margin:0 0 8px;font:600 12.5px "Saira Condensed";letter-spacing:.03em}
@@ -4018,18 +4141,6 @@ thead .rescol{z-index:12}
 .dgtag{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;background:var(--brand);color:#fff;padding:3px 8px;border-radius:6px;flex:none}
 .dgtxt{flex:1;font-size:13px;color:var(--tx)}
 .dgx{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";cursor:pointer;flex:none}
-.wxstrip{display:flex;align-items:center;gap:12px;margin:8px 18px 0;padding:7px 14px;background:var(--pn);border:1px solid var(--ln);border-radius:11px;overflow-x:auto}
-.wxlab{font:700 11px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;color:var(--dm);flex:none}
-.wxlab em{font-weight:400;text-transform:none;color:var(--dm2)}
-.wxdays{display:flex;gap:8px;flex:1;min-width:0}
-.wxday{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 9px;border-radius:8px;background:var(--pn2);border:1px solid var(--cellln);min-width:56px}
-.wxday.wet{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--pn2))}
-.wxday .wxd{font:700 11px "Saira Condensed";color:var(--tx)}
-.wxday .wxic{font-size:14px;line-height:1}
-.wxday .wxt{font:600 12px "IBM Plex Mono";color:var(--tx)}
-.wxday .wxt em{font-style:normal;color:var(--dm2)}
-.wxday .wxr{font:600 10px "IBM Plex Mono";color:var(--dm2)}
-.wxday.wet .wxr{color:var(--acc)}
 .cheattot td{border-top:2px solid var(--brand)}
 .toast{position:fixed;left:50%;bottom:9vh;transform:translateX(-50%);background:var(--pn);border:1px solid var(--brand);color:var(--tx);padding:12px 22px;border-radius:12px;z-index:201;font:700 16px "Saira Condensed";letter-spacing:.03em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .3s ease}
 @keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
@@ -4039,12 +4150,6 @@ thead .rescol{z-index:12}
 .mday.dropday{outline:2px dashed var(--lime);outline-offset:-2px}
 .mcard{position:relative;margin-bottom:8px}
 .mcard .card{margin-bottom:0}
-.mqlog{width:100%;margin-top:6px;height:44px;background:var(--brand);border:0;color:#fff;border-radius:9px;font:700 14px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
-.mqlog.done{background:var(--pn2);color:var(--good);border:1px solid var(--good)}
-.mmove{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:6px}
-.mmove button{flex:1;height:44px;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;font:600 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer}
-.mmove button:disabled{opacity:.3}
-.mmove span{font:700 10px "Saira Condensed";letter-spacing:.12em;color:var(--dm2);text-transform:uppercase;flex:none}
 .chip{display:inline-block;border:0;border-radius:8px;padding:5px 11px;font-weight:700;font-size:14px;cursor:pointer}
 .chip.crew{background:#c4b5fd;color:#231a4a}
 .chip.sub{background:#fbe08a;color:#3d3005}
@@ -4063,6 +4168,14 @@ thead .rescol{z-index:12}
 .hqbody>div{display:flex;gap:5px}
 .hqbody label{flex:0 0 40px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
 .hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+/* Ops view — location leads, item centered/justified below it. Card-only fields. */
+.hqbody.ops{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:2px;padding:6px 2px}
+.opsloc{font:800 15px "Saira Condensed";letter-spacing:.03em;margin-bottom:6px}
+.opsitem{font-size:11px;font-weight:600;line-height:1.3;text-align:justify;text-align-last:center;width:100%}
+/* CNO view — location + scope of work only, nothing else (for external distribution) */
+.hqbody.cno{display:flex;flex-direction:column;align-items:center;text-align:center;gap:1px;padding:2px}
+.cnoloc{font:800 14px "Saira Condensed";letter-spacing:.03em}
+.cnocat{font:700 11px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase}
 .note{display:block;width:100%;text-align:left;border-radius:8px;padding:6px 8px;margin-bottom:4px;font-size:12px;cursor:pointer;border:1px solid var(--ln);background:var(--pn2);color:var(--tx)}
 .note.warn{background:var(--noteWbg);border-color:var(--noteWln);color:var(--noteWtx)}
 .note.crit{background:var(--noteCbg);border-color:var(--noteCln);color:var(--noteCtx)}
@@ -4108,6 +4221,7 @@ thead .rescol{z-index:12}
 .results i{width:9px;height:9px;border-radius:2px;flex:none}
 .results em{margin-left:auto;color:var(--dm2);font-style:normal;font-size:11px;flex:none}
 .results .empty{color:var(--dm2);padding:14px;text-align:center;font-size:13px}
+.results .reslabel{padding:7px 10px 4px;font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:var(--dm2);background:var(--pn2);border-bottom:1px solid var(--cellln)}
 .selitem{display:flex;align-items:center;gap:10px;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;margin-bottom:10px}
 .selitem b{display:block;font-family:"Saira Condensed";font-size:16px}
 .selitem em{color:var(--dm);font-style:normal;font-size:12px}
@@ -4190,6 +4304,26 @@ thead .rescol{z-index:12}
 .printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
 .printarea .dt th{color:#555}
 .ptitle{font:700 15px "Saira Condensed";margin-bottom:6px}
+.opssnap{color:#111}
+.opssnaphdr{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #111}
+.opssnaplogo{height:34px;width:auto}
+.opssnaptitle{display:flex;flex-direction:column;font:700 13px "Saira Condensed";letter-spacing:.02em}
+.opssnaptitle span{font-weight:600;color:#444;font-size:11px}
+.opssnapbody{display:flex;gap:10px;align-items:flex-start}
+.opssnaptable{flex:1;min-width:0;border-collapse:collapse;table-layout:fixed}
+.opssnaptable th{background:#eee;border:1px solid #ccc;padding:3px 4px;text-align:center;font:700 9px "Saira Condensed";text-transform:uppercase;letter-spacing:.03em}
+.opssnaptable th em{display:block;font-style:normal;font-size:11px;font-family:"IBM Plex Mono"}
+.opssnaptable td{border:1px solid #ccc;vertical-align:top;padding:2px;height:34px}
+.opssres{width:78px;font:700 10px "Saira Condensed";background:#f6f6f6;padding:3px 5px!important}
+.opsscell{width:auto}
+.opssitem{border-left:3px solid #999;padding:1px 0 1px 4px;margin-bottom:2px;font-size:8.5px;line-height:1.2}
+.opssitem b{display:block;font-size:9px}
+.opssitem span{display:block;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opssnaptotals{width:150px;flex:none;border:1px solid #ccc;border-radius:4px;padding:6px}
+.opssnaptothdr{font:700 9px "Saira Condensed";text-transform:uppercase;letter-spacing:.06em;color:#666;margin-bottom:4px;border-bottom:1px solid #ccc;padding-bottom:3px}
+.opsstot{margin-bottom:5px;font-size:9.5px;line-height:1.35}
+.opsstot b{display:block;font-size:10px}
+.opsstot span{display:block;color:#444}
 .repbtns{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
 .repbtns button{background:var(--pn2);border:1px solid var(--ln);color:var(--dm);border-radius:9px;padding:8px 14px;font:600 14px "Saira Condensed";letter-spacing:.03em;cursor:pointer}
 .repbtns button.on{border-color:var(--acc);color:var(--acc)}
@@ -4252,24 +4386,34 @@ thead .rescol{z-index:12}
 
 /* ===== responsive (phones/tablets ≤760px) ===== */
 @media (max-width:760px){
+ .topzone{max-height:162px}
  .top{gap:10px;padding:10px 12px 8px}
- .brandlogo{height:22px}
- .proj{font-size:12.5px;max-width:220px}
- .proj em{display:none}
+ .brandlogo{height:20px}
+ .brandmicro,.brandbar,.proj{display:none}
+ .brand{padding:2px 0;gap:0}
  .tabs{order:3;width:100%;overflow-x:auto;border-radius:10px}
  .tabs button{flex:1 0 auto;white-space:nowrap;min-height:40px}
- .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between}
- .weeknav span{min-width:0;flex:1;font-size:15px}
- .weeknav button,.actions button,.btn{min-height:40px}
+ .weeknav{order:2;margin-left:0;width:100%;justify-content:space-between;gap:6px;background:var(--bg);padding:6px 0 10px;border-bottom:1px solid var(--ln)}
+ .weeknav > button{background:var(--pn2);border:1px solid var(--ln);border-radius:10px;min-width:44px;height:44px;padding:0;font-size:18px;color:var(--tx);flex:none}
+ .weeknav > button.ghost{font:700 12px "Saira Condensed";letter-spacing:.05em;min-width:54px}
+ .weeknav span{min-width:0;flex:1;font-size:12.5px;font-weight:700;background:var(--pn2);border:1px solid var(--ln);border-radius:10px;height:44px;display:flex;align-items:center;justify-content:center;padding:0 4px;text-align:center}
+ .histnav-inline .histbtn{height:44px;min-width:38px}
+ .actions button,.btn{min-height:40px}
  .histnav{display:none}
  .histnav-inline{display:flex}
  .actions{order:4;width:100%;display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
  .actions button{flex:none;width:100%;min-width:0;padding:7px 4px;font-size:11.5px;white-space:normal}
  .digest,.rhythm,.kpis,.weekprog{display:none}
  .legendswatches{display:none}
- .tagswitch-lbl,.tagswitch-txt{display:none}
+ .tagswitch-txt{display:none}
  .tagswitch .tagswitch-dot{display:block}
  .legend{padding:8px 12px;gap:10px}
+ .hint{display:none}
+ .msec{margin:10px 0 6px}
+ .mcrew{padding:8px 10px;margin-bottom:6px;border-radius:12px}
+ .mcrewhead{margin-bottom:6px}
+ .mboard{padding:0 10px 20px}
+ .mempty{padding:4px 2px;font-size:12px}
  .page{padding:14px 12px}
  .cchead{flex-direction:column;align-items:flex-start;gap:8px}
  .cchead h2{font-size:24px}
