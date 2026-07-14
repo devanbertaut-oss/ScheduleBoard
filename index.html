@@ -780,6 +780,7 @@ function LookAhead(){
     applyState(env.state, {skipView:true});
     syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt});
     setSyncStatus("synced");
+    if(S.bootPulled) flash("↻ Board updated from another device");   // transparency: never change silently
   };
   const pushNow = async () => {
     const S = syncRef.current;
@@ -1291,6 +1292,7 @@ function LookAhead(){
           <button className="cta" onClick={()=>setModal({type:"sched"})}>+ Schedule</button>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
+          <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
           <button onClick={snapshotBoard} title="Print the board grid for the Procore album (Save as PDF)">Snapshot</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
@@ -1326,6 +1328,7 @@ function LookAhead(){
       </div>}
 
       {tab==="board" && <RhythmBanner lastUpdated={lastUpdated} setModal={setModal}/>}
+      {tab==="board" && <WeatherStrip site={(cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site}/>}
 
       {/* ============ KPI STRIP ============ */}
       {tab==="board" && <>
@@ -1423,6 +1426,7 @@ function LookAhead(){
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
@@ -1463,7 +1467,8 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
       <div className="rlbar"><i className={tone} style={{width:Math.min(100,r.p?r.a/r.p*100:0)+"%"}}/></div>
       <div className="rlnums"><span>{fmtN(r.a)}/{fmtN(r.p)} MH</span><span>{r.pq?pct(r.q/r.pq):"—"}</span></div>
       {st && <span className={"cstat "+st.status}>{st.status==="behind"?("Behind +"+st.extraDays+"d"):st.status==="over"?"Over cap":"On plan"}</span>}
-      {st && st.trucksNeeded>0 && <div className={"rltruck"+(st.truckShort?" short":"")}>🚚 {st.trucksNeeded} truck{st.trucksNeeded>1?"s":""}/day{st.trucksAvail?(" · have "+st.trucksAvail):""}{st.truckShort?" — short":""}</div>}
+      {st && st.trucksNeeded>0 && (()=>{ const smart=st.smartTrucks??st.trucksNeeded, saved=st.hoursSaved||0;
+        return <div className={"rltruck"+(st.truckShort?" short":"")} title={`Dedicated ${st.trucksNeeded}/day${smart<st.trucksNeeded?` · back-haul ${smart}`:""}${st.trucksAvail?` · have ${st.trucksAvail}`:""}`}>🚚 {smart} truck{smart!==1?"s":""}/day{saved>0.05?` · saves ~${fmtN(saved,1)}h`:""}{st.trucksAvail?(" · have "+st.trucksAvail):""}{st.truckShort?" — short":""}</div>; })()}
     </button>; };
   const crewCards = crewsOnly.map(c=>card(c,"crew")).filter(Boolean);
   const subCards = subsOnly.map(c=>card(c,"sub")).filter(Boolean);
@@ -1553,21 +1558,28 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
     v.status = v.behindMH>0.5 ? "behind" : v.over ? "over" : "on";
   });
   const haulRes = new Set([...Object.keys(crewDayTrucks), ...Object.keys(crewDayLoads)]);
+  const sources = cfg && cfg.truck && cfg.truck.sources;
   haulRes.forEach(res=>{
     const days = new Set([...Object.keys(crewDayTrucks[res]||{}), ...Object.keys(crewDayLoads[res]||{})]);
-    let peakTrucks=0, peakLoads=0;
+    let peakTrucks=0, peakLoads=0, peakStreams=null, peakOther=0;
     days.forEach(dk=>{
       const models=(crewDayTrucks[res]||{})[dk]||[], merged=mergeTruckModels(models), other=(crewDayLoads[res]||{})[dk]||0;
       const trucks=(merged?merged.total:0) + (other>0?Math.ceil(other/LOADS_PER_TRUCK_DAY):0);
       const loads=models.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads,0) + other;
-      if(trucks>peakTrucks) peakTrucks=trucks; if(loads>peakLoads) peakLoads=loads;
+      if(trucks>peakTrucks){ peakTrucks=trucks; peakOther=other;
+        peakStreams={ spoil:models.reduce((a,m)=>a+m.spoil.loads,0), stone:models.reduce((a,m)=>a+m.stone.loads,0), sand:models.reduce((a,m)=>a+m.sand.loads,0) }; }
+      if(loads>peakLoads) peakLoads=loads;
     });
     const c = crews.find(x=>x.id===res); const avail = (c && c.trucks>0)? c.trucks : 0;
     const cur = byCrew[res] || (byCrew[res]={behindMH:0,over:false,status:"on",extraDays:0});
     cur.peakLoads = Math.round(peakLoads);
     cur.trucksNeeded = peakTrucks;
+    // Back-haul (smart) count for the peak day: route the pooled streams, add the proxy trucks back.
+    if(peakStreams){ const rp=routePlan(peakStreams, sources, cfg&&cfg.truck);
+      cur.smartTrucks = rp.trucks + (peakOther>0?Math.ceil(peakOther/LOADS_PER_TRUCK_DAY):0);
+      cur.hoursSaved = rp.hoursSaved; }
     cur.trucksAvail = avail;
-    cur.truckShort = avail>0 && cur.trucksNeeded>avail;
+    cur.truckShort = avail>0 && (cur.smartTrucks??cur.trucksNeeded)>avail;
   });
   return {byTask, byCrew};
 }
@@ -1638,6 +1650,25 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
 /* Weekly-rhythm banner — loss-framed nudge when the board has gone stale (a shared
    board that no one has touched in 3+ days is drifting from the field), else a calm
    strip showing the SOP touchpoints. lastUpdated is the shared last-edit timestamp. */
+/* 7-day forecast at the project site (Open-Meteo — free, no key). Temps + rain % so the
+   super can plan around weather / rain-outs. Silent if offline or coords unset. */
+function WeatherStrip({site}){
+  const [wx,setWx]=useState(null);
+  useEffect(()=>{ let dead=false; if(!site||site.lat==null) return;
+    const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=7`;
+    fetch(url).then(r=>r.json()).then(j=>{ if(!dead && j&&j.daily&&j.daily.time) setWx(j.daily); }).catch(()=>{});
+    return ()=>{dead=true;};
+  },[site&&site.lat, site&&site.lng]);
+  if(!wx) return null;
+  const icon=c=> c==null?"·":(c>=95?"⛈":c>=80?"🌧":c>=71?"❄":c>=51?"🌦":c>=45?"🌫":c>=1?"⛅":"☀");
+  const dow=d=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(d+"T12:00:00").getDay()];
+  return <div className="wxstrip no-print"><span className="wxlab">🌤 7-day forecast <em>· project site</em></span>
+    <div className="wxdays">{wx.time.slice(0,7).map((d,i)=>{ const rain=wx.precipitation_probability_max[i];
+      return <div key={i} className={"wxday"+(rain>=60?" wet":"")} title={rain>=60?"High rain chance — consider a rain-out plan":""}>
+        <span className="wxd">{dow(d)}</span><span className="wxic">{icon(wx.weathercode&&wx.weathercode[i])}</span>
+        <span className="wxt">{Math.round(wx.temperature_2m_max[i])}°<em>/{Math.round(wx.temperature_2m_min[i])}°</em></span>
+        <span className="wxr">{rain==null?"":rain+"%"}</span></div>; })}</div></div>;
+}
 function RhythmBanner({lastUpdated,setModal}){
   const days = lastUpdated==null ? Infinity : Math.floor((Date.now()-lastUpdated)/86400000);
   const stale = days>=3;
@@ -3002,76 +3033,163 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
     </Modal>
   );
 }
+/* Daily & weekly trucking report. Per crew/day it routes the pooled streams (back-haul), shows
+   dedicated vs smart trucks, cross-crew fleet pooling, cost, and planned→actual from production;
+   the weekly view is a per-day demand chart + a trucks-to-order sheet. Feeds the $-saved ticker. */
+function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setSavings,close}){
+  const [view,setView]=useState("day"); const [copied,setCopied]=useState(false);
+  const today=(()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<5;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
+  const [day,setDay]=useState(today);
+  const T={...TRUCK_DEFAULTS,...((cfg&&cfg.truck)||{})}, sources=T.sources;
+  const truckHr = T.axle==="quad" ? (TRUCK_BASE.rates.quadHr||120) : (TRUCK_BASE.rates.triHr||105);
+  const dollars = tr => Math.round(tr*truckHr*(T.shiftHrs||8));
+
+  const week = useMemo(()=>{
+    const streamsOf = tks => tks.reduce((a,t)=>{ const trk=taskCalc(t).trk, at=taskCalc(t).actTrk;
+      if(trk&&trk.applicable){ a.spoil+=trk.spoil.loads; a.stone+=trk.stone.loads; a.sand+=trk.sand.loads; }
+      if(at&&at.applicable){ a.aSpoil+=at.spoil.loads; a.aStone+=at.stone.loads; a.aSand+=at.sand.loads; a.logged=true; } return a; },
+      {spoil:0,stone:0,sand:0,aSpoil:0,aStone:0,aSand:0,logged:false});
+    return [0,1,2,3,4].map(di=>{
+      const dts=weekTasks.filter(t=>t.day===di);
+      const perCrew = crews.map(cr=>{ const cts=dts.filter(t=>t.res===cr.id); const s=streamsOf(cts);
+        return (s.spoil+s.stone+s.sand>0.05) ? {crew:cr, s, rp:routePlan({spoil:s.spoil,stone:s.stone,sand:s.sand},sources,cfg&&cfg.truck)} : null; }).filter(Boolean);
+      const pool = perCrew.reduce((a,x)=>{a.spoil+=x.s.spoil;a.stone+=x.s.stone;a.sand+=x.s.sand;return a;},{spoil:0,stone:0,sand:0});
+      const poolRp = perCrew.length ? routePlan(pool,sources,cfg&&cfg.truck) : null;
+      const sumSmart=perCrew.reduce((a,x)=>a+x.rp.trucks,0), sumDumb=perCrew.reduce((a,x)=>a+x.rp.dumbTrucks,0);
+      return {di, perCrew, pool, poolRp, sumSmart, sumDumb, cross:poolRp?poolRp.trucks:0};
+    });
+  },[weekTasks,crews,cfg]);
+
+  const wkDumb=week.reduce((a,d)=>a+d.sumDumb,0), wkSmart=week.reduce((a,d)=>a+d.cross,0);
+  const wkSaved$=Math.max(0,(wkDumb-wkSmart))*truckHr*(T.shiftHrs||8);
+  const peakDay=week.reduce((a,d)=>d.cross>a.cross?d:a, week[0]);
+  const maxBar=Math.max(1,...week.map(d=>d.cross));
+  const D=week[day];
+
+  const text=useMemo(()=>{
+    const L=[`TRUCK ORDER — ${wkTitle(wk)}`,""];
+    week.forEach(d=>{ if(!d.perCrew.length) return; L.push(`${DAYS[d.di]} ${dLabel(wk,d.di)} — ${d.cross} truck(s) (pooled; ${d.sumDumb} dedicated)`);
+      d.perCrew.forEach(x=>L.push(`   • ${x.crew.name}: ${x.rp.trucks} (${x.rp.dumbTrucks} ded)${x.rp.hoursSaved>0.05?` · saves ~${fmtN(x.rp.hoursSaved,1)}h`:""}`)); });
+    L.push("", `PEAK DAY: ${DAYS[peakDay.di]} — ${peakDay.cross} trucks`, `WEEK $ SAVED vs dedicated: ${fmt$(wkSaved$)}`);
+    return L.join("\n");
+  },[week]);
+
+  const bar = (v)=><div className="tbar"><i style={{height:Math.round(v/maxBar*100)+"%"}}/><span>{v}</span></div>;
+
+  return (
+    <Modal close={close} w={720}>
+      <div className="crewhead"><h3 style={{margin:0}}>Trucking report — {wkTitle(wk)}</h3></div>
+      <div className="qmode mtabs"><button className={view==="day"?"on":""} onClick={()=>setView("day")}>Daily</button><button className={view==="week"?"on":""} onClick={()=>setView("week")}>Weekly</button></div>
+
+      {view==="day" ? <>
+      <div className="daychips">{[0,1,2,3,4].map(i=><button key={i} className={"daychip"+(i===day?" on":"")+(week[i].perCrew.length?"":" empty")} onClick={()=>setDay(i)}>{DAYS[i]}<em>{dLabel(wk,i)}</em>{week[i].cross>0?<b>{week[i].cross}🚚</b>:null}</button>)}</div>
+      {D.perCrew.length ? <>
+      <table className="dt list"><thead><tr><th>Crew</th><th className="r">Spoil</th><th className="r">Stone</th><th className="r">Sand</th><th className="r">Dedicated</th><th className="r">Back-haul</th><th className="r">Saves</th><th className="r">Cost</th></tr></thead>
+        <tbody>{D.perCrew.map((x,i)=><tr key={i}><td>{x.crew.name}</td>
+          <td className="r">{x.s.spoil>0.05?fmtN(x.s.spoil,1):"—"}</td><td className="r">{x.s.stone>0.05?fmtN(x.s.stone,1):"—"}</td><td className="r">{x.s.sand>0.05?fmtN(x.s.sand,1):"—"}</td>
+          <td className="r">{x.rp.dumbTrucks}</td><td className="r"><b>{x.rp.trucks}</b></td><td className="r dim2">{x.rp.hoursSaved>0.05?"~"+fmtN(x.rp.hoursSaved,1)+"h":"—"}</td><td className="r">{fmt$(dollars(x.rp.trucks))}</td></tr>)}
+          <tr className="cheattot"><td><b>Fleet (pooled across crews)</b></td><td/><td/><td/><td className="r">{D.sumDumb}</td><td className="r"><b>🚚 {D.cross}</b></td><td className="r dim2">{D.sumSmart>D.cross?`−${D.sumSmart-D.cross} truck`:""}</td><td className="r"><b>{fmt$(dollars(D.cross))}</b></td></tr></tbody></table>
+      {D.sumSmart>D.cross && <div className="bhaul">Cross-crew tip: share one fleet across crews on {DAYS[day]} → <b>{D.cross} trucks</b> instead of {D.sumSmart} run separately (−{D.sumSmart-D.cross}, saves {fmt$(dollars(D.sumSmart)-dollars(D.cross))}/day).</div>}
+      </> : <div className="ovnote">No haul-driving work scheduled for {DAYS[day]} {dLabel(wk,day)}.</div>}
+      </> : <>
+      <div className="loghdr">Trucks needed per day <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(pooled fleet, back-haul)</em></div>
+      <div className="tchart">{week.map((d,i)=><div key={i} className="tcol">{bar(d.cross)}<label>{DAYS[i]}</label></div>)}</div>
+      <div className="loghdr">Trucks to order — by crew &amp; day</div>
+      <table className="dt list"><thead><tr><th>Crew</th>{[0,1,2,3,4].map(i=><th key={i} className="r">{DAYS[i]}</th>)}<th className="r">Peak</th></tr></thead>
+        <tbody>{crews.filter(cr=>week.some(d=>d.perCrew.some(x=>x.crew.id===cr.id))).map((cr,ri)=>{ const cells=[0,1,2,3,4].map(i=>{ const x=week[i].perCrew.find(y=>y.crew.id===cr.id); return x?x.rp.trucks:0; }); return (
+          <tr key={ri}><td>{cr.name}</td>{cells.map((v,i)=><td key={i} className="r">{v||"—"}</td>)}<td className="r"><b>{Math.max(0,...cells)}</b></td></tr>); })}
+          <tr className="cheattot"><td><b>Pooled fleet</b></td>{week.map((d,i)=><td key={i} className="r"><b>{d.cross||"—"}</b></td>)}<td className="r"><b>{peakDay.cross}</b></td></tr></tbody></table>
+      </>}
+
+      <div className="kpis" style={{padding:"8px 0 4px"}}>
+        <div className="kpi"><label>Peak fleet</label><b>{peakDay.cross} 🚚</b></div>
+        <div className="kpi"><label>Truck $/hr</label><b>{fmt$(truckHr)}</b></div>
+        <div className="kpi"><label>Week $ saved</label><b className="pos">{fmt$(wkSaved$)}</b></div>
+      </div>
+      <div className="btnrow">
+        <button className="cta" onClick={()=>{navigator.clipboard?.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy order sheet"}</button>
+        <button className="ghost" disabled={wkSaved$<1} onClick={()=>setSavings&&setSavings(v=>[...(v||[]),{id:"s"+Math.random().toString(36).slice(2,7),date:new Date().toISOString().slice(0,10),amount:Math.round(wkSaved$),note:"Back-haul routing — "+wkTitle(wk)}])}>Log {fmt$(wkSaved$)} saved</button>
+        <span className="sp"/><em className="dim2">Sized on your source drive times; verify against the broker.</em>
+      </div>
+    </Modal>
+  );
+}
 function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
   const [copied,setCopied]=useState(false);
-  const TON_PER_CY=1.35; // rough aggregate density for tonnage estimate
+  const T = {...TRUCK_DEFAULTS, ...((cfg&&cfg.truck)||{})};
+  const CYC = truckCycles(T);
+  const tripsPer = cyc => Math.max(1, Math.floor((T.shiftHrs*60*T.eff)/Math.max(1,cyc)));
+  const anyLogged = weekTasks.some(t=>taskCalc(t).actQty>0);
   const groups = useMemo(()=>{
     const g={};
     weekTasks.forEach(t=>{ const c=taskCalc(t); const k=t.ci;
-      (g[k]||(g[k]={it:c.it, qty:0, loads:0, days:new Set(), crews:new Set()}));
-      g[k].qty+=t.qty; g[k].loads+=c.loads; g[k].days.add(t.day);
-      const cr=crews.find(x=>x.id===t.res); if(cr) g[k].crews.add(cr.name);
+      const x=g[k]||(g[k]={it:c.it, um:c.it[CI.UM], desc:c.it[CI.TASK], qty:0, actQty:0, days:new Set(), crews:new Set(),
+        spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0, loads:{spoil:0,stone:0,sand:0}, act:{spoil:0,stone:0,sand:0}, applicable:false, mat:null});
+      x.qty+=t.qty; x.actQty+=c.actQty; x.days.add(t.day);
+      const cr=crews.find(r=>r.id===t.res); if(cr) x.crews.add(cr.name);
+      if(c.trk && c.trk.applicable){ const k2=c.trk; x.applicable=true; x.mat=k2.mat;
+        x.spoilCy+=k2.spoil.cy; x.stoneCy+=k2.stone.cy; x.stoneTn+=k2.stone.tn||0; x.sandCy+=k2.sand.cy;
+        x.loads.spoil+=k2.spoil.loads; x.loads.stone+=k2.stone.loads; x.loads.sand+=k2.sand.loads; }
+      if(c.actTrk && c.actTrk.applicable){ x.act.spoil+=c.actTrk.spoil.loads; x.act.stone+=c.actTrk.stone.loads; x.act.sand+=c.actTrk.sand.loads; }
     });
-    return Object.values(g).map(x=>{
-      const pay=x.it[CI.PAY], cd=CD_CYT[pay];
-      const cyt = (cd && cd.um===x.it[CI.UM]) ? x.qty*cd.cytU : 0; // only when estimate UM matches scheduled UM
-      const isPipe = x.it[CI.UM]==="LF" && /pipe|hppp|pvc|dip|rcpa|liner/i.test(x.it[CI.TASK]);
-      const bed = bedForItem(x.it[CI.CC], x.it[CI.TASK], x.it[CI.UM]); // SWB-spec bedding takeoff
-      const bedCy = bed ? x.qty*bed.cyPer : 0, bedTon = bed ? x.qty*bed.tonPer : 0;
-      return {...x, pay, um:x.it[CI.UM], desc:x.it[CI.TASK], cyt, isPipe, bed, bedCy, bedTon};
-    }).sort((a,b)=> (b.isPipe-a.isPipe) || b.cyt-a.cyt);
+    return Object.values(g).sort((a,b)=> (b.applicable-a.applicable) || (b.stoneTn+b.spoilCy)-(a.stoneTn+a.spoilCy));
   },[weekTasks,cfg]);
-
-  const STONE_TON_LOAD = 16; // legal tri-axle stone load
-  const tot = groups.reduce((a,g)=>{ a.cyt+=g.cyt; a.loads+=g.loads; a.bedCy+=g.bedCy; a.bedTon+=g.bedTon; if(g.isPipe)a.pipe+=g.qty; return a; },{cyt:0,loads:0,pipe:0,bedCy:0,bedTon:0});
-  const bedLoads = tot.bedTon/STONE_TON_LOAD;
-  const truckDays = Math.ceil((tot.loads+bedLoads)/6);
-  const pipeItems = groups.filter(g=>g.isPipe);
-  const aggItems  = groups.filter(g=>g.cyt>0);
-  const bedItems  = groups.filter(g=>g.bedCy>0);
+  const haulItems = groups.filter(g=>g.applicable);
+  const pipeItems = groups.filter(g=>g.um==="LF");
+  const tot = groups.reduce((a,g)=>{ if(g.um==="LF") a.pipe+=g.qty;
+    a.spoilCy+=g.spoilCy; a.stoneCy+=g.stoneCy; a.stoneTn+=g.stoneTn; a.sandCy+=g.sandCy;
+    a.spoil+=g.loads.spoil; a.stone+=g.loads.stone; a.sand+=g.loads.sand; return a; },
+    {pipe:0,spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0,spoil:0,stone:0,sand:0});
+  const streams=[
+    {key:"spoil", label:"Dig-out spoil → dump", src:T.sources.dump.name,  cy:tot.spoilCy, tn:null, loads:tot.spoil, tp:tripsPer(CYC.spoil)},
+    {key:"stone", label:"#57 / #610 stone ← pit", src:T.sources.stone.name, cy:tot.stoneCy, tn:tot.stoneTn, loads:tot.stone, tp:tripsPer(CYC.stone)},
+    {key:"sand",  label:"Sand ← pit",             src:T.sources.sand.name,  cy:tot.sandCy, tn:null, loads:tot.sand, tp:tripsPer(CYC.sand)}
+  ].filter(s=>s.loads>0.05);
+  streams.forEach(s=> s.truckDays = Math.ceil(s.loads/s.tp) );
+  const totalTruckDays = streams.reduce((a,s)=>a+s.truckDays,0);
 
   const text = useMemo(()=>{
     const L=[`WATERSHED LOOK-AHEAD — MATERIALS & TRUCKING CHEAT SHEET`, wkTitle(wk), "", "PIPE / STRUCTURES TO STAGE:"];
     (pipeItems.length?pipeItems:[{desc:"— none scheduled",qty:0,um:""}]).forEach(g=>L.push(`  • ${fmtN(g.qty)} ${g.um}  ${g.desc}`));
-    L.push("", "BEDDING & EMBEDMENT (#610 crushed stone, per SWB drawings):");
-    (bedItems.length?bedItems:[{desc:"— none scheduled",bedCy:0,bedTon:0,bed:{spec:""}}]).forEach(g=>L.push(`  • ${g.desc.slice(0,42)}: ${fmtN(g.qty)} ${g.um} → ${fmtN(g.bedCy,1)} CY (${fmtN(g.bedTon,1)} tn) [${g.bed?g.bed.spec:""}]`));
-    L.push("", "AGGREGATE / HAUL:");
-    aggItems.forEach(g=>L.push(`  • ${g.desc}: ${fmtN(g.qty)} ${g.um} → ~${fmtN(g.cyt)} CYT haul`));
+    L.push("", "HAUL STREAMS (from the physical truck model):");
+    streams.forEach(s=>L.push(`  • ${s.label}: ${fmtN(s.cy,0)} CY${s.tn?` / ${fmtN(s.tn,0)} tn`:""} ≈ ${fmtN(s.loads,0)} loads = ${s.truckDays} truck-day(s)  [${s.src}]`));
     L.push("", `TOTAL PIPE: ${fmtN(tot.pipe)} LF`,
-      `BEDDING STONE: ${fmtN(tot.bedCy,1)} CY  (~${fmtN(tot.bedTon)} tons ≈ ${fmtN(bedLoads,1)} loads)`,
-      `TRUCKING: ~${fmtN(tot.loads+bedLoads)} loads  =  ${truckDays} truck-day(s) @ 6 loads/day`,
-      `AGGREGATE (estimate takeoff, matched haul items): ~${fmtN(tot.cyt)} CYT  (~${fmtN(tot.cyt*TON_PER_CY)} tons)`,
-      "", "Compare against yard inventory before ordering; book trucks to the peak day.");
+      `TRUCK-DAYS TO BOOK: ${totalTruckDays}  (spoil-out + stone-in + sand-in, sized on your drive times)`,
+      "", "Book to the peak day; verify materials against yard inventory before ordering.");
     return L.join("\n");
   },[groups]);
 
   return (
-    <Modal close={close} w={640}>
+    <Modal close={close} w={660}>
       <div className="crewhead"><h3 style={{margin:0}}>Week cheat sheet — {wkTitle(wk)}</h3></div>
-      <p className="dim2">Foreman reference for the week on screen — pipe &amp; materials to stage, and trucking to book. Bedding stone (#610) is computed from the governing SWB standard drawings (arch pipe D-3933, round RCP D-3810, HPPP embedment, structure bases) by trench width × bedding depth × scheduled quantity, and rolled into the truck-day count. Aggregate CYT from the estimate takeoff (haul items where the unit matches).</p>
+      <p className="dim2">Foreman reference for the week on screen — pipe/structures to stage and trucking to book, computed from the physical truck model (SWB #57 stone envelope, roadway #610 base, spoil &amp; sand) sized on your source drive times.{anyLogged?" Actual columns come from logged production.":""}</p>
       <div className="kpis" style={{padding:"4px 0 10px"}}>
         <div className="kpi"><label>Pipe</label><b>{fmtN(tot.pipe)} LF</b></div>
-        <div className="kpi"><label>Loads</label><b>{fmtN(tot.loads)}</b></div>
-        <div className="kpi"><label>Bedding stone</label><b>{fmtN(tot.bedTon)} tn</b></div>
-        <div className="kpi"><label>Truck-days</label><b>{truckDays}</b></div>
-        <div className="kpi"><label>Aggregate</label><b>{fmtN(tot.cyt)} CYT</b></div>
+        <div className="kpi"><label>Spoil out</label><b>{fmtN(tot.spoil,0)} ld</b></div>
+        <div className="kpi"><label>Stone in</label><b>{fmtN(tot.stoneTn,0)} tn</b></div>
+        <div className="kpi"><label>Sand in</label><b>{fmtN(tot.sand,0)} ld</b></div>
+        <div className="kpi"><label>Truck-days</label><b>{totalTruckDays}</b></div>
       </div>
       <div className="loghdr">Pipe &amp; structures to stage</div>
       <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th>Crew</th></tr></thead>
         <tbody>{pipeItems.length? pipeItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,46)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="dim2">{[...g.crews].join(", ")}</td></tr>)
           : <tr><td colSpan={3} className="empty">No pipe scheduled this week.</td></tr>}</tbody></table>
-      <div className="loghdr">Bedding &amp; embedment — #610 crushed stone <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(SWB standard drawings)</em></div>
-      <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th className="r">Stone CY</th><th className="r">Tons</th><th>Spec</th></tr></thead>
-        <tbody>{bedItems.length? bedItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,38)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="r">{fmtN(g.bedCy,1)}</td><td className="r">{fmtN(g.bedTon,1)}</td><td className="dim2">{g.bed?g.bed.spec:""}</td></tr>)
-          : <tr><td colSpan={5} className="empty">No pipe/structure with a bedding spec scheduled.</td></tr>}
-          {bedItems.length>0 && <tr className="cheattot"><td><b>Total</b></td><td/><td className="r"><b>{fmtN(tot.bedCy,1)}</b></td><td className="r"><b>{fmtN(tot.bedTon)}</b></td><td className="dim2">≈ {fmtN(bedLoads,1)} loads</td></tr>}</tbody></table>
-      <div className="loghdr">Aggregate &amp; haul</div>
-      <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th className="r">Haul CYT</th><th className="r">Loads</th></tr></thead>
-        <tbody>{aggItems.length? aggItems.map((g,i)=><tr key={i}><td>{g.desc.slice(0,40)}</td><td className="r">{fmtN(g.qty)} {g.um}</td><td className="r">{fmtN(g.cyt)}</td><td className="r">{fmtN(g.loads)}</td></tr>)
-          : <tr><td colSpan={4} className="empty">No haul-driving items scheduled.</td></tr>}</tbody></table>
+      <div className="loghdr">Haul streams &amp; trucking to book <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(physical model · your drive times)</em></div>
+      <table className="dt list"><thead><tr><th>Stream</th><th>Source</th><th className="r">Volume</th><th className="r">Loads</th><th className="r">Truck-days</th></tr></thead>
+        <tbody>{streams.length? streams.map((s,i)=><tr key={i}><td>{s.label}</td><td className="dim2">{s.src}</td><td className="r">{fmtN(s.cy,0)} CY{s.tn?` · ${fmtN(s.tn,0)} tn`:""}</td><td className="r">{fmtN(s.loads,1)}</td><td className="r"><b>{s.truckDays}</b></td></tr>)
+          : <tr><td colSpan={5} className="empty">No haul-driving work scheduled this week.</td></tr>}
+          {streams.length>0 && <tr className="cheattot"><td><b>Total</b></td><td/><td/><td/><td className="r"><b>🚚 {totalTruckDays}</b></td></tr>}</tbody></table>
+      <div className="loghdr">Per-item haul <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>{anyLogged?"(plan → actual from logged production)":""}</em></div>
+      <table className="dt list"><thead><tr><th>Item</th><th className="r">Spoil</th><th className="r">Stone</th><th className="r">Sand</th></tr></thead>
+        <tbody>{haulItems.length? haulItems.map((g,i)=>{ const cell=(pl,ac)=> pl<0.05?"—":(anyLogged&&g.actQty>0?`${fmtN(pl,1)}→${fmtN(ac,1)}`:fmtN(pl,1)); return (
+          <tr key={i}><td>{g.desc.slice(0,40)}</td>
+            <td className="r">{cell(g.loads.spoil,g.act.spoil)}</td>
+            <td className="r">{g.stoneTn>0?fmtN(g.stoneTn,0)+"tn":cell(g.loads.stone,g.act.stone)}</td>
+            <td className="r">{cell(g.loads.sand,g.act.sand)}</td></tr>); })
+          : <tr><td colSpan={4} className="empty">No pipe/roadway haul items scheduled.</td></tr>}</tbody></table>
       <div className="btnrow">
         <button className="cta" onClick={()=>{navigator.clipboard?.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy cheat sheet"}</button>
-        <span className="sp"/><em className="dim2">Estimate-based planning figures — verify against inventory.</em>
+        <span className="sp"/><em className="dim2">Model-based figures — verify materials against inventory.</em>
       </div>
     </Modal>
   );
@@ -3768,6 +3886,18 @@ const CSS = `
 .bhaul b{color:var(--good)}
 .srctbl input{width:100%}
 .srcdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;border:1px solid rgba(0,0,0,.4)}
+.daychips{display:flex;gap:8px;margin:4px 0 12px;flex-wrap:wrap}
+.daychip{flex:1;min-width:64px;display:flex;flex-direction:column;align-items:center;gap:1px;padding:8px 6px;border:1px solid var(--ln);border-radius:10px;background:var(--pn2);color:var(--tx);font:700 13px "Saira Condensed";cursor:pointer}
+.daychip.on{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand) inset}
+.daychip.empty{opacity:.5}
+.daychip em{font:500 10px "IBM Plex Mono";color:var(--dm2);font-style:normal}
+.daychip b{font:700 12px "IBM Plex Mono";color:var(--lime)}
+.tchart{display:flex;gap:10px;align-items:flex-end;height:150px;padding:8px 4px 0;border-bottom:1px solid var(--ln);margin-bottom:8px}
+.tcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}
+.tcol>label{font:700 11px "Saira Condensed";color:var(--dm)}
+.tbar{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative}
+.tbar>i{display:block;width:60%;min-height:2px;background:linear-gradient(180deg,var(--brand),color-mix(in srgb,var(--brand) 60%,#000));border-radius:5px 5px 0 0}
+.tbar>span{font:600 12px "IBM Plex Mono";color:var(--tx);margin-bottom:2px}
 .trkrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px}
 .trkrow label{display:flex;flex-direction:column;gap:4px;font:600 11px "Saira Condensed";letter-spacing:.05em;text-transform:uppercase;color:var(--dm)}
 .trkrow input,.trkrow select{background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:7px 9px;font:13px "IBM Plex Mono"}
@@ -3847,6 +3977,18 @@ thead .rescol{z-index:12}
 .dgtag{font:700 10px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;background:var(--brand);color:#fff;padding:3px 8px;border-radius:6px;flex:none}
 .dgtxt{flex:1;font-size:13px;color:var(--tx)}
 .dgx{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:5px 12px;font:600 12px "Saira Condensed";cursor:pointer;flex:none}
+.wxstrip{display:flex;align-items:center;gap:12px;margin:8px 18px 0;padding:7px 14px;background:var(--pn);border:1px solid var(--ln);border-radius:11px;overflow-x:auto}
+.wxlab{font:700 11px "Saira Condensed";letter-spacing:.06em;text-transform:uppercase;color:var(--dm);flex:none}
+.wxlab em{font-weight:400;text-transform:none;color:var(--dm2)}
+.wxdays{display:flex;gap:8px;flex:1;min-width:0}
+.wxday{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 9px;border-radius:8px;background:var(--pn2);border:1px solid var(--cellln);min-width:56px}
+.wxday.wet{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--pn2))}
+.wxday .wxd{font:700 11px "Saira Condensed";color:var(--tx)}
+.wxday .wxic{font-size:14px;line-height:1}
+.wxday .wxt{font:600 12px "IBM Plex Mono";color:var(--tx)}
+.wxday .wxt em{font-style:normal;color:var(--dm2)}
+.wxday .wxr{font:600 10px "IBM Plex Mono";color:var(--dm2)}
+.wxday.wet .wxr{color:var(--acc)}
 .cheattot td{border-top:2px solid var(--brand)}
 .toast{position:fixed;left:50%;bottom:9vh;transform:translateX(-50%);background:var(--pn);border:1px solid var(--brand);color:var(--tx);padding:12px 22px;border-radius:12px;z-index:201;font:700 16px "Saira Condensed";letter-spacing:.03em;box-shadow:0 12px 44px rgba(0,0,0,.45);animation:toastin .3s ease}
 @keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
@@ -4100,6 +4242,15 @@ thead .rescol{z-index:12}
  .logrow input,.logrow select,.eosgrid input,.eosgrid textarea,.modal textarea,.search,.namein{font-size:16px}
  .card{padding:8px 10px}
  .chip{min-height:34px}
+ /* Phase 10 — field polish: comfortable 44px tap targets + touch-friendly new UI */
+ .weeknav button,.actions button,.btn,.tabs button,.mlog,.mqlog,.daychip,.snapbtn{min-height:44px}
+ .mlog,.mqlog{font-size:14px;padding:11px 12px;border-radius:10px}
+ .mqlog{width:100%}
+ .wxstrip{margin:8px 12px 0;padding:6px 10px}
+ .wxday{min-width:52px}
+ .daychips{gap:6px}.daychip{min-width:56px}
+ .tchart{height:120px}
+ .srctbl input{font-size:16px}
 }
 
 /* --- 4x4 card export (Print Cards) --- */
