@@ -273,7 +273,7 @@ const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
   stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
   roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,
-  cycSpoil:24, cycStone:26, cycSand:32, cycBase:28,
+  cycSpoil:24, cycStone:26, cycSand:32, cycBase:28, maxLegMin:60,
   // Haul sources for the back-haul optimizer + map. oneWayMin = one-way DRIVE (windshield)
   // time — the single basis for every cycle: round trip = 2·oneWayMin + loadSpot + tipMin.
   // Auto-filled from the map route (OSRM) or edited by hand; lat/lng set by dragging the pin.
@@ -302,9 +302,13 @@ function resolveDig(item,taskDig,cfg){
     if(g && g.fam && g.size!=null){ const o=(T.tw||{})[g.fam+"|"+g.size]; if(o && +o.d>0) return +o.d; } }
   return (+T.avgDepth)||8;
 }
+// Guard against a mis-set / auto-filled far source silently collapsing trips-per-truck: the effective
+// one-way leg (drive × traffic) used for cycles is clamped to maxLegMin (default 60). Beyond that you
+// stage/pre-haul the material rather than sending one truck per load on a 2-hour round trip.
+function legClamp(c){ const m=+c.maxLegMin>0?+c.maxLegMin:60; return leg=>Math.min(leg,m); }
 function truckCycles(c){
-  const S=c.sources||{};
-  const cyc=(key,flat)=>{ const s=S[key]||{}, v=+s.oneWayMin; return v>0 ? (2*v*trafficOf(s)+siteStopOf(c,key)+endStopOf(c,key)) : flat; };
+  const S=c.sources||{}, clamp=legClamp(c);
+  const cyc=(key,flat)=>{ const s=S[key]||{}, v=+s.oneWayMin; return v>0 ? (2*clamp(v*trafficOf(s))+siteStopOf(c,key)+endStopOf(c,key)) : flat; };
   return { spoil:cyc("dump",c.cycSpoil), stone:cyc("stone",c.cycStone), sand:cyc("sand",c.cycSand), base:cyc("base",c.cycBase) };
 }
 /* Roadway / earthwork item recognizer (Phase 6). Excavation (CY) hauls spoil OUT; base
@@ -335,6 +339,22 @@ function spoilFleet(loads, tripsSpoil, feedMin, loadSpot, availMin){
   const feed = feedMin*Math.min(1, loads*(+loadSpot||6)/Math.max(1,availMin));   // feed crew × dig fraction of the shift
   return Math.ceil(Math.max(haul, feed));
 }
+/* Smart POOLED fleet: one shared fleet hauls every stream and back-hauls material-in on the
+   spoil-out return, so a day of fractional streams (spoil 1.8 + #57 0.7 + sand 0.7 loads) is ONE
+   truck doing a couple of trips — not three dedicated trucks. Sum the per-stream truck-days, overlap
+   the back-hauled portion, round up ONCE; a full-shift dig still can't fall below the excavator-feed
+   floor. `loads`/`tset` are per-stream {spoil,stone,sand,base} load-counts / round-trips-per-shift. */
+function poolFleet(loads, tset, feedMin, dumpSite, availMin){
+  const L=k=>Math.max(0,+(loads&&loads[k])||0), tp=k=>Math.max(1,(tset&&tset[k])||1);
+  const outTD = L("spoil")/tp("spoil");                                          // spoil-out truck-days
+  const inTD  = L("stone")/tp("stone") + L("sand")/tp("sand") + L("base")/tp("base");   // material-in truck-days
+  const paired = Math.min(outTD, inTD);                                          // back-haul overlap ⇒ out+in−paired = max
+  let fleet = Math.ceil(outTD + inTD - paired - 1e-9);
+  const feedReq = Math.ceil((feedMin||0)*Math.min(1, L("spoil")*(+dumpSite||6)/Math.max(1,availMin)));  // keep the machine fed
+  fleet = Math.max(fleet, feedReq);
+  const any = L("spoil")+L("stone")+L("sand")+L("base") > 0.001;
+  return any ? Math.max(1, fleet) : 0;
+}
 function truckModel(item, dailyQty, D, tcfg){
   const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
   const z=()=>({cy:0,tn:0,loads:0,trucks:0});
@@ -360,7 +380,8 @@ function truckModel(item, dailyQty, D, tcfg){
     // upper sand (springline→base) + (for water) the whole bedding envelope routed to sand
     const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27 + (sandBed?g.cyEnv:0))*c.compaction;
     const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
-    return {applicable:true, mode:"drain", total:spoilTrucks+stoneTrucks+sandTrucks,
+    const dLoads={spoil:spoilCy/volCap, stone:stoneTn/stoneCap, sand:sandCy/volCap, base:0};
+    return {applicable:true, mode:"drain", total:poolFleet(dLoads,tset,feedMin,dumpSite,availMin), dedicated:spoilTrucks+stoneTrucks+sandTrucks,
       spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
       stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
       sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks}, base:z(),
@@ -372,7 +393,8 @@ function truckModel(item, dailyQty, D, tcfg){
     const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
     const sandCy=rg.sandFill ? P*c.compaction : 0;             // unsuitable-subgrade sand replacement
     const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
-    return {applicable:true, mode:"road", total:spoilTrucks+sandTrucks,
+    const eLoads={spoil:spoilCy/volCap, stone:0, sand:sandCy/volCap, base:0};
+    return {applicable:true, mode:"road", total:poolFleet(eLoads,tset,feedMin,dumpSite,availMin), dedicated:spoilTrucks+sandTrucks,
       spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks}, stone:z(),
       sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks}, base:z(),
       mat:{spoil:"excavation", stone:"", sand:"sand fill", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, g:null};
@@ -384,7 +406,8 @@ function truckModel(item, dailyQty, D, tcfg){
     const tn = um==="TON" ? P : P*den, cy = um==="TON" ? P/den : P;      // CY <-> tons
     const trk = tn>0?Math.ceil(tn/stoneCap/(washed?tset.stone:tset.base)):0;
     const strm = {cy, tn, loads:tn/stoneCap, trucks:trk};
-    return {applicable:true, mode:"road", total:trk,
+    const bLoads={spoil:0, stone: washed?tn/stoneCap:0, sand:0, base: washed?0:tn/stoneCap};
+    return {applicable:true, mode:"road", total:poolFleet(bLoads,tset,feedMin,dumpSite,availMin), dedicated:trk,
       spoil:z(), stone: washed?strm:z(), sand:z(), base: washed?z():strm,
       mat:{spoil:"", stone:washed?rg.material:"", sand:"", base:washed?"":rg.material}, trips:tset, feedMin:0, availMin, loadSpot:c.loadSpot, g:null};
   }
@@ -404,7 +427,9 @@ function mergeTruckModels(models){
   const stone = ms.some(m=>m.stone.cy>0) ? Math.ceil(sum("stone")/tr.stone) : 0;
   const sand  = ms.some(m=>m.sand.cy>0)  ? Math.ceil(sum("sand")/tr.sand)   : 0;
   const base  = ms.some(m=>m.base&&m.base.cy>0) ? Math.ceil(sum("base")/tr.base) : 0;
-  return { applicable:true, total:spoil+stone+sand+base, spoilTrucks:spoil, stoneTrucks:stone, sandTrucks:sand, baseTrucks:base };
+  // pooled headline (one shared fleet back-hauls) + dedicated per-stream sum for reference
+  const total = poolFleet({spoil:sum("spoil"), stone:sum("stone"), sand:sum("sand"), base:sum("base")}, tr, feedMin, loadSpot, availMin);
+  return { applicable:true, total, dedicated:spoil+stone+sand+base, spoilTrucks:spoil, stoneTrucks:stone, sandTrucks:sand, baseTrucks:base };
 }
 /* Great-circle distance (miles) between two {lat,lng}. */
 function haversine(a, b){
@@ -428,7 +453,8 @@ function routePlan(streams, sources, autos){
   const siteOf = key => siteStopOf(c,key), endOf = key => endStopOf(c,key);   // per-route wait@site + stop@pit
   // one-way leg (min) between site and a source role, inflated by that route's traffic factor
   const tf = key => trafficOf(S[key]);
-  const legSite = key => Math.max(1, (+(S[key]&&S[key].oneWayMin) || 1) * tf(key));
+  const clamp = legClamp(c);   // guard: cap the effective one-way leg (drive×traffic) at maxLegMin
+  const legSite = key => Math.max(1, clamp((+(S[key]&&S[key].oneWayMin) || 1) * tf(key)));
   // implied FREE-FLOW road speed (mi/min) from the site legs → derive dump↔pit legs from the pins
   const impl=[];
   for(const k of ["dump","stone","sand","base"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
@@ -461,15 +487,11 @@ function routePlan(streams, sources, autos){
   const dumbSpoil = spoilN>0 ? spoilFleet(spoilN, trips(spoilRT), feedMin, siteOf("dump"), availMin) : 0;
   const dumbMat = mats.reduce((a,m)=> a + (m.loads>0?Math.ceil(m.loads/trips(m.rt)):0), 0);
   const dumbTrucks = dumbSpoil + dumbMat;
-  // smart: combined trips carry spoil+material together; leftovers dedicated; keep the excavator fed.
-  let smartTrucks=0, combSpoilTrucks=0;
-  combos.forEach(x=>{ const t=Math.ceil(x.count/trips(x.cycleMin)); smartTrucks+=t; combSpoilTrucks+=t; });
-  const leftSpoilTrucks = spoilLeft>0.001 ? Math.ceil(spoilLeft/trips(spoilRT)) : 0;
-  smartTrucks += leftSpoilTrucks;
-  const spoilCarrying = combSpoilTrucks + leftSpoilTrucks;
-  const feedReq = Math.ceil(feedMin*Math.min(1, spoilN*siteOf("dump")/availMin));       // time-aware feed floor (dig fraction)
-  if(spoilN>0 && spoilCarrying < feedReq) smartTrucks += (feedReq - spoilCarrying);    // top up to feed the machine
-  mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001) smartTrucks += Math.ceil(rem/trips(m.rt)); });
+  // smart headline: pool every stream's truck-days and round up ONCE — material-in back-hauls on the
+  // spoil-out return, so fractional streams share one fleet instead of each demanding a dedicated truck.
+  // Floored by the excavator-feed requirement; SAME basis as truckModel.total (they agree by construction).
+  const tset = {spoil:trips(spoilRT), stone:trips(rt("stone")), sand:trips(rt("sand")), base:trips(rt("base"))};
+  const smartTrucks = poolFleet({spoil:spoilN, stone:stoneN, sand:sandN, base:baseN}, tset, feedMin, siteOf("dump"), availMin);
   const trucks = Math.min(smartTrucks, dumbTrucks);   // back-haul never needs more trucks than dedicated
   const hoursSaved = Math.max(0, (dumbMin-smartMin)/60);
   return { combos, dedic, smartMin, dumbMin, trucks, dumbTrucks, hoursSaved,
@@ -1636,9 +1658,9 @@ function computeReflow(tasks, logs, baseline, crews, cfg){
     days.forEach(dk=>{
       const models=(crewDayTrucks[res]||{})[dk]||[], merged=mergeTruckModels(models), other=(crewDayLoads[res]||{})[dk]||0;
       const trucks=(merged?merged.total:0) + (other>0?Math.ceil(other/LOADS_PER_TRUCK_DAY):0);
-      const loads=models.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads,0) + other;
+      const loads=models.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads+(m.base?m.base.loads:0),0) + other;
       if(trucks>peakTrucks){ peakTrucks=trucks; peakOther=other;
-        peakStreams={ spoil:models.reduce((a,m)=>a+m.spoil.loads,0), stone:models.reduce((a,m)=>a+m.stone.loads,0), sand:models.reduce((a,m)=>a+m.sand.loads,0) }; }
+        peakStreams={ spoil:models.reduce((a,m)=>a+m.spoil.loads,0), stone:models.reduce((a,m)=>a+m.stone.loads,0), sand:models.reduce((a,m)=>a+m.sand.loads,0), base:models.reduce((a,m)=>a+(m.base?m.base.loads:0),0) }; }
       if(loads>peakLoads) peakLoads=loads;
     });
     const c = crews.find(x=>x.id===res); const avail = (c && c.trucks>0)? c.trucks : 0;
@@ -2239,7 +2261,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
         <div className="impact-i"><label>Total /day</label><b>{tm.total}</b></div>
       </div>
       {bgEdit&&tm.sand.trucks===0&&(+dig||0)>0 && <div className="ovnote">Trench too shallow for a sand backfill lift at this depth (springline + road section ≥ depth) — no sand haul.</div>}
-      {(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <div className="ovnote">With back-haul: <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} (vs {rp.dumbTrucks} dedicated) · saves ~{fmtN(rp.hoursSaved,1)} hr/day. Tune sources in Trucking → Sources.</div>; })()}
+      {(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads,base:tm.base?tm.base.loads:0}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <div className="ovnote">With back-haul: <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} (vs {rp.dumbTrucks} dedicated) · saves ~{fmtN(rp.hoursSaved,1)} hr/day. Tune sources in Trucking → Sources.</div>; })()}
       </>}
       <div className="logrow">
         <label>Location<BlurInput list="loclist-edit" placeholder="Pick or type a location…" value={t.loc||""} onCommit={v=>upTask(t.id,{loc:String(v).trim()||null})}/>
@@ -2553,7 +2575,7 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
           <tbody>
             <tr><th>Per day</th><td>{fmtN(perDay,perDay<10?1:0)} {it[CI.UM]} · {fmtN(perDay*it[CI.MH])} MH · {loadsDay?fmtN(loadsDay,1)+" loads":"no hauling"}</td></tr>
             {tm&&tm.applicable && <tr><th>Trucks / day</th><td>🚚 <b>{tm.total}</b> — {[["spoil",tm.spoil],["stone",tm.stone],["sand",tm.sand]].filter(([k,s])=>tm.mat[k]&&(s.cy>0||s.trucks>0)).map(([k,s])=>tm.mat[k]+" "+s.trucks).join(" · ")||"—"}{bg&&(+dig||0)===0?" · set trench depth for spoil/sand":""}</td></tr>}
-            {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <tr><th>With back-haul</th><td>🔁 <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} <em className="dim2">(vs {rp.dumbTrucks} dedicated · saves ~{fmtN(rp.hoursSaved,1)} hr/day)</em></td></tr>; })()}
+            {tm&&tm.applicable&&(()=>{ const rp=routePlan({spoil:tm.spoil.loads,stone:tm.stone.loads,sand:tm.sand.loads,base:tm.base?tm.base.loads:0}, cfg.truck&&cfg.truck.sources, cfg.truck); return rp.hoursSaved>0.05 && <tr><th>With back-haul</th><td>🔁 <b>{rp.trucks}</b> truck{rp.trucks===1?"":"s"} <em className="dim2">(vs {rp.dumbTrucks} dedicated · saves ~{fmtN(rp.hoursSaved,1)} hr/day)</em></td></tr>; })()}
             <tr><th>Material (plan)</th><td>{fmt$(useQty*it[CI.UM$])}</td></tr>
             <tr><th>Budget amount</th><td>{fmt$(useQty*it[CI.BID])} <em className="dim2">@ {fmt$(it[CI.BID],2)}/{it[CI.UM]}</em></td></tr>
             <tr><th>Budget cost</th><td>{fmt$(useQty*unitCost(it))} <em className="dim2">@ {fmt$(unitCost(it),2)}/{it[CI.UM]}</em></td></tr>
@@ -3263,14 +3285,14 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setSavings,close}){
 
   const week = useMemo(()=>{
     const streamsOf = tks => tks.reduce((a,t)=>{ const trk=taskCalc(t).trk, at=taskCalc(t).actTrk;
-      if(trk&&trk.applicable){ a.spoil+=trk.spoil.loads; a.stone+=trk.stone.loads; a.sand+=trk.sand.loads; }
-      if(at&&at.applicable){ a.aSpoil+=at.spoil.loads; a.aStone+=at.stone.loads; a.aSand+=at.sand.loads; a.logged=true; } return a; },
-      {spoil:0,stone:0,sand:0,aSpoil:0,aStone:0,aSand:0,logged:false});
+      if(trk&&trk.applicable){ a.spoil+=trk.spoil.loads; a.stone+=trk.stone.loads; a.sand+=trk.sand.loads; a.base+=trk.base?trk.base.loads:0; }
+      if(at&&at.applicable){ a.aSpoil+=at.spoil.loads; a.aStone+=at.stone.loads; a.aSand+=at.sand.loads; a.aBase+=at.base?at.base.loads:0; a.logged=true; } return a; },
+      {spoil:0,stone:0,sand:0,base:0,aSpoil:0,aStone:0,aSand:0,aBase:0,logged:false});
     return [0,1,2,3,4].map(di=>{
       const dts=weekTasks.filter(t=>t.day===di);
       const perCrew = crews.map(cr=>{ const cts=dts.filter(t=>t.res===cr.id); const s=streamsOf(cts);
-        return (s.spoil+s.stone+s.sand>0.05) ? {crew:cr, s, rp:routePlan({spoil:s.spoil,stone:s.stone,sand:s.sand},sources,cfg&&cfg.truck)} : null; }).filter(Boolean);
-      const pool = perCrew.reduce((a,x)=>{a.spoil+=x.s.spoil;a.stone+=x.s.stone;a.sand+=x.s.sand;return a;},{spoil:0,stone:0,sand:0});
+        return (s.spoil+s.stone+s.sand+s.base>0.05) ? {crew:cr, s, rp:routePlan({spoil:s.spoil,stone:s.stone,sand:s.sand,base:s.base},sources,cfg&&cfg.truck)} : null; }).filter(Boolean);
+      const pool = perCrew.reduce((a,x)=>{a.spoil+=x.s.spoil;a.stone+=x.s.stone;a.sand+=x.s.sand;a.base+=x.s.base;return a;},{spoil:0,stone:0,sand:0,base:0});
       const poolRp = perCrew.length ? routePlan(pool,sources,cfg&&cfg.truck) : null;
       const sumSmart=perCrew.reduce((a,x)=>a+x.rp.trucks,0), sumDumb=perCrew.reduce((a,x)=>a+x.rp.dumbTrucks,0);
       return {di, perCrew, pool, poolRp, sumSmart, sumDumb, cross:poolRp?poolRp.trucks:0};
@@ -3301,11 +3323,11 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setSavings,close}){
       {view==="day" ? <>
       <div className="daychips">{[0,1,2,3,4].map(i=><button key={i} className={"daychip"+(i===day?" on":"")+(week[i].perCrew.length?"":" empty")} onClick={()=>setDay(i)}>{DAYS[i]}<em>{dLabel(wk,i)}</em>{week[i].cross>0?<b>{week[i].cross}🚚</b>:null}</button>)}</div>
       {D.perCrew.length ? <>
-      <table className="dt list"><thead><tr><th>Crew</th><th className="r">Spoil</th><th className="r">Stone</th><th className="r">Sand</th><th className="r">Dedicated</th><th className="r">Back-haul</th><th className="r">Saves</th><th className="r">Cost</th></tr></thead>
+      <table className="dt list"><thead><tr><th>Crew</th><th className="r">Spoil</th><th className="r">Stone</th><th className="r">Sand</th><th className="r">Base</th><th className="r">Dedicated</th><th className="r">Back-haul</th><th className="r">Saves</th><th className="r">Cost</th></tr></thead>
         <tbody>{D.perCrew.map((x,i)=><tr key={i}><td>{x.crew.name}</td>
-          <td className="r">{x.s.spoil>0.05?fmtN(x.s.spoil,1):"—"}</td><td className="r">{x.s.stone>0.05?fmtN(x.s.stone,1):"—"}</td><td className="r">{x.s.sand>0.05?fmtN(x.s.sand,1):"—"}</td>
+          <td className="r">{x.s.spoil>0.05?fmtN(x.s.spoil,1):"—"}</td><td className="r">{x.s.stone>0.05?fmtN(x.s.stone,1):"—"}</td><td className="r">{x.s.sand>0.05?fmtN(x.s.sand,1):"—"}</td><td className="r">{x.s.base>0.05?fmtN(x.s.base,1):"—"}</td>
           <td className="r">{x.rp.dumbTrucks}</td><td className="r"><b>{x.rp.trucks}</b></td><td className="r dim2">{x.rp.hoursSaved>0.05?"~"+fmtN(x.rp.hoursSaved,1)+"h":"—"}</td><td className="r">{fmt$(dollars(x.rp.trucks))}</td></tr>)}
-          <tr className="cheattot"><td><b>Fleet (pooled across crews)</b></td><td/><td/><td/><td className="r">{D.sumDumb}</td><td className="r"><b>🚚 {D.cross}</b></td><td className="r dim2">{D.sumSmart>D.cross?`−${D.sumSmart-D.cross} truck`:""}</td><td className="r"><b>{fmt$(dollars(D.cross))}</b></td></tr></tbody></table>
+          <tr className="cheattot"><td><b>Fleet (pooled across crews)</b></td><td/><td/><td/><td/><td className="r">{D.sumDumb}</td><td className="r"><b>🚚 {D.cross}</b></td><td className="r dim2">{D.sumSmart>D.cross?`−${D.sumSmart-D.cross} truck`:""}</td><td className="r"><b>{fmt$(dollars(D.cross))}</b></td></tr></tbody></table>
       {D.sumSmart>D.cross && <div className="bhaul">Cross-crew tip: share one fleet across crews on {DAYS[day]} → <b>{D.cross} trucks</b> instead of {D.sumSmart} run separately (−{D.sumSmart-D.cross}, saves {fmt$(dollars(D.sumSmart)-dollars(D.cross))}/day).</div>}
       </> : <div className="ovnote">No haul-driving work scheduled for {DAYS[day]} {dLabel(wk,day)}.</div>}
       </> : <>
@@ -3341,26 +3363,27 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     const g={};
     weekTasks.forEach(t=>{ const c=taskCalc(t); const k=t.ci;
       const x=g[k]||(g[k]={it:c.it, um:c.it[CI.UM], desc:c.it[CI.TASK], qty:0, actQty:0, days:new Set(), crews:new Set(),
-        spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0, loads:{spoil:0,stone:0,sand:0}, act:{spoil:0,stone:0,sand:0}, applicable:false, mat:null});
+        spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0,baseCy:0,baseTn:0, loads:{spoil:0,stone:0,sand:0,base:0}, act:{spoil:0,stone:0,sand:0,base:0}, applicable:false, mat:null});
       x.qty+=t.qty; x.actQty+=c.actQty; x.days.add(t.day);
       const cr=crews.find(r=>r.id===t.res); if(cr) x.crews.add(cr.name);
       if(c.trk && c.trk.applicable){ const k2=c.trk; x.applicable=true; x.mat=k2.mat;
-        x.spoilCy+=k2.spoil.cy; x.stoneCy+=k2.stone.cy; x.stoneTn+=k2.stone.tn||0; x.sandCy+=k2.sand.cy;
-        x.loads.spoil+=k2.spoil.loads; x.loads.stone+=k2.stone.loads; x.loads.sand+=k2.sand.loads; }
-      if(c.actTrk && c.actTrk.applicable){ x.act.spoil+=c.actTrk.spoil.loads; x.act.stone+=c.actTrk.stone.loads; x.act.sand+=c.actTrk.sand.loads; }
+        x.spoilCy+=k2.spoil.cy; x.stoneCy+=k2.stone.cy; x.stoneTn+=k2.stone.tn||0; x.sandCy+=k2.sand.cy; x.baseCy+=k2.base?k2.base.cy:0; x.baseTn+=(k2.base&&k2.base.tn)||0;
+        x.loads.spoil+=k2.spoil.loads; x.loads.stone+=k2.stone.loads; x.loads.sand+=k2.sand.loads; x.loads.base+=k2.base?k2.base.loads:0; }
+      if(c.actTrk && c.actTrk.applicable){ x.act.spoil+=c.actTrk.spoil.loads; x.act.stone+=c.actTrk.stone.loads; x.act.sand+=c.actTrk.sand.loads; x.act.base+=c.actTrk.base?c.actTrk.base.loads:0; }
     });
     return Object.values(g).sort((a,b)=> (b.applicable-a.applicable) || (b.stoneTn+b.spoilCy)-(a.stoneTn+a.spoilCy));
   },[weekTasks,cfg]);
   const haulItems = groups.filter(g=>g.applicable);
   const pipeItems = groups.filter(g=>g.um==="LF");
   const tot = groups.reduce((a,g)=>{ if(g.um==="LF") a.pipe+=g.qty;
-    a.spoilCy+=g.spoilCy; a.stoneCy+=g.stoneCy; a.stoneTn+=g.stoneTn; a.sandCy+=g.sandCy;
-    a.spoil+=g.loads.spoil; a.stone+=g.loads.stone; a.sand+=g.loads.sand; return a; },
-    {pipe:0,spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0,spoil:0,stone:0,sand:0});
+    a.spoilCy+=g.spoilCy; a.stoneCy+=g.stoneCy; a.stoneTn+=g.stoneTn; a.sandCy+=g.sandCy; a.baseCy+=g.baseCy; a.baseTn+=g.baseTn;
+    a.spoil+=g.loads.spoil; a.stone+=g.loads.stone; a.sand+=g.loads.sand; a.base+=g.loads.base; return a; },
+    {pipe:0,spoilCy:0,stoneCy:0,stoneTn:0,sandCy:0,baseCy:0,baseTn:0,spoil:0,stone:0,sand:0,base:0});
   const streams=[
     {key:"spoil", label:"Dig-out spoil → dump", src:T.sources.dump.name,  cy:tot.spoilCy, tn:null, loads:tot.spoil, tp:tripsPer(CYC.spoil)},
-    {key:"stone", label:"#57 / #610 stone ← pit", src:T.sources.stone.name, cy:tot.stoneCy, tn:tot.stoneTn, loads:tot.stone, tp:tripsPer(CYC.stone)},
-    {key:"sand",  label:"Sand ← pit",             src:T.sources.sand.name,  cy:tot.sandCy, tn:null, loads:tot.sand, tp:tripsPer(CYC.sand)}
+    {key:"stone", label:"#57 stone ← pit",        src:T.sources.stone.name, cy:tot.stoneCy, tn:tot.stoneTn, loads:tot.stone, tp:tripsPer(CYC.stone)},
+    {key:"sand",  label:"Sand ← pit",             src:T.sources.sand.name,  cy:tot.sandCy, tn:null, loads:tot.sand, tp:tripsPer(CYC.sand)},
+    {key:"base",  label:"#610 base ← pit",        src:T.sources.base.name,  cy:tot.baseCy, tn:tot.baseTn, loads:tot.base, tp:tripsPer(CYC.base)}
   ].filter(s=>s.loads>0.05);
   streams.forEach(s=> s.truckDays = Math.ceil(s.loads/s.tp) );
   const totalTruckDays = streams.reduce((a,s)=>a+s.truckDays,0);
@@ -3371,7 +3394,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     L.push("", "HAUL STREAMS (from the physical truck model):");
     streams.forEach(s=>L.push(`  • ${s.label}: ${fmtN(s.cy,0)} CY${s.tn?` / ${fmtN(s.tn,0)} tn`:""} ≈ ${fmtN(s.loads,0)} loads = ${s.truckDays} truck-day(s)  [${s.src}]`));
     L.push("", `TOTAL PIPE: ${fmtN(tot.pipe)} LF`,
-      `TRUCK-DAYS TO BOOK: ${totalTruckDays}  (spoil-out + stone-in + sand-in, sized on your drive times)`,
+      `TRUCK-DAYS TO BOOK: ${totalTruckDays}  (spoil-out + stone/base-in + sand-in, sized on your drive times)`,
       "", "Book to the peak day; verify materials against yard inventory before ordering.");
     return L.join("\n");
   },[groups]);
@@ -3604,7 +3627,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   // Sources + back-haul routing (drives the map & readout; streams come from the preview item).
   const sources = {...TRUCK_DEFAULTS.sources, ...(T.sources||{})};   // ensure every role (incl. #610 base) exists for older saved configs
   const setSource = (key,patch)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS,...((c&&c.truck)||{})}; const src={...(t.sources||TRUCK_DEFAULTS.sources)}; src[key]={...(src[key]||{}), ...patch}; return {...c, truck:{...t, sources:src}}; });
-  const plan = pv.applicable ? routePlan({spoil:pv.spoil.loads, stone:pv.stone.loads, sand:pv.sand.loads}, sources, T) : null;
+  const plan = pv.applicable ? routePlan({spoil:pv.spoil.loads, stone:pv.stone.loads, sand:pv.sand.loads, base:pv.base?pv.base.loads:0}, sources, T) : null;
   // Roadway preview (Phase 6): excavation CY/day + #610 base TON/day → streams + back-haul.
   const [rwExc,setRwExc]=useState(400); const [rwBase,setRwBase]=useState(410);
   const rwItem=(cc,task,um)=>{ const r=[]; r[CI.CC]=cc; r[CI.TASK]=task; r[CI.UM]=um; return r; };
@@ -3735,7 +3758,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           {NF('stone57Den','#57 tn/CY',0.1)}{NF('baseDen','#610 tn/CY',0.1)}{NF('sandDen','Sand tn/CY',0.1)}{NF('swell','Spoil swell ×',0.05)}{NF('compaction','Sand compaction ×',0.05)}{NF('roadSection','Grade→base (ft)',0.25)}
         </div>
         <div className="trkrow">
-          {NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}
+          {NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}{NF('maxLegMin','Max one-way leg (min)',5)}
         </div>
         {(()=>{ const C=truckCycles(T); return <div className="cycread">Round-trip cycle now <span className="dim2">(live)</span>: <b>spoil {fmtN(C.spoil,0)}</b> · <b>#57 {fmtN(C.stone,0)}</b> · <b>sand {fmtN(C.sand,0)}</b> · <b>#610 {fmtN(C.base,0)}</b> min <em className="dim2">— 2×drive×traffic + wait@site + stop@pit; moves the instant you drag a pin or edit a stop in Sources.</em></div>; })()}
         <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Assumed depth drives spoil &amp; sand on every card with no keyed depth. Blank a field to restore its default; stored with the board.</em></div>
@@ -3751,12 +3774,12 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           <label>LF/day{num(pvLF,setPvLF)}</label>
         </div>
         <table className="dt list">
-          <thead><tr><th>Haul stream</th><th className="r">Volume</th><th className="r">Loads/day</th><th className="r">Trucks</th></tr></thead>
+          <thead><tr><th>Haul stream</th><th className="r">Volume</th><th className="r">Loads/day</th><th className="r">Trucks<span className="dim2" style={{fontWeight:400}}> (solo)</span></th></tr></thead>
           <tbody>{pv.applicable ? <>
             <tr><td>Dig-out spoil → dump</td><td className="r">{fmtN(pv.spoil.cy,1)} CY</td><td className="r">{fmtN(pv.spoil.loads,1)}</td><td className="r"><b>{pv.spoil.trucks}</b></td></tr>
             {pv.g && pv.g.bedMat!=="sand" && <tr><td>#57 stone ← pit</td><td className="r">{fmtN(pv.stone.cy,1)} CY · {fmtN(pv.stone.tn,1)} tn</td><td className="r">{fmtN(pv.stone.loads,1)}</td><td className="r"><b>{pv.stone.trucks}</b></td></tr>}
             <tr><td>{pv.g && pv.g.bedMat==="sand" ? "Sand embedment ← pit" : "Sand ← pit"}</td><td className="r">{fmtN(pv.sand.cy,1)} CY</td><td className="r">{fmtN(pv.sand.loads,1)}</td><td className="r"><b>{pv.sand.trucks}</b></td></tr>
-            <tr className="cheattot"><td><b>Optimal total</b></td><td/><td/><td className="r"><b>🚚 {pv.total}/day</b></td></tr>
+            <tr className="cheattot"><td><b>Optimal total</b> <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>— one fleet back-hauls the streams</em></td><td/><td className="r dim2">{pv.dedicated>pv.total?`vs ${pv.dedicated} dedicated`:""}</td><td className="r"><b>🚚 {pv.total}/day</b></td></tr>
           </> : <tr><td colSpan={4} className="empty">Pick a pipe size.</td></tr>}</tbody>
         </table>
         {pv.applicable && (()=>{ const CYCt=truckCycles(T);
