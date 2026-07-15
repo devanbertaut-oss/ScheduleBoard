@@ -56,7 +56,9 @@ const syncLS = {
   setMeta(p){ try{ localStorage.setItem("lafable-sync", JSON.stringify({...syncLS.meta(),...p})); }catch(e){} },
   key(){ try{ return localStorage.getItem("lafable-boardkey")||""; }catch(e){ return ""; } },
   setKey(k){ try{ localStorage.setItem("lafable-boardkey", k); }catch(e){} },
-  device(){ try{ let d=localStorage.getItem("lafable-device"); if(!d){ d=Math.random().toString(36).slice(2,10); localStorage.setItem("lafable-device", d); } return d; }catch(e){ return "mem"; } }
+  device(){ try{ let d=localStorage.getItem("lafable-device"); if(!d){ d=Math.random().toString(36).slice(2,10); localStorage.setItem("lafable-device", d); } return d; }catch(e){ return "mem"; } },
+  name(){ try{ return localStorage.getItem("lafable-devname")||""; }catch(e){ return ""; } },        // friendly device name for edit attribution
+  setName(n){ try{ localStorage.setItem("lafable-devname", (n||"").slice(0,40)); }catch(e){} }
 };
 
 /* ============================================================
@@ -863,6 +865,18 @@ function LookAhead(){
       const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings});
       const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
+      // Rolling backups: keep the last 7 calendar days restorable from Data → Full-board backup.
+      // Today's snapshot refreshes on every save; older days stay frozen as end-of-day states.
+      try{ if(_LS){
+        const day = new Date().toISOString().slice(0,10);
+        const idx = JSON.parse(localStorage.getItem("lafable-bk-idx")||"[]");
+        if(!idx.includes(day)){
+          const keep=[...idx,day].slice(-7);
+          idx.filter(d=>!keep.includes(d)).forEach(d=>{ try{localStorage.removeItem("lafable-bk-"+d);}catch(e){} });
+          localStorage.setItem("lafable-bk-idx", JSON.stringify(keep));
+        }
+        localStorage.setItem("lafable-bk-"+day, json);
+      }}catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
       syncLS.setMeta({localSavedAt: Date.now()});
@@ -944,9 +958,10 @@ function LookAhead(){
       localStorage.setItem("lafable-v3-preSync", localStorage.getItem("lafable-v3")); }catch(e){} // one-time backup before the first remote apply
     S.appliedRemote = true; S.rev = env.rev;
     applyState(env.state, {skipView:true, mergeLogs:true});
-    syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt});
+    const by = (env.deviceName||"").trim() || (env.device && env.device!==syncLS.device() ? "device "+env.device : "");
+    syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt, lastBy: by, lastByAt: env.savedAt});
     setSyncStatus("synced");
-    if(S.bootPulled) flash("↻ Board updated from another device");   // transparency: never change silently
+    if(S.bootPulled) flash("↻ Board updated"+(by?" by "+by:" from another device"));   // transparency: never change silently — and say WHO
   };
   const pushNow = async () => {
     const S = syncRef.current;
@@ -955,7 +970,7 @@ function LookAhead(){
     S.inflight = true; S.dirty = false;
     setSyncStatus("syncing");
     try{
-      const body = '{"savedAt":'+Date.now()+',"device":"'+syncLS.device()+'","state":'+S.latestJson+'}';
+      const body = '{"savedAt":'+Date.now()+',"device":"'+syncLS.device()+'","deviceName":'+JSON.stringify(syncLS.name()||"")+',"state":'+S.latestJson+'}';
       const res = await fetch(SYNC_URL, {method:"PUT", headers: syncHdrs(true), body});
       S.inflight = false;
       if (!res.headers.get("x-board")){ setSyncStatus("local","No sync endpoint on this hosting — changes stay on this device"); return; }
@@ -1215,6 +1230,26 @@ function LookAhead(){
     }catch(e){ if(!e || e.name!=="AbortError") flash("PDF: "+((e&&e.message)||"failed")); }
     finally{ setPdfBusy(false); }
   };
+  // Full-board backup: serialize EVERYTHING (the schedule itself, not just cost data) for a file
+  // export or a rolling local backup, and restore any of them wholesale. The pre-restore state is
+  // saved first so a bad restore is itself reversible.
+  const boardSnapshot = () => JSON.stringify({version:"board-v1", exportedAt:new Date().toISOString(),
+    state:{crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated}}, null, 1);
+  const restoreBoard = (obj) => {
+    const s = obj && obj.state ? obj.state : obj;
+    if(!s || !Array.isArray(s.tasks) || !Array.isArray(s.crews)){ flash("Not a board backup file"); return false; }
+    try{ if(_LS) localStorage.setItem("lafable-bk-prerestore", boardSnapshot()); }catch(e){}
+    pushUndo("Restored board");
+    applyState(s);
+    flash("Board restored — the pre-restore state is saved under Backups");
+    return true;
+  };
+  const listBackups = () => { const out=[]; try{
+      if(_LS && localStorage.getItem("lafable-bk-prerestore")) out.push("prerestore");
+      const idx=JSON.parse((_LS && localStorage.getItem("lafable-bk-idx"))||"[]");
+      idx.slice().reverse().forEach(d=>out.push(d));
+    }catch(e){} return out; };
+  const getBackup = d => { try{ return _LS ? localStorage.getItem(d==="prerestore"?"lafable-bk-prerestore":"lafable-bk-"+d) : null; }catch(e){ return null; } };
   const addDep = (depKey,predKey)=> { pushUndo("Added link"); setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; }); };
   const rmDep  = (depKey,predKey)=> { pushUndo("Removed link"); setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; }); };
   /* Drag-to-link controller (desktop board corner handles → DepLayer rubber band).
@@ -1564,7 +1599,8 @@ function LookAhead(){
           {syncPop && syncPopPos && <div className="syncpop" style={{top:syncPopPos.top,right:syncPopPos.right}} onMouseLeave={()=>setSyncPop(false)}>
             <div className="sphead">{SYNC_LABEL[sync.status]}</div>
             <div className="spline">Last contact: {sync.at? new Date(sync.at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) : "—"}</div>
-            <div className="spline">Device {syncLS.device()}</div>
+            {(m=>m.lastBy?<div className="spline">Last change: {m.lastByAt?new Date(m.lastByAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})+" · ":""}{m.lastBy}</div>:null)(syncLS.meta())}
+            <div className="spline">This device: {syncLS.name()||("id "+syncLS.device())}</div>
             {sync.detail && <div className="spline">{sync.detail}</div>}
             <div className="btnrow" style={{marginTop:8}}>
               <button className="ghost sm" onClick={()=>{ syncRef.current.nextPollAt=0; pullNow(true); const S=syncRef.current; if(S.latestJson && S.latestJson!==S.lastSyncedJson) pushNow(); }}>Sync now</button>
@@ -1661,13 +1697,13 @@ function LookAhead(){
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
       {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
-      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
+      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close:()=>setModal(null)}}/>}
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
       {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rhythm" && <RhythmModal lastUpdated={lastUpdated} setModal={setModal} close={()=>setModal(null)}/>}
       {modal?.type==="kpisummary" && <KpiModal kpi={kpi} weekPlan={weekPlan} close={()=>setModal(null)}/>}
-      {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day}
+      {modal?.type==="note"    && <NoteModal note={notes.find(n=>n.id===modal.id)} rowId={modal.row} day={modal.day} wk={modal.wk||wk}
           save={(n)=>{ setNotes(ns=> n.id? ns.map(x=>x.id===n.id?n:x) : [...ns,{...n,id:"nn"+Math.random().toString(36).slice(2,7)}]); setModal(null);}}
           del={id=>{setNotes(ns=>ns.filter(x=>x.id!==id)); setModal(null);}} close={()=>setModal(null)}/>}
     </div>
@@ -1754,7 +1790,7 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
 
         {primary && <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />}
         {primary && addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
-        {primary && siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal} stormDays={stormDays}/>)}
+        {primary && siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal} stormDays={stormDays} wk={wk}/>)}
       </tbody>
     </table>
   );
@@ -1986,14 +2022,14 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
       {subsOnly.map(c=>crewBlock(c,"sub"))}
       <div className="msec">Site · Notes</div>
       {siteRows.map(r=>{
-        const ns = notes.filter(n=>n.row===r.id && n.day===day);
+        const ns = notes.filter(n=>n.row===r.id && n.day===day && (n.wk ? n.wk===wk : true));
         return (
           <div className="mcrew" key={r.id}>
             <div className="mcrewhead">
               <span className="chip site">{r.name}</span>
-              <button className="mlog" onClick={()=>setModal({type:"note",row:r.id,day})}>＋ Note</button>
+              <button className="mlog" onClick={()=>setModal({type:"note",row:r.id,day,wk})}>＋ Note</button>
             </div>
-            {ns.length ? ns.map(n=><button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:r.id,day})}>{n.level!=="info"?"⚠ ":""}{n.text}</button>)
+            {ns.length ? ns.map(n=><button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:r.id,day,wk})}>{n.wk?"":"↻ "}{n.level!=="info"?"⚠ ":""}{n.text}</button>)
               : <div className="mempty">No notes for this day.</div>}
           </div>
         );
@@ -2340,22 +2376,22 @@ function StormLayer({stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint}){
   },[stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint]);
   return <canvas ref={ref} className="stormcanvas" aria-hidden="true"/>;
 }
-function SiteRow({row,notes,setNotes,setModal,stormDays,cols,primaryWk}){
-  const mine = d => notes.filter(n=>n.row===row.id && n.day===d);
-  // Notes are day-of-week scoped (no week key) — in the strip they live under the CURRENT week's
-  // columns only; later weeks' site cells are non-interactive placeholders.
+function SiteRow({row,notes,setNotes,setModal,stormDays,cols,primaryWk,wk}){
+  // Week-pinned notes: a note stamped with `wk` lives in that week's column only. Legacy notes
+  // (no wk) keep their old recurring behavior — shown in the CURRENT week's column, marked ↻.
+  const notesFor = (d,w,primary) => notes.filter(n=> n.row===row.id && n.day===d && (n.wk ? n.wk===w : primary));
   const cells = cols
-    ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, storm:cl.storm, wkstart:cl.wkstart, today:cl.today, live:cl.w===primaryWk}))
-    : DAYS.map((_,d)=>({key:String(d), d, storm:!!(stormDays&&stormDays[d]), wkstart:false, today:false, live:true}));
+    ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, w:cl.w, primary:cl.w===primaryWk, storm:cl.storm, wkstart:cl.wkstart, today:cl.today}))
+    : DAYS.map((_,d)=>({key:String(d), d, w:wk, primary:true, storm:!!(stormDays&&stormDays[d]), wkstart:false, today:false}));
   return (
     <tr>
       <td className="rescol"><span className="chip site">{row.name}</span></td>
       {cells.map(cl=>
         <td key={cl.key} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")+(cl.today?" today":"")}
-          onClick={cl.live ? (e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:cl.d}); }) : undefined}>
-          {cl.live && mine(cl.d).map(n=>
-            <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:cl.d})}>
-              {n.level==="crit"?"⚠ ":n.level==="warn"?"⚠ ":""}{n.text}
+          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:cl.d,wk:cl.w}); }}>
+          {notesFor(cl.d,cl.w,cl.primary).map(n=>
+            <button key={n.id} className={"note "+n.level} title={n.wk?undefined:"Recurring note (not pinned to a week) — re-save to pin it"} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:cl.d,wk:cl.w})}>
+              {n.wk?"":"↻ "}{n.level==="crit"?"⚠ ":n.level==="warn"?"⚠ ":""}{n.text}
             </button>)}
         </td>)}
     </tr>
@@ -3688,25 +3724,27 @@ function CardExportModal({weekTasks,runDayMap,crews,taskCalc,cfg,wk,close}){
 }
 
 /* ============ NOTE + DATA ============ */
-function NoteModal({note,rowId,day,save,del,close}){
+function NoteModal({note,rowId,day,wk,save,del,close}){
   const [text,setText]=useState(note?.text||"");
   const [level,setLevel]=useState(note?.level||"info");
+  const legacy = note && !note.wk;   // old recurring note — saving pins it to the week being viewed
   return (
     <Modal close={close} w={460}>
-      <h3>{note?"Edit note":"New note"} — {DAYS[day]}</h3>
+      <h3>{note?"Edit note":"New note"} — {DAYS[day]}{wk?" · wk of "+wk.slice(5).replace("-","/"):""}</h3>
       <textarea rows={3} autoFocus value={text} onChange={e=>setText(e.target.value)} placeholder="Delivery, PTO, inspection, reminder…"/>
       <div className="qmode">
         {[["info","Note"],["warn","Time-sensitive"],["crit","Critical"]].map(([k,l])=>
           <button key={k} className={level===k?"on":""} onClick={()=>setLevel(k)}>{l}</button>)}
       </div>
+      {legacy && <p className="dim2" style={{fontSize:12,margin:"6px 0 0"}}>↻ This note currently repeats every week — saving pins it to this week.</p>}
       <div className="btnrow">
-        <button className="cta" disabled={!text.trim()} onClick={()=>save({...(note||{row:rowId,day}),text:text.trim(),level})}>Save</button>
+        <button className="cta" disabled={!text.trim()} onClick={()=>save({...(note||{row:rowId,day}),text:text.trim(),level,wk})}>Save</button>
         {note&&<button className="danger" onClick={()=>del(note.id)}>Delete</button>}
       </div>
     </Modal>
   );
 }
-function DataModal({cfg,setCfg,ctc,setCtc,close}){
+function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
   const nCtc=Object.keys(ctc||{}).length;
@@ -3751,6 +3789,38 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
         <button className="btn" onClick={doExport}>Export data</button>
       </div>
       {msg && <p className="dim2" style={{marginTop:8}}>{msg}</p>}
+
+      <div className="loghdr">Full-board backup <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(the schedule itself — tasks, logs, notes, links, everything)</em></div>
+      <p className="dim2">The board lives in this browser + the shared sync. Keep a file copy off-device, and restore any of the last 7 days below. Restoring replaces the whole board (the pre-restore state is kept).</p>
+      <div className="btnrow">
+        <button className="btn" onClick={()=>{
+          const blob=new Blob([boardSnapshot()],{type:"application/json"});
+          const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="board_backup_"+new Date().toISOString().slice(0,10)+".json";
+          document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+          setMsg("Board backup downloaded — keep it somewhere off this device.");
+        }}>Export board (.json)</button>
+        <label className="btn" style={{cursor:"pointer"}}>Restore from file<input type="file" accept=".json" style={{display:"none"}} onChange={async e=>{
+          const f=e.target.files&&e.target.files[0]; if(!f) return;
+          try{ const parsed=JSON.parse(await f.text());
+            if(window.confirm("Replace the ENTIRE board with \""+f.name+"\"? The current state is saved under Backups first.")){
+              if(restoreBoard(parsed)) close();
+            }
+          }catch(err){ setMsg("Restore failed: "+err.message); }
+          e.target.value="";
+        }}/></label>
+      </div>
+      {(()=>{ const bks=listBackups(); return bks.length ? <table className="dt list" style={{marginTop:6}}>
+        <tbody>{bks.map(d=><tr key={d}><td>{d==="prerestore"?"Before last restore":"End of "+d}</td>
+          <td className="r"><button className="ghost sm" onClick={()=>{
+            const v=getBackup(d); if(!v){ setMsg("Backup unavailable."); return; }
+            try{ const parsed=JSON.parse(v);
+              if(window.confirm("Replace the ENTIRE board with the "+(d==="prerestore"?"pre-restore":d)+" backup?")){
+                if(restoreBoard(parsed.state?parsed:{state:parsed})) close();
+              }
+            }catch(err){ setMsg("Restore failed: "+err.message); }
+          }}>Restore</button></td></tr>)}</tbody></table>
+        : <p className="dim2">No local backups yet — one is kept automatically at the end of each day.</p>; })()}
+
       <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
     </Modal>
   );
@@ -4678,13 +4748,17 @@ function QuickLogModal({t,c,lg,saveLog,openFull,close}){
 /* Board key prompt — shown when the sync endpoint answers 401 (BOARD_KEY set on the site). */
 function BoardKeyModal({close,onSet}){
   const [v,setV]=useState(syncLS.key());
-  const go=()=>{ onSet(v.trim()); close(); };
+  const [nm,setNm]=useState(syncLS.name());
+  const go=()=>{ syncLS.setName(nm.trim()); onSet(v.trim()); close(); };
   return (
     <Modal close={close} w={400}>
       <h3>Board sync key</h3>
       <p className="dim2" style={{fontSize:13,margin:"0 0 10px"}}>This board requires a key to sync (the BOARD_KEY set on the Netlify site). Enter it once — it's remembered on this device.</p>
       <input className="search" type="password" autoFocus placeholder="Board key" value={v}
         onChange={e=>setV(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") go(); }}/>
+      <p className="dim2" style={{fontSize:13,margin:"10px 0 4px"}}>This device's name <em>(shown to the crew when your edits sync — e.g. "Devan's laptop")</em></p>
+      <input className="search" type="text" placeholder="Device name (optional)" value={nm}
+        onChange={e=>setNm(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") go(); }}/>
       <div className="btnrow">
         <button className="cta" onClick={go}>Save &amp; sync</button>
         <button className="ghost" onClick={close}>Cancel</button>
