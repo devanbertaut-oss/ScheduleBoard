@@ -600,6 +600,104 @@ function dpwToCsv(rows, cols){
   return [cols.map(esc).join(","), ...rows.map(r=>cols.map(c=>esc(r[c])).join(","))].join("\n");
 }
 
+/* -- invoice slice: build / decode / apply decisions ------------------------
+   dpwBuildInvAlloc turns a classified invoice workbook into the synced
+   invAlloc slice: tracker-coded lines import as CONFIRMED facts, previous
+   human decisions survive re-import by content hash (or park as orphans),
+   and everything else gets the 3-method allocation with the prior built
+   from those decisions + timesheet truck-day frequencies. */
+const DPW_CC_ENUM = ["T","M","S",""];
+const DPW_UNIT_ENUM = [null,"HR","CY","TN"];
+function dpwDecodeLine(A, L){
+  const dec = s => (s||[]).map(([ci,w])=>[A.pool.codes[ci], w]);
+  return { k:L[ILI.K], inv:L[ILI.INV], rowId:L[ILI.RID], cc:DPW_CC_ENUM[L[ILI.CC]]??"",
+    qty:L[ILI.QTY], rateC:L[ILI.RATE], tk:A.pool.tk[L[ILI.TK]]||"", amtC:L[ILI.AMT], dOff:L[ILI.DOFF],
+    item:A.pool.items[L[ILI.IT]]||"", material:L[ILI.MAT]!=null?DPW_MATS[L[ILI.MAT]][0]:null,
+    pit:L[ILI.PIT]!=null?DPW_PITS[L[ILI.PIT]][0]:null, loads:L[ILI.LDS]||0,
+    unit:DPW_UNIT_ENUM[L[ILI.UN]]||null, flags:L[ILI.FL]||0, sug:dec(L[ILI.SUG]),
+    method:L[ILI.M], conf:L[ILI.CF], status:L[ILI.ST], ov:L[ILI.OV]?dec(L[ILI.OV]):null,
+    at:L[ILI.AT], by:L[ILI.BY], desc:L[ILI.DSC]||"",
+    era: dpwEraOf(L[ILI.INV], A.cfg&&A.cfg.eras) };
+}
+function dpwBuildInvAlloc({classified, prev, tdc, cfg, device, fileName}){
+  const seen=new Map(); // in-file duplicate content hashes get ordinal suffixes
+  for(const l of classified){ const n=seen.get(l.k)||0; seen.set(l.k,n+1); if(n) l.k=l.k+"~"+n; }
+  const prevDec=new Map();
+  if(prev){
+    const cd=i=>prev.pool.codes[i];
+    for(const L of prev.lines||[]) if(L[ILI.ST]>=DPW_ST.CONFIRMED)
+      prevDec.set(L[ILI.K], {st:L[ILI.ST], ov:(L[ILI.OV]||[]).map(([ci,w])=>[cd(ci),w]), at:L[ILI.AT], by:L[ILI.BY]});
+    for(const [k,ov,at,by] of prev.orphans||[]) if(!prevDec.has(k))
+      prevDec.set(k, {st:DPW_ST.OVERRIDDEN, ov:(ov||[]).map(([ci,w])=>[cd(ci),w]), at, by});
+  }
+  const auditByK=new Map(dpwRateAudit(classified).map(r=>[r.k, r.verdict]));
+  const decided=[];
+  for(const l of classified){
+    const pd=prevDec.get(l.k);
+    if(pd && pd.ov && pd.ov.length) decided.push({...l, sug:pd.ov, ov:pd.ov});
+    else if(l.code) decided.push({...l, sug:[[l.code,1]], ov:null});
+  }
+  const prior=dpwBuildPrior(decided, tdc||{});
+  const pool={codes:dpwPool(), tk:dpwPool(), items:dpwPool()};
+  const enc=s=>(s&&s.length)?s.map(([c,w])=>[pool.codes.idx(c), Math.round(w*1e4)/1e4]):null;
+  const lines=[]; const matched=new Set();
+  let h=0x811c9dc5>>>0;
+  for(const l of classified){
+    matched.add(l.k);
+    for(let i=0;i<l.k.length;i++){ h^=l.k.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; }
+    let flags=l.flags||0;
+    const v=auditByK.get(l.k);
+    if(v==="NEW_RATE_ALERT") flags|=DPW_FLAG.NEWRATE;
+    else if(v==="KNOWN_EXCEPTION") flags|=DPW_FLAG.KNOWNEXC;
+    else if(v==="MISMATCH") flags|=DPW_FLAG.MISMATCH;
+    const pd=prevDec.get(l.k);
+    let sug, method, conf, status, ov=null, at=null, by=null;
+    if(pd){ // a human already decided this exact line content — decisions outrank re-allocation
+      ov = pd.ov&&pd.ov.length ? pd.ov : null;
+      sug = l.code ? [[l.code,1]] : (ov||[]);
+      method=DPW_METHOD.HAND; conf=1; status=pd.st; at=pd.at; by=pd.by;
+    } else if(l.code){ // coded in the tracker = imported historical fact
+      sug=[[l.code,1]]; method=DPW_METHOD.IMPORTED; conf=1; status=DPW_ST.CONFIRMED;
+    } else {
+      const a=dpwAllocateLine(l, tdc||{}, prior, cfg);
+      sug=a.sug; method=a.method; conf=a.conf; status=a.status; flags=a.flags|flags;
+    }
+    const eff=(ov&&ov.length)?ov:(sug||[]);
+    if(eff.some(([c])=>String(c).startsWith(DPW_ARCH_PREFIX))) flags|=DPW_FLAG.ARCH;
+    if(eff.some(([c])=>DPW_OVERHEAD.has(c)) && status<DPW_ST.CONFIRMED){ flags|=DPW_FLAG.OVERHEAD; status=DPW_ST.MANUAL; }
+    const ccE=["T","M","S"].indexOf(l.cc);
+    const needDesc = flags!==0 || status===DPW_ST.SUG || status===DPW_ST.MANUAL;
+    lines.push([l.k, l.inv, l.rowId, ccE<0?3:ccE, l.qty, l.rateC, pool.tk.idx(l.tk), l.amtC, l.dOff,
+      pool.items.idx(l.item),
+      l.material!=null?DPW_MATS.findIndex(m=>m[0]===l.material):null,
+      l.pit!=null?DPW_PITS.findIndex(p=>p[0]===l.pit):null,
+      l.loads||0, Math.max(0,DPW_UNIT_ENUM.indexOf(l.unit)),
+      flags, enc(sug), method, conf, status, ov?enc(ov):null, at, by,
+      needDesc?String(l.desc||"").slice(0,60):null]);
+  }
+  const orphans=[];
+  for(const [k,pd] of prevDec) if(!matched.has(k)) orphans.push([k, enc(pd.ov), pd.at, pd.by]);
+  return { v:1, cfg,
+    src:{ name:fileName, rows:classified.length, hash:h.toString(36), importedAt:Date.now(), device },
+    pool:{ codes:pool.codes.arr, tk:pool.tk.arr, items:pool.items.arr }, lines, orphans };
+}
+/* apply a human decision to one line (confirm / override / reopen) */
+function dpwApplyDecision(A, k, st, sug, device){
+  if(!A) return A;
+  const codePool=A.pool.codes.slice();
+  const idx=c=>{ const i=codePool.indexOf(c); if(i>=0) return i; codePool.push(c); return codePool.length-1; };
+  const lines=A.lines.map(L=>{
+    if(L[ILI.K]!==k) return L;
+    const out=L.slice();
+    out[ILI.ST]=st; out[ILI.AT]=Date.now(); out[ILI.BY]=device;
+    out[ILI.OV]=(st===DPW_ST.OVERRIDDEN && sug && sug.length) ? sug.map(([c,w])=>[idx(c), Math.round(w*1e4)/1e4]) : null;
+    const eff=out[ILI.OV]||out[ILI.SUG]||[];
+    if(eff.some(([ci])=>String(codePool[ci]).startsWith(DPW_ARCH_PREFIX))) out[ILI.FL]|=DPW_FLAG.ARCH;
+    return out;
+  });
+  return {...A, pool:{...A.pool, codes:codePool}, lines};
+}
+
 /* -- state-slice encodings + sync merges (Progress / Invoices tabs) --------
    invAlloc.lines rows are compact arrays; ILI names the columns (codes,
    trucks, items are indices into invAlloc.pool). Merge rules: document-
@@ -780,6 +878,7 @@ window.__DPW = { DPW_TAX, DOC_EPOCH, DPW_RATES, DPW_KNOWN_RATES, DPW_EXC_RATES, 
   dpwParseTimesheetWB, dpwBuildProgress, dpwBuildTdc, dpwProgressSrcHash, dpwClassifyLine,
   dpwRateAudit, dpwAnomalyFlags, dpwSplitAmounts, dpwBuildPrior, dpwPriorSuggest,
   dpwAllocateLine, dpwToCsv, mergeProgress, mergeInvAlloc, TSR, dpwPackTs, dpwUnpackTs,
+  DPW_CC_ENUM, DPW_UNIT_ENUM, dpwDecodeLine, dpwBuildInvAlloc, dpwApplyDecision,
   selftest: dpwSelftest };
 /* ==== end DPW DOCS DOMAIN ═══════════════════════════════════════════════ */
 /* ── Bedding / embedment spec tables — SWB Standard Drawings ─────────────────
@@ -2074,7 +2173,7 @@ function LookAhead(){
           </span>
         </div>
         <nav className="tabs">
-          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"],["progress","Progress"]].map(([k,l])=>
+          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"],["progress","Progress"],["invoices","Invoices"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="histnav no-print">
@@ -2206,6 +2305,9 @@ function LookAhead(){
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       {effTab==="progress" && <ProgressView {...{progress,setProgress,docs,tasks,logs,taskCalc,ctcOf,installedFor,contractQtyFor,remainingFor,setModal}}/>}
+      {effTab==="invoices" && (catalogOK
+        ? <InvoicesView {...{invAlloc,setInvAlloc,docs,ctcOf,setModal}}/>
+        : <CatalogGate label="Invoices / Allocation" onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       </div>
 
 
@@ -2226,6 +2328,7 @@ function LookAhead(){
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
       {modal?.type==="docsimport" && <DocsImportModal {...{kind:modal.kind||"ts",docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB:Math.round(((syncRef.current.latestJson||"").length)/1024),close:()=>setModal(null)}}/>}
       {modal?.type==="drill"   && <DrillDownModal {...{docs,dOff:modal.dOff,code:modal.code,close:()=>setModal(null)}}/>}
+      {modal?.type==="split"   && invAlloc && <SplitEditorModal {...{invAlloc,k:modal.k,onSave:(k,sug)=>setInvAlloc(Ax=>dpwApplyDecision(Ax,k,DPW_ST.OVERRIDDEN,sug,syncLS.device())),close:()=>setModal(null)}}/>}
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
       {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close:()=>setModal(null)}}/>}
@@ -3768,13 +3871,13 @@ function MilestoneView({milestones,setMilestones}){
     </div>
   );
 }
-function CatalogGate({onUnlock}){
+function CatalogGate({onUnlock,label}){
   const [v,setV]=useState(""); const [err,setErr]=useState(false);
   const submit=()=>{ if(v.trim()==="42069") onUnlock(); else { setErr(true); setV(""); } };
   return (
     <div className="page">
       <div className="gatebox">
-        <div className="ph">Restricted — Catalog / CTC</div>
+        <div className="ph">Restricted — {label||"Catalog / CTC"}</div>
         <p className="dim2">This view shows contract cost &amp; billing data. Enter the access code to continue.</p>
         <input className={"search"+(err?" gerr":"")} type="password" inputMode="numeric" autoFocus placeholder="Access code"
           value={v} onChange={e=>{setV(e.target.value); setErr(false);}} onKeyDown={e=>{if(e.key==="Enter")submit();}}/>
@@ -4177,61 +4280,112 @@ function NoteModal({note,rowId,day,save,del,close}){
    invoice tracker ("Sheet1" A–J). Parse → preview (row counts, spans, totals,
    warnings, sync-size meter) → Commit. Nothing touches state until Commit. */
 function DocsImportModal({kind,docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB,close}){
+  const [which,setWhich]=useState(kind==="inv"?"inv":"ts");
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [prep,setPrep]=useState(null);   // parsed candidate awaiting Commit
+  // editable reconciliation targets (invoice path) — seeded from stored cfg / rates defaults
+  const cfg0=(invAlloc&&invAlloc.cfg)||{...DPW_EXPECTED_DEFAULT, eras:DPW_ERAS_DEFAULT.map(e=>e.slice()), thAuto:0.9, thSug:0.6, at:0};
+  const [exp,setExp]=useState({tot:(cfg0.expTotalC/100).toFixed(2), n:String(cfg0.expInv), touched:false});
   const kb = o => Math.round(JSON.stringify(o??null).length/1024);
+  const blockKB=1600, warnKB=1200;
   const onFile=async(e)=>{
     const f=e.target.files&&e.target.files[0]; if(!f) return;
     setErr(""); setPrep(null); setBusy(true);
     try{
       const XLSX=await ensureXLSX(); const buf=await f.arrayBuffer();
-      const {rows,warnings}=dpwParseTimesheetWB(XLSX,buf);
-      if(!rows.length) throw new Error((warnings&&warnings[0])||"no rows found");
-      const built=dpwBuildProgress(rows);
-      const hash=dpwProgressSrcHash(rows);
-      const src={name:f.name, rows:rows.length, hash, importedAt:Date.now(), device:syncLS.device()};
-      const cand={v:1, src, pool:built.pool, days:built.days, acks:(progress&&progress.acks)||{}};
-      const dated=rows.filter(r=>r.dOff!=null);
-      const sliceKB=kb(cand);
-      setPrep({kind:"ts", rows, cand, warnings, stats:{
-        n:rows.length,
-        days:new Set(dated.map(r=>r.dOff)).size,
-        codes:built.pool.codes.length, trucks:built.pool.tk.length, fms:built.pool.fm.length,
-        span: dated.length ? [Math.min(...dated.map(r=>r.dOff)), Math.max(...dated.map(r=>r.dOff))] : null,
-        totC: rows.reduce((s,r)=>s+(r.totalC||0),0),
-        dup:built.dup, skipped:built.skipped,
-        same: !!(progress&&progress.src&&progress.src.hash===hash),
-        sliceKB, projKB: Math.max(0, stateKB - kb(progress)) + sliceKB,
-      }});
+      if(which==="ts"){
+        const {rows,warnings}=dpwParseTimesheetWB(XLSX,buf);
+        if(!rows.length) throw new Error((warnings&&warnings[0])||"no rows found");
+        const built=dpwBuildProgress(rows);
+        const hash=dpwProgressSrcHash(rows);
+        const src={name:f.name, rows:rows.length, hash, importedAt:Date.now(), device:syncLS.device()};
+        const cand={v:1, src, pool:built.pool, days:built.days, acks:(progress&&progress.acks)||{}};
+        const dated=rows.filter(r=>r.dOff!=null);
+        const sliceKB=kb(cand);
+        setPrep({kind:"ts", rows, cand, warnings, stats:{
+          n:rows.length, days:new Set(dated.map(r=>r.dOff)).size,
+          codes:built.pool.codes.length, trucks:built.pool.tk.length, fms:built.pool.fm.length,
+          span: dated.length ? [Math.min(...dated.map(r=>r.dOff)), Math.max(...dated.map(r=>r.dOff))] : null,
+          totC: rows.reduce((s,r)=>s+(r.totalC||0),0),
+          dup:built.dup, skipped:built.skipped,
+          same: !!(progress&&progress.src&&progress.src.hash===hash),
+          sliceKB, projKB: Math.max(0, stateKB - kb(progress)) + sliceKB,
+        }});
+      } else {
+        const {rows,warnings}=dpwParseInvoiceWB(XLSX,buf);
+        if(!rows.length) throw new Error((warnings&&warnings[0])||"no rows found");
+        const classified=rows.map(r=>dpwClassifyLine(r, cfg0.eras));
+        const outOfEra=[...new Set(classified.filter(l=>l.inv!=null && l.era==null).map(l=>l.inv))].sort((a,b)=>a-b);
+        setPrep({kind:"inv", classified, warnings, fileName:f.name, stats:{
+          n:classified.length,
+          nInv:new Set(classified.filter(l=>l.inv!=null).map(l=>l.inv)).size,
+          totC:classified.reduce((s,l)=>s+(l.amtC||0),0),
+          uncoded:classified.filter(l=>!l.code).length,
+          ccS:classified.filter(l=>l.cc==="S").length,
+          undated:classified.filter(l=>l.dOff==null).length,
+          outOfEra,
+        }});
+      }
     }catch(ex){ setErr(String((ex&&ex.message)||ex)); }
     setBusy(false);
     e.target.value="";
   };
-  const blockKB=1600, warnKB=1200;
+  const S=prep&&prep.stats;
+  // live reconciliation against the editable expected values
+  const recon = (prep&&prep.kind==="inv") ? (()=>{
+    const expTotalC=Math.round((parseFloat(exp.tot.replace(/[$,]/g,""))||0)*100);
+    const expInv=parseInt(exp.n,10)||0;
+    return { ...dpwReconcile(prep.classified, {expTotalC, expInv, tolC:cfg0.tolC}), expTotalC, expInv };
+  })() : null;
   const commit=()=>{
-    if(!prep || prep.stats.projKB>blockKB) return;
-    setProgress(prep.cand);
-    setDocs(d=>({ ...(d||{v:1}), v:1, memOnly:false,
-      ts:{ src:prep.cand.src, ...dpwPackTs(prep.rows) },
-      tdc: dpwBuildTdc(prep.rows) }));
-    flash("Progress ledger rebuilt from "+prep.stats.n+" timesheet rows");
+    if(!prep) return;
+    if(prep.kind==="ts"){
+      if(prep.stats.projKB>blockKB) return;
+      setProgress(prep.cand);
+      setDocs(d=>({ ...(d||{v:1}), v:1, memOnly:false,
+        ts:{ src:prep.cand.src, ...dpwPackTs(prep.rows) },
+        tdc: dpwBuildTdc(prep.rows) }));
+      flash("Progress ledger rebuilt from "+prep.stats.n+" timesheet rows");
+    } else {
+      if(!recon || !recon.ok) return;
+      const cfg={...cfg0, expTotalC:recon.expTotalC, expInv:recon.expInv,
+        at: exp.touched ? Date.now() : (cfg0.at||0)};
+      const built=dpwBuildInvAlloc({ classified:prep.classified, prev:invAlloc,
+        tdc:(docs&&docs.tdc)||{}, cfg, device:syncLS.device(), fileName:prep.fileName });
+      const projKB=Math.max(0, stateKB - kb(invAlloc)) + kb(built);
+      if(projKB>blockKB){ setErr(`Import would push the shared payload to ~${projKB} KB (cap 2,000 KB) — trim the source file.`); return; }
+      setInvAlloc(built);
+      setDocs(d=>({ ...(d||{v:1}), v:1, memOnly:(d&&d.memOnly)||false,
+        inv:{ src:built.src, rows:prep.classified.map(l=>[l.k, l.rowId, l.desc]) } }));
+      const nAuto=built.lines.filter(L=>L[ILI.ST]===DPW_ST.AUTO).length;
+      const nMan=built.lines.filter(L=>L[ILI.ST]===DPW_ST.MANUAL).length;
+      flash(`Invoice tracker imported — ${nAuto} auto-allocated, ${nMan} need review`);
+    }
     close();
   };
-  const S=prep&&prep.stats;
   return (
-    <Modal close={close} w={560}>
+    <Modal close={close} w={620}>
       <h3>Import documents</h3>
-      <p className="dim2">Import the <b>consolidated foreman timesheet</b> workbook (sheet "Consolidated Data").
-        The daily ledger — trucking hours, loads, tons/CY and $ per cost code per day — is rebuilt from the
-        file on every import, so re-importing the grown cumulative export is always safe. Raw rows stay on
-        this device; only the compact ledger syncs to other boards.</p>
+      <div className="btnrow" style={{marginBottom:6}}>
+        <button className={which==="ts"?"cta":"btn"} onClick={()=>{setWhich("ts"); setPrep(null); setErr("");}}>Foreman timesheets</button>
+        <button className={which==="inv"?"cta":"btn"} onClick={()=>{setWhich("inv"); setPrep(null); setErr("");}}>Invoice tracker</button>
+      </div>
+      {which==="ts"
+        ? <p className="dim2">Import the <b>consolidated foreman timesheet</b> workbook (sheet "Consolidated Data").
+            The daily ledger — hours, loads, tons/CY and $ per cost code per day — is rebuilt from the file on
+            every import, so re-importing the grown cumulative export is always safe. Raw rows stay on this
+            device; only the compact ledger syncs. Timesheets also power invoice truck-day matching.</p>
+        : <p className="dim2">Import the <b>trucking invoice breakdown</b> workbook (sheet "Sheet1", columns A–J,
+            column H = amount with tax). Lines already coded in the tracker import as confirmed history; new
+            lines are auto-allocated from truck-day matches, allocation history and the rate rules, then queued
+            for review. The import is blocked until the file reconciles against the expected totals below.</p>}
       <div className="btnrow">
-        <label className="btn cta" style={{cursor:"pointer"}}>{busy?"Reading…":"Choose timesheet .xlsx"}
+        <label className="btn cta" style={{cursor:"pointer"}}>{busy?"Reading…":(which==="ts"?"Choose timesheet .xlsx":"Choose invoice .xlsx")}
           <input type="file" accept=".xlsx" onChange={onFile} style={{display:"none"}} disabled={busy}/></label>
       </div>
       {err && <div className="warnline">{err}</div>}
-      {S && <div style={{marginTop:10}}>
+      {prep&&prep.kind==="ts"&&S && <div style={{marginTop:10}}>
         <div className="loghdr">{prep.cand.src.name}</div>
         <div className="kpis" style={{padding:"6px 0 4px"}}>
           <div className="kpi"><label>Rows</label><b>{fmtN(S.n)}</b></div>
@@ -4249,6 +4403,32 @@ function DocsImportModal({kind,docs,setDocs,progress,setProgress,invAlloc,setInv
         </p>
         <div className="btnrow">
           <button className="cta" disabled={S.projKB>blockKB} onClick={commit}>Commit import</button>
+          <button className="btn" onClick={()=>setPrep(null)}>Discard</button>
+        </div>
+      </div>}
+      {prep&&prep.kind==="inv"&&S && <div style={{marginTop:10}}>
+        <div className="loghdr">{prep.fileName}</div>
+        <div className="kpis" style={{padding:"6px 0 4px"}}>
+          <div className="kpi"><label>Lines</label><b>{fmtN(S.n)}</b></div>
+          <div className="kpi"><label>Invoices</label><b>{S.nInv}</b></div>
+          <div className="kpi"><label>Σ col H</label><b>{fmt$(S.totC/100,2)}</b></div>
+          <div className="kpi"><label>Uncoded</label><b>{S.uncoded}</b></div>
+        </div>
+        {(prep.warnings||[]).map((w,i)=><div key={i} className="warnline">{w}</div>)}
+        {S.outOfEra.length>0 && <div className="warnline">Invoice{S.outOfEra.length>1?"s":""} {S.outOfEra.join(", ")} outside the known eras — trailing statistics will skip {S.outOfEra.length>1?"them":"it"} until the era table is extended.</div>}
+        <div className="loghdr" style={{marginTop:8}}>Reconciliation gate</div>
+        <div className="logrow">
+          <label>Expected total $<input type="text" value={exp.tot} onChange={e=>setExp(x=>({...x,tot:e.target.value,touched:true}))}/></label>
+          <label>Expected invoices<input type="number" value={exp.n} onChange={e=>setExp(x=>({...x,n:e.target.value,touched:true}))}/></label>
+        </div>
+        {recon && (recon.ok
+          ? <p className="dim2" style={{margin:"4px 0"}}>✓ Reconciled — Σ {fmt$(recon.totalC/100,2)} across {recon.nInv} invoices matches expectations (±{cfg0.tolC}¢).</p>
+          : <div className="warnline">Does not reconcile: file has Σ {fmt$(recon.totalC/100,2)} across {recon.nInv} invoices; expected {fmt$(recon.expTotalC/100,2)} across {recon.expInv}.
+              <button className="ghost sm" style={{marginLeft:8}} onClick={()=>setExp({tot:(recon.totalC/100).toFixed(2), n:String(recon.nInv), touched:true})}>Accept file totals</button>
+            </div>)}
+        {!(docs&&docs.tdc&&Object.keys(docs.tdc).length) && <div className="warnline">No timesheets imported on this device — truck-day matching is unavailable, so suggestions fall back to history + rules. Import the timesheet workbook first for the strongest allocation.</div>}
+        <div className="btnrow">
+          <button className="cta" disabled={!recon||!recon.ok} onClick={commit}>{recon&&recon.ok?"Commit & allocate":"Blocked — does not reconcile"}</button>
           <button className="btn" onClick={()=>setPrep(null)}>Discard</button>
         </div>
       </div>}
@@ -4500,6 +4680,214 @@ function DrillDownModal({docs,dOff,code,close}){
         {rows.length>300 && <p className="dim2">Showing the first 300 rows.</p>}
         </div>
       </React.Fragment>}
+    </Modal>
+  );
+}
+/* Invoices tab — allocation workbench. Tracker-coded lines are confirmed
+   history; new lines carry a suggested cost-code allocation (truck-day join >
+   allocation history > rate rules) with confidence, and every confirm/override
+   sharpens the prior for the rest. Gated behind the billing access code. */
+function InvoicesView({invAlloc,setInvAlloc,docs,ctcOf,setModal}){
+  const A=invAlloc;
+  const decoded = useMemo(()=> A ? A.lines.map(L=>dpwDecodeLine(A,L)) : [], [invAlloc]);
+  const buckets = useMemo(()=>{
+    const b={manual:[],sug:[],auto:[],decided:[]};
+    for(const d of decoded){
+      if(d.status===DPW_ST.MANUAL) b.manual.push(d);
+      else if(d.status===DPW_ST.SUG) b.sug.push(d);
+      else if(d.status===DPW_ST.AUTO) b.auto.push(d);
+      else b.decided.push(d);
+    }
+    const byInv=(x,y)=>(y.inv??0)-(x.inv??0) || x.rowId-y.rowId;
+    for(const k in b) b[k].sort(byInv);
+    return b;
+  },[decoded]);
+  const [bucket,setBucket]=useState("manual");
+  const codesList = useMemo(()=>{
+    const s=new Set(A?A.pool.codes.filter(Boolean):[]);
+    CATALOG.forEach(r=>{ const c=(r[CI.CC]||"").replace(/-/g,"."); if(c) s.add(c); });
+    return [...s].sort();
+  },[invAlloc]);
+  const hasTdc = !!(docs&&docs.tdc&&Object.keys(docs.tdc).length);
+  const device=syncLS.device();
+  const decide=(k,st,sug)=>setInvAlloc(Ax=>dpwApplyDecision(Ax,k,st,sug,device));
+  const resuggest=()=>{
+    setInvAlloc(Ax=>{
+      if(!Ax) return Ax;
+      const dec=L=>dpwDecodeLine(Ax,L);
+      const decided=(Ax.lines||[]).filter(L=>L[ILI.ST]>=DPW_ST.CONFIRMED)
+        .map(L=>{ const d=dec(L); return {...d, sug:(d.ov&&d.ov.length)?d.ov:d.sug, ov:d.ov}; });
+      const prior=dpwBuildPrior(decided,(docs&&docs.tdc)||{});
+      const codePool=Ax.pool.codes.slice();
+      const idx=c=>{ const i=codePool.indexOf(c); if(i>=0) return i; codePool.push(c); return codePool.length-1; };
+      const enc=s=>(s&&s.length)?s.map(([c,w])=>[idx(c),Math.round(w*1e4)/1e4]):null;
+      const KEEP=DPW_FLAG.NEWRATE|DPW_FLAG.KNOWNEXC|DPW_FLAG.MISMATCH;      // audit facts persist
+      const BASE=DPW_FLAG.CCS|DPW_FLAG.UNDATED|DPW_FLAG.NOUNIT;             // classification facts persist
+      const lines=Ax.lines.map(L=>{
+        if(L[ILI.ST]>=DPW_ST.CONFIRMED) return L;                           // decisions are immutable here
+        const d=dec(L);
+        const a=dpwAllocateLine({...d, flags:d.flags&BASE}, (docs&&docs.tdc)||{}, prior, Ax.cfg);
+        const out=L.slice();
+        out[ILI.SUG]=enc(a.sug); out[ILI.M]=a.method; out[ILI.CF]=a.conf; out[ILI.ST]=a.status;
+        out[ILI.FL]=a.flags | (L[ILI.FL]&KEEP);
+        return out;
+      });
+      return {...Ax, pool:{...Ax.pool, codes:codePool}, lines};
+    });
+    flash("Suggestions recomputed from current decisions");
+  };
+  const live = useMemo(()=>{
+    if(!A) return null;
+    const totalC=decoded.reduce((s,d)=>s+(d.amtC||0),0);
+    const nInv=new Set(decoded.filter(d=>d.inv!=null).map(d=>d.inv)).size;
+    return { totalC, nInv,
+      okTotal:Math.abs(totalC-A.cfg.expTotalC)<=A.cfg.tolC, okInv:nInv===A.cfg.expInv,
+      outOfEra:[...new Set(decoded.filter(d=>d.inv!=null&&d.era==null).map(d=>d.inv))] };
+  },[decoded]);
+  const FL=DPW_FLAG;
+  const flagChips = d => [
+    (d.flags&FL.ARCH) ? ["arch","every arch-pipe assignment is surfaced individually"] : null,
+    (d.flags&FL.OVERHEAD) ? ["OH","overhead code — never auto-allocated"] : null,
+    (d.flags&FL.CCS) ? ["CC=S","flagged for review in the tracker"] : null,
+    (d.flags&FL.UNDATED) ? ["no date","description has no leading date — truck-day match unavailable"] : null,
+    (d.flags&FL.NOUNIT) ? ["no unit","unit could not be derived from item/rate"] : null,
+    (d.flags&FL.NEWRATE) ? ["new rate","first sighting of an unexplained rate"] : null,
+    (d.flags&FL.KNOWNEXC) ? ["exc rate","legacy tax-inclusive display rate — known exception"] : null,
+    (d.flags&FL.MISMATCH) ? ["rate?","recurring unexplained rate — needs a rate-table decision"] : null,
+  ].filter(Boolean);
+  if(!A) return (
+    <div className="page">
+      <h2>Invoices / Allocation</h2>
+      <div className="panel" style={{maxWidth:620}}>
+        <div className="ph">No invoice tracker imported yet</div>
+        <p className="dim2">Import the trucking invoice breakdown workbook to allocate each line's cost to a
+          cost code. Lines already coded in the tracker come in as confirmed history; new lines are matched
+          against timesheet truck-days, your past allocation decisions, and the authoritative rate sheet —
+          then queued here for confirm/override. Import timesheets first for the strongest matching.</p>
+        <div className="btnrow"><button className="cta" onClick={()=>setModal({type:"docsimport",kind:"inv"})}>Import docs</button></div>
+      </div>
+    </div>
+  );
+  const B=buckets;
+  const tabs=[["manual","Needs review",B.manual.length],["sug","Suggested",B.sug.length],["auto","Auto",B.auto.length],["decided","Decided",B.decided.length]];
+  const rows=B[bucket]||[];
+  const sugCell = d => {
+    const eff=(d.ov&&d.ov.length)?d.ov:d.sug;
+    return <div className="dpwcell">
+      {(!eff||!eff.length) ? <span className="dchip dim2">no suggestion</span> :
+        eff.map(([c,w],i)=><span key={i} className="dchip" title={DPW_METHOD_LABEL[d.method]||""}>{c}{w<0.999?` ${Math.round(w*100)}%`:""}</span>)}
+      {d.status<DPW_ST.CONFIRMED && d.conf!=null && <span className="dchip dim2">{Math.round(d.conf*100)}% · {DPW_METHOD_LABEL[d.method]||""}</span>}
+      {d.status===DPW_ST.OVERRIDDEN && <span className="dchip dim2">override · {d.by||""}</span>}
+      {d.status===DPW_ST.CONFIRMED && d.method!==DPW_METHOD.IMPORTED && <span className="dchip dim2">confirmed · {d.by||""}</span>}
+      {flagChips(d).map(([t,tip],i)=><span key={"f"+i} className="dchip" style={{borderColor:"var(--warn,#c90)"}} title={tip}>{t}</span>)}
+    </div>;
+  };
+  return (
+    <div className="page">
+      <h2>Invoices / Allocation <em className="dim2">— {A.src.name} · {fmtN(A.src.rows)} lines · imported {new Date(A.src.importedAt).toLocaleDateString()}</em></h2>
+      <div className="kpis" style={{padding:"8px 0 4px"}}>
+        <div className="kpi"><label>Σ col H</label><b>{fmt$(live.totalC/100,2)}</b></div>
+        <div className="kpi"><label>Invoices</label><b>{live.nInv}</b></div>
+        <div className="kpi"><label>Recon</label><b className={live.okTotal&&live.okInv?"pos":"neg"}>{live.okTotal&&live.okInv?"✓":"✗"}</b></div>
+        <div className="kpi"><label>Eras</label><b className="mono" style={{fontSize:12}}>{A.cfg.eras.map(e=>e.join("–")).join(" · ")}</b></div>
+      </div>
+      {!(live.okTotal&&live.okInv) && <div className="warnline">Stored lines no longer reconcile with the expected totals ({fmt$(A.cfg.expTotalC/100,2)} / {A.cfg.expInv} invoices) — re-import the tracker to refresh.</div>}
+      {live.outOfEra.length>0 && <div className="warnline">Invoice{live.outOfEra.length>1?"s":""} {live.outOfEra.join(", ")} outside the era table — excluded from trailing statistics.</div>}
+      {!hasTdc && <div className="warnline">Timesheets are not imported on this device, so truck-day matching is off — suggestions use history + rules only.</div>}
+      {(A.orphans||[]).length>0 && <div className="warnline">{A.orphans.length} past decision{A.orphans.length>1?"s":""} awaiting re-match — their line content vanished from the latest file; they re-attach automatically if it returns.</div>}
+      <div className="panel" style={{marginTop:8}}>
+        <div className="ph" style={{display:"flex",alignItems:"center",gap:8}}>
+          <span>Review queue</span>
+          <span style={{display:"inline-flex",gap:4,marginLeft:8}}>
+            {tabs.map(([key,label,n])=>
+              <button key={key} className={bucket===key?"cta sm":"ghost sm"} onClick={()=>setBucket(key)}>{label} {n}</button>)}
+          </span>
+          <button className="ghost sm" style={{marginLeft:"auto"}} title="Recompute suggestions for undecided lines from current decisions + timesheets" onClick={resuggest}>Re-suggest</button>
+        </div>
+        {rows.length===0 ? <p className="dim2">Nothing in this bucket.</p> :
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>Inv</th><th>Date</th><th>Truck</th><th>Item</th><th className="r">Qty</th><th className="r">Rate</th><th className="r">Amount</th><th>Desc</th><th>Allocation</th><th style={{minWidth:170}}/></tr></thead>
+          <tbody>{rows.slice(0,400).map(d=>
+            <tr key={d.k}>
+              <td className="mono">{d.inv??"—"}{d.era?<em className="dim2"> e{d.era}</em>:null}</td>
+              <td className="mono">{d.dOff!=null?dpwDIso(d.dOff).slice(5):"—"}</td>
+              <td className="mono">{d.tk||"—"}</td>
+              <td>{d.item}{d.material?<em className="dim2"> · {d.material}</em>:null}{d.pit?<em className="dim2"> ← {d.pit}</em>:null}</td>
+              <td className="r">{d.qty!=null?fmtN(d.qty,2):"—"}{d.unit?<em className="dim2"> {d.unit}</em>:null}</td>
+              <td className="r mono">{d.rateC!=null?dpwC2S(d.rateC):"—"}</td>
+              <td className="r">{fmt$(d.amtC/100,2)}</td>
+              <td className="dim2" style={{maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={d.desc}>{d.desc||"—"}</td>
+              <td>{sugCell(d)}</td>
+              <td>{d.status<DPW_ST.CONFIRMED
+                ? <span style={{display:"inline-flex",gap:4,flexWrap:"wrap"}}>
+                    <button className="ghost sm" disabled={!((d.ov&&d.ov.length)||(d.sug&&d.sug.length))} onClick={()=>decide(d.k,DPW_ST.CONFIRMED,null)}>Confirm</button>
+                    <CodePick codes={codesList} onPick={c=>decide(d.k,DPW_ST.OVERRIDDEN,[[c,1]])}/>
+                    <button className="ghost sm" onClick={()=>setModal({type:"split",k:d.k})}>Split</button>
+                  </span>
+                : <button className="ghost sm" onClick={()=>decide(d.k,DPW_ST.SUG,null)} disabled={d.method===DPW_METHOD.IMPORTED} title={d.method===DPW_METHOD.IMPORTED?"Coded in the tracker — edit the source file":"Send back to the queue"}>Reopen</button>}
+              </td>
+            </tr>)}
+          </tbody>
+        </table>
+        {rows.length>400 && <p className="dim2">Showing the first 400 lines.</p>}
+        </div>}
+      </div>
+    </div>
+  );
+}
+function CodePick({codes,onPick}){
+  const [open,setOpen]=useState(false); const [v,setV]=useState("");
+  const id=useRef("cp"+Math.random().toString(36).slice(2,8)).current;
+  if(!open) return <button className="ghost sm" onClick={()=>setOpen(true)}>Pick code</button>;
+  const go=()=>{ const c=v.trim(); if(c){ onPick(c); setOpen(false); setV(""); } };
+  return <span style={{display:"inline-flex",gap:4}}>
+    <input className="search" style={{width:130,padding:"2px 6px"}} list={id} autoFocus value={v} placeholder="33.30.19.13"
+      onChange={e=>setV(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") go(); if(e.key==="Escape") setOpen(false); }}/>
+    <datalist id={id}>{codes.map(c=><option key={c} value={c}/>)}</datalist>
+    <button className="ghost sm" onClick={go}>OK</button>
+  </span>;
+}
+/* Weighted split of one invoice line across cost codes. Dollar rounding uses
+   the residual-cent rule so the pieces always sum exactly to column H. */
+function SplitEditorModal({invAlloc,k,onSave,close}){
+  const d = useMemo(()=>{ const L=(invAlloc&&invAlloc.lines||[]).find(x=>x[ILI.K]===k); return L?dpwDecodeLine(invAlloc,L):null; },[invAlloc,k]);
+  const [parts,setParts]=useState(()=>{ const eff=d?((d.ov&&d.ov.length)?d.ov:d.sug):[];
+    return (eff&&eff.length)?eff.map(([c,w])=>({c, p:Math.round(w*100)})):[{c:"",p:100}]; });
+  const codes = useMemo(()=>{
+    const s=new Set(invAlloc?invAlloc.pool.codes.filter(Boolean):[]);
+    CATALOG.forEach(r=>{ const c=(r[CI.CC]||"").replace(/-/g,"."); if(c) s.add(c); });
+    return [...s].sort();
+  },[invAlloc]);
+  if(!d) return null;
+  const tot=parts.reduce((s,x)=>s+(+x.p||0),0);
+  const amounts = tot>0 ? dpwSplitAmounts(d.amtC, parts.map(x=>[x.c,(+x.p||0)/tot])) : parts.map(()=>0);
+  const save=()=>{
+    const clean=parts.filter(x=>x.c.trim()&&(+x.p||0)>0);
+    if(!clean.length || tot<=0) return;
+    onSave(k, clean.map(x=>[x.c.trim(), (+x.p||0)/tot]));
+    close();
+  };
+  return (
+    <Modal close={close} w={520}>
+      <h3>Split allocation <em className="dim2">— inv {d.inv??"—"} · {fmt$(d.amtC/100,2)}</em></h3>
+      <p className="dim2" style={{maxWidth:460}}>{d.item}{d.desc?" — "+d.desc:""}</p>
+      {parts.map((x,i)=>
+        <div key={i} className="logrow" style={{alignItems:"center"}}>
+          <label style={{flex:2}}>Code<input list="splitcodes" value={x.c} onChange={e=>setParts(p=>p.map((y,j)=>j===i?{...y,c:e.target.value}:y))}/></label>
+          <label>Weight %<input type="number" min="0" max="100" value={x.p} onChange={e=>setParts(p=>p.map((y,j)=>j===i?{...y,p:e.target.value}:y))}/></label>
+          <span className="mono dim2" style={{alignSelf:"flex-end",paddingBottom:6,minWidth:80,textAlign:"right"}}>{tot>0?fmt$(amounts[i]/100,2):"—"}</span>
+          {parts.length>1 && <button className="ghost sm" style={{alignSelf:"flex-end",marginBottom:4}} onClick={()=>setParts(p=>p.filter((_,j)=>j!==i))}>✕</button>}
+        </div>)}
+      <datalist id="splitcodes">{codes.map(c=><option key={c} value={c}/>)}</datalist>
+      <div className="btnrow">
+        <button className="ghost sm" onClick={()=>setParts(p=>[...p,{c:"",p:0}])}>+ code</button>
+        <span className={"dim2"} style={{marginLeft:"auto",alignSelf:"center"}}>{tot}% {tot!==100?"(normalized on save)":""}</span>
+      </div>
+      <div className="btnrow">
+        <button className="cta" disabled={!parts.some(x=>x.c.trim()&&(+x.p||0)>0)} onClick={save}>Save split</button>
+        <button className="btn" onClick={close}>Cancel</button>
+      </div>
     </Modal>
   );
 }
@@ -5333,6 +5721,7 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Go to Milestones",hint:"tab",run:()=>setTab("milestones")},
     {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
     {label:"Go to Progress",hint:"tab",run:()=>setTab("progress")},
+    {label:"Go to Invoices",hint:"tab",run:()=>setTab("invoices")},
     {label:"Import documents",hint:"action",run:()=>{setTab("progress"); setModal({type:"docsimport",kind:"ts"});}},
     {label:"Schedule work",hint:"action",run:()=>setModal({type:"sched"})},
     {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},

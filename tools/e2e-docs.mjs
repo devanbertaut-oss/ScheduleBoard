@@ -151,9 +151,51 @@ try {
   await page.keyboard.press("Escape");
   await page.locator(".modal .x").click().catch(() => {});
 
-  // Later phases append steps here:
-  //  - Invoices: gate → import invoice fixture → recon → buckets → confirm/override
-  //  - export CSV, second-context merge
+  step("invoices: gate + import + reconciliation");
+  await page.locator('nav.tabs button', { hasText: "Invoices" }).click();
+  await page.locator(".gatebox input").fill("42069");
+  await page.locator(".gatebox button", { hasText: "Unlock" }).click();
+  await page.locator(".ph", { hasText: "No invoice tracker imported yet" }).waitFor({ timeout: 10_000 });
+  await page.locator("header button", { hasText: "Import docs" }).click();
+  await page.locator(".modal input[type=file]").setInputFiles(join(FIX, "invoice_fixture.xlsx"));
+  const linesKpi = page.locator(".modal .kpi", { hasText: "Lines" }).locator("b");
+  await linesKpi.waitFor({ timeout: 20_000 });
+  ok((await linesKpi.textContent()) === String(expected.invoice.rows), `preview lines = ${expected.invoice.rows}`);
+  const blocked = page.locator(".modal button", { hasText: "Blocked" });
+  ok(await blocked.isVisible(), "commit blocked until reconciled");
+  await page.locator(".modal button", { hasText: "Accept file totals" }).click();
+  await page.locator(".modal button", { hasText: "Commit & allocate" }).click();
+
+  step("invoices: review queue buckets");
+  const bTab = (label) => page.locator(".panel .ph button", { hasText: label });
+  const bCount = async (label) => parseInt((await bTab(label).textContent()).replace(/\D+/g, ""), 10);
+  await bTab("Needs review").waitFor({ timeout: 10_000 });
+  const bx = expected.invoice.buckets;
+  ok((await bCount("Needs review")) === bx.manual, `needs-review = ${bx.manual}`);
+  ok((await bCount("Suggested")) === bx.suggested, `suggested = ${bx.suggested}`);
+  ok((await bCount("Auto")) === bx.auto, `auto = ${bx.auto}`);
+  ok((await bCount("Decided")) === bx.decided, `decided (tracker-coded history) = ${bx.decided}`);
+  await page.screenshot({ path: join(OUTDIR, "30-invoices.png"), fullPage: true });
+
+  step("invoices: confirm + split-override + prior feedback");
+  await bTab("Auto").click();
+  await page.locator("tbody tr").first().locator("button", { hasText: "Confirm" }).click();
+  ok((await bCount("Decided")) === bx.decided + 1, "confirm moves line to Decided");
+  await bTab("Suggested").click();
+  const sandRow = page.locator("tbody tr", { hasText: "Sand from Wood EB" }).first();
+  await sandRow.locator("button", { hasText: "Split" }).click();
+  const splitModal = page.locator(".modal", { hasText: "Split allocation" });
+  await splitModal.waitFor({ timeout: 10_000 });
+  await splitModal.locator("input[list=splitcodes]").first().fill("33.30.19.13");
+  await splitModal.locator("button", { hasText: "Save split" }).click();
+  ok((await bCount("Decided")) === bx.decided + 2, "override moves line to Decided");
+  await page.locator("button", { hasText: "Re-suggest" }).click();
+  const sandLeft = page.locator("tbody tr", { hasText: "Sand from Wood EB" }).first();
+  ok((await sandLeft.locator(".dchip").first().textContent()).includes("33.30.19.13"),
+    "sibling sand line re-suggests to the overridden code (prior feedback)");
+  await page.screenshot({ path: join(OUTDIR, "31-queue.png"), fullPage: true });
+
+  // Phase 5 appends: rollup/anomaly/rate-audit panels, CSV/xlsx export, two-device merge
 
   step("summary");
   ok(pageErrors.length === 0, `no page errors (${pageErrors.length ? pageErrors.join(" | ").slice(0, 400) : "clean"})`);

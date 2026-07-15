@@ -161,6 +161,15 @@ const expected = {
     invoices,
     unallocated: inv.filter((r) => !r[8]).length,
     outOfEra: [78860],
+    /* designed allocation outcome for the 13 uncoded lines:
+       AUTO    = 6/1 hourly + 6/1 sand haul (exact-unique 3C22 day A),
+                 6/3 hours-match (3C11), 6/4 exact-unique via -Q truck +
+                 dash-code normalization (arch, still auto)
+       SUG     = 6/2 multi-code split (3C07), 3x undated 3C15 sand (prior),
+                 CC=S standby (prior via 3C03 history; CC=S caps below auto)
+       MANUAL  = 6/5 overhead-only day (3C09), undated no-truck standby,
+                 55.00 bedding (no material match), #8 washed (no history) */
+    buckets: { auto: 4, suggested: 5, manual: 4, decided: inv.length - 13 },
   },
   timesheet: {
     rows: tsRows.length,
