@@ -137,6 +137,20 @@ try {
   await page.locator('.kpi', { hasText: "Work days" }).locator("b").waitFor({ timeout: 10_000 });
   ok((await page.locator('.kpi', { hasText: "Work days" }).locator("b").textContent()) === String(expected.timesheet.workDays), "ledger intact after reload");
 
+  step("progress: reconciliation + drill-down");
+  // fixture board has no logs, so every documented day-code is DOC-ONLY
+  const reconRows = page.locator('.panel', { hasText: "Reconciliation" }).locator("tbody tr");
+  ok((await reconRows.count()) === expected.timesheet.dayCodes, `recon lists all ${expected.timesheet.dayCodes} documented day-codes as DOC-ONLY`);
+  await reconRows.first().locator("button", { hasText: "Acknowledge" }).click();
+  ok((await page.locator('.panel', { hasText: "Reconciliation" }).locator("tbody tr").first().locator("button").textContent()) === "Reopen", "acknowledge sticks");
+  await page.locator('.panel', { hasText: "Cost codes" }).locator("tbody tr").first().locator("button", { hasText: "Rows" }).click();
+  const drill = page.locator(".modal", { hasText: "Source rows" });
+  await drill.waitFor({ timeout: 10_000 });
+  ok((await drill.locator("tbody tr").count()) > 0, "drill-down shows raw source rows");
+  await page.screenshot({ path: join(OUTDIR, "20-drill.png") });
+  await page.keyboard.press("Escape");
+  await page.locator(".modal .x").click().catch(() => {});
+
   // Later phases append steps here:
   //  - Invoices: gate → import invoice fixture → recon → buckets → confirm/override
   //  - export CSV, second-context merge
