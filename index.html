@@ -625,6 +625,9 @@ const wkTitle = wk => {
   return `Week of ${mo(a)} ${a.getDate()} – ${mo(a)===mo(b)?"":mo(b)+" "}${b.getDate()}`;
 };
 
+/* Delay / production reason codes — attached to a day's log so the EOS letter and any delay claim
+   carry the cause, not just the shortfall. "On plan" and "" both mean no delay. */
+const REASONS = ["On plan","Weather","Materials late/short","Equipment / breakdown","Utility conflict","Access / ROW","Inspection hold","Other"];
 /* ---------- field-voice EOS descriptions (Silas cadence) ---------- */
 const stickLen = n => /arch pipe|reinforced concrete pipe|rcp\b/i.test(n)?8 : /hppp|polypropylene|pvc/i.test(n)?20 : /ductile|di water/i.test(n)?18 : 0;
 function autoDesc(name, ts, logs, calc, isSub){
@@ -659,7 +662,7 @@ function autoDesc(name, ts, logs, calc, isSub){
   // production clause
   if (lg && t.qty){
     if (c.actQty >= t.qty) s = s.replace(/\.$/, ", meeting the day's planned production.");
-    else s += ` The crew finished short of the planned ${fmtN(t.qty)} ${um}.`;
+    else s += ` The crew finished short of the planned ${fmtN(t.qty)} ${um}${lg.reason&&lg.reason!=="On plan"?` — ${lg.reason.toLowerCase()}`:""}.`;
   }
   // extra tasks that day
   const verbs = {0:"laid",1:"ran",2:"laid",3:"set",4:"poured",5:"placed"};
@@ -756,7 +759,11 @@ function LookAhead(){
   const applyState = (s, opts) => {
     if (s.crews) setCrews(s.crews); if (s.siteRows) setSiteRows(s.siteRows);
     const _mig = s.tasks ? migrateRuns(s.tasks, s.deps||{}) : null;   // assign run ids to legacy cards + remap dep keys
-    if (_mig) setTasks(_mig.tasks); if (s.logs) setLogs(s.logs);
+    if (_mig) setTasks(_mig.tasks);
+    // logs: on a REMOTE apply, merge per task by the newer `at` stamp (local wins on ties) instead of a
+    // wholesale replace — so two devices logging DIFFERENT crews within the poll window both survive.
+    // Boot hydration keeps the wholesale replace (remote is authoritative on first load).
+    if (s.logs){ if(opts&&opts.mergeLogs){ setLogs(local=>{ const r=s.logs, out={...r}; for(const id in local){ const lo=local[id], ro=r[id]; if(!ro || (lo.at||0)>=(ro.at||0)) out[id]=lo; } return out; }); } else setLogs(s.logs); }
     if (s.notes) setNotes(s.notes); if (s.cfg) setCfg(s.cfg);
     if (s.eosMeta) setEosMeta(s.eosMeta);
     if (s.umOverrides) setUmOverrides(s.umOverrides);
@@ -871,7 +878,7 @@ function LookAhead(){
     try{ if(_LS && !localStorage.getItem("lafable-v3-preSync") && localStorage.getItem("lafable-v3"))
       localStorage.setItem("lafable-v3-preSync", localStorage.getItem("lafable-v3")); }catch(e){} // one-time backup before the first remote apply
     S.appliedRemote = true; S.rev = env.rev;
-    applyState(env.state, {skipView:true});
+    applyState(env.state, {skipView:true, mergeLogs:true});
     syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt});
     setSyncStatus("synced");
     if(S.bootPulled) flash("↻ Board updated from another device");   // transparency: never change silently
@@ -1215,7 +1222,9 @@ function LookAhead(){
       return ts.map(x=>{ if(runKey(x)!==k) return x; const w=fromWdi(wdi(x.wk,x.day)+delta); return {...x,day:w.day,wk:w.wk}; });
     });
   };
-  const saveLog = (id,qty,mh,done)=> setLogs(l=>({...l,[id]:{qty:+qty||0, mh:+mh||0, done}}));
+  // Preserve-merge each write: keep a prior reason when the caller doesn't pass one, and stamp `at` so the
+  // sync layer can merge per-task instead of clobbering another device's actuals (whole-state LWW otherwise).
+  const saveLog = (id,qty,mh,done,reason)=> setLogs(l=>({...l,[id]:{...l[id], qty:+qty||0, mh:+mh||0, done, reason: reason!==undefined?reason:((l[id]&&l[id].reason)||""), at:Date.now()}}));
   /* Capacity-aware catch-up re-slice for one run: spreads a logged shortfall across the run's
      own remaining (open) days first — never pushing a day past the crew's daily MH cap — and
      only appends new days once that capacity is exhausted. If an appended day lands on a slot
@@ -2148,11 +2157,13 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
             <div className="logrow">
               <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
               <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
+              <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
+                <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
             </div>
             <div className="btnrow">
-              <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save</button>
-              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>Save as in-progress</button>
-              <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true); close();}}>Log as planned ✓</button>
+              <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true,L.reason); close();}}>Save</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>Save as in-progress</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true,""); close();}}>Log as planned ✓</button>
               <span className="sp"/>
               {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
               <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
@@ -2645,6 +2656,9 @@ function EosLogRow({t,it,saveLog,logged}){
       <label className="eosldone"><input type="checkbox" checked={done}
         onChange={e=>{ setDone(e.target.checked); saveLog(t.id, L.qty===""?t.qty:L.qty, L.mh===""?L.planMH():L.mh, e.target.checked); }}/>done</label>
       <span className="eosltag">{short?("−"+fmtN(t.qty-(+L.qty||0),1)):logged?"✓":""}</span>
+      {(L.short||L.reason) && <label className="eoslreason"><span>{L.short?"short — reason:":"reason:"}</span>
+        <select value={L.reason} onChange={e=>{ const v=e.target.value; L.setReason(v); if(logged||L.qty!=="") saveLog(t.id, L.qty===""?t.qty:L.qty, L.mh===""?L.planMH():L.mh, done, v); }}>
+          <option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>}
     </div>
   );
 }
@@ -2722,6 +2736,7 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
         L.push(`Planned Production: ${fmtN(t.qty)} ${cc.it[CI.UM]}`);
         L.push(`Actual Production: ${lg?fmtN(cc.actQty):"0"} ${cc.it[CI.UM]}`);
         L.push(`% of Plan: ${lg&&t.qty?Math.round(cc.actQty/t.qty*100):0}%`);
+        if(lg && lg.reason && lg.reason!=="On plan" && cc.actQty < t.qty) L.push(`Delay: ${lg.reason}`);
       });
       L.push("Description:");
       L.push(crewDesc(c.id, autoDesc(c.name, ts, logs, taskCalc, false)));
@@ -4046,6 +4061,7 @@ function useLogEntry(t, it, lg){
   const mhU = it[CI.MH]||0, r1 = x => Math.round(x*10)/10, r2 = x => Math.round(x*100)/100;
   const [qty,setQtyRaw]=useState(lg.qty!=null?String(lg.qty):"");
   const [mh,setMhRaw]=useState(lg.mh!=null?String(lg.mh):"");
+  const [reason,setReason]=useState(lg.reason||"");
   const [mhAuto,setMhAuto]=useState(lg.mh==null);   // auto until the user touches MH (or a log already has one)
   const setQty = v => { setQtyRaw(v); if(mhAuto){ const q=+v; setMhRaw(q>0&&mhU>0?String(r1(q*mhU)):""); } };
   const setMh  = v => { setMhRaw(v); setMhAuto(false); };
@@ -4054,7 +4070,8 @@ function useLogEntry(t, it, lg){
   const rho = (dayLen&&t.qty)? t.qty/dayLen : 0;      // plan qty per foot for this card
   const applyReached = raw => { const R=parseSTA(raw); if(R==null||dayStart==null) return; setQty(String(r2(rho*Math.abs(R-dayStart)))); };
   const fillPlan = () => { setQtyRaw(String(t.qty)); setMhRaw(String(r1(t.qty*mhU))); setMhAuto(false); };
-  return { qty, mh, setQty, setMh, staTask, endSta:t.sta?t.sta[1]:null, applyReached, fillPlan, planMH:()=>r1(t.qty*mhU) };
+  const short = qty!=="" && +qty < (+t.qty||0)-1e-9;   // logged less than planned → prompt a reason
+  return { qty, mh, reason, setReason, short, setQty, setMh, staTask, endSta:t.sta?t.sta[1]:null, applyReached, fillPlan, planMH:()=>r1(t.qty*mhU) };
 }
 function QuickLogModal({t,c,lg,saveLog,openFull,close}){
   const it=c.it;
@@ -4078,10 +4095,14 @@ function QuickLogModal({t,c,lg,saveLog,openFull,close}){
         <label>Actual qty ({it[CI.UM]})<input type="number" inputMode="decimal" autoFocus value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
         <label>Manhours<input type="number" inputMode="decimal" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
       </div>
-      <button className="qlfill" onClick={()=>{ saveLog(t.id, t.qty, L.planMH(), true); close(); }}>Log as planned ✓</button>
+      <div className="logrow">
+        <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
+          <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
+      </div>
+      <button className="qlfill" onClick={()=>{ saveLog(t.id, t.qty, L.planMH(), true, ""); close(); }}>Log as planned ✓</button>
       <div className="btnrow">
-        <button className="cta big" onClick={()=>{saveLog(t.id,L.qty,L.mh,true); close();}}>Save — done ✓</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false); close();}}>In-progress</button>
+        <button className="cta big" onClick={()=>{saveLog(t.id,L.qty,L.mh,true,L.reason); close();}}>Save — done ✓</button>
+        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>In-progress</button>
       </div>
       <button className="qlmore" onClick={openFull}>Full details &amp; cost →</button>
     </Modal>
@@ -4509,6 +4530,11 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .eosldone input{accent-color:var(--acc)}
 .eosltag{font:700 11px "IBM Plex Mono";color:var(--bad);text-align:right}
 .eoslogrow.on .eosltag{color:var(--good)}
+/* delay-reason capture */
+.eoslreason{grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:3px;font:700 10px "Saira Condensed";letter-spacing:.03em;text-transform:uppercase;color:var(--dm)}
+.eoslreason select{flex:1;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:6px;padding:4px 6px;font:12px "IBM Plex Mono"}
+.logreason.flag{color:var(--warn)}
+.logreason.flag select{border-color:var(--warn);box-shadow:0 0 0 2px rgba(220,228,66,.22)}
 /* Run-plan live impact panel + actuals→plan re-flow box */
 .impact{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 4px}
 .impact-i{background:var(--pn2);border:1px solid var(--ln);border-radius:9px;padding:7px 9px}
