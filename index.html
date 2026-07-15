@@ -279,7 +279,7 @@ const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
   stone57Den:1.4, sandDen:1.4, swell:1.25, compaction:1.20,   // stone57Den = loose hauled tn/CY — MUST match STONE_TON_PER_CY (takeoff basis)
   spoilDen:1.5, weightCap:false,   // weightCap ON = spoil/sand loads governed by payload tn ÷ density, not the box CY
-  roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,
+  roadSection:1.0, shiftHrs:8, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,   // shiftHrs = hours a truck runs per day — 8 means 8 (no hidden efficiency derate; real cycle times carry the slack)
   cycSpoil:24, cycStone:26, cycSand:32, cycBase:28, maxLegMin:60,
   // Haul sources for the back-haul optimizer + map. oneWayMin = one-way DRIVE (windshield)
   // time — the single basis for every cycle: round trip = 2·oneWayMin + loadSpot + tipMin.
@@ -364,7 +364,7 @@ function haulPlan(streams, sources, autos){
   const c={...TRUCK_DEFAULTS, ...(autos||{})}, S=sources||c.sources||{};
   const N=k=>Math.max(0,+(streams&&streams[k])||0);
   const spoilN=N("spoil"), stoneN=N("stone"), sandN=N("sand"), baseN=N("base");
-  const availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
+  const availMin=Math.max(1,(+c.shiftHrs||8)*60);   // hours mean hours — a truck running 8 hrs at an 80-min cycle makes 6 trips, matching the field count
   const clamp=legClamp(c), tf=key=>trafficOf(S[key]);
   const FLAT={dump:c.cycSpoil, stone:c.cycStone, sand:c.cycSand, base:c.cycBase};
   // one-way leg (min): drive×traffic clamped; no drive time set → back it out of the flat cycle auto
@@ -429,7 +429,7 @@ function truckModel(item, dailyQty, D, tcfg){
   // Left off, loads stay on the volume basis the crew calibrated against invoices.
   const capFor = den => c.weightCap ? Math.min(volCap, stoneCap/Math.max(0.1,+den||1)) : volCap;
   const spoilCap = capFor(c.spoilDen||1.5), sandCap = capFor(c.sandDen||1.4);
-  const availMin = Math.max(1, c.shiftHrs*60*c.eff);           // productive truck-minutes per day
+  const availMin = Math.max(1, (+c.shiftHrs||8)*60);           // truck-minutes per day — no hidden 0.85 derate (legacy stored `eff` is ignored)
   const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));
   const CYC = truckCycles(c);                                  // drive-derived round-trip minutes
   const tset = {spoil:trips(CYC.spoil), stone:trips(CYC.stone), sand:trips(CYC.sand), base:trips(CYC.base)};
@@ -1632,7 +1632,7 @@ function LookAhead(){
       {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
       {modal?.type==="wxloc"    && <WeatherLocModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
-      {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close:()=>setModal(null)}}/>}
+      {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,setCfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
@@ -3719,13 +3719,14 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
 /* Daily & weekly trucking report. Per crew/day it routes the pooled streams (back-haul), shows
    dedicated vs smart trucks, cross-crew fleet pooling, cost, and planned→actual from production;
    the weekly view is a per-day demand chart + a trucks-to-order sheet. Feeds the $-saved ticker. */
-function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close}){
+function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setCfg,savings,setSavings,close}){
   const [view,setView]=useState("day"); const [copied,setCopied]=useState(false);
   const today=(()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<5;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(today);
   const T={...TRUCK_DEFAULTS,...((cfg&&cfg.truck)||{})}, sources=T.sources;
   const truckHr = T.axle==="quad" ? (TRUCK_BASE.rates.quadHr||120) : (TRUCK_BASE.rates.triHr||105);
-  const dollars = tr => Math.round(tr*truckHr*(T.shiftHrs||8));
+  const shiftHrs = Math.min(14, Math.max(1, +T.shiftHrs||8));   // same clamped basis as the trips math — $ and counts move together
+  const dollars = tr => Math.round(tr*truckHr*shiftHrs);
 
   const week = useMemo(()=>{
     const streamsOf = tks => tks.reduce((a,t)=>{ const trk=taskCalc(t).trk, at=taskCalc(t).actTrk;
@@ -3765,6 +3766,16 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,cl
   return (
     <Modal close={close} w={720}>
       <div className="crewhead"><h3 style={{margin:0}}>Trucking report — {wkTitle(wk)}</h3></div>
+      {/* Global truck-day basis: hours a truck runs × the live cycle = trips/day. The one knob the
+          whole model divides by — editable here so the report and the cards move together. */}
+      {(()=>{ const C=truckCycles(T); const hrs=shiftHrs, tp=c=>Math.max(1,Math.floor(hrs*60/Math.max(1,c)));
+        return <div className="logrow" style={{alignItems:"center",margin:"2px 0 8px"}}>
+          <label>Trucks run (hrs/day)
+            <input type="number" step="0.5" min="1" max="14" value={T.shiftHrs} style={{width:70}}
+              onChange={e=>setCfg&&setCfg(c=>({...c, truck:{...TRUCK_DEFAULTS, ...((c&&c.truck)||{}), shiftHrs:Math.min(14,Math.max(1,+e.target.value||8))}}))}/>
+          </label>
+          <div className="gen" style={{flex:1}}>Trips per truck-day<b>spoil {tp(C.spoil)} · #57 {tp(C.stone)} · sand {tp(C.sand)} · #610 {tp(C.base)}</b><em className="dim2" style={{display:"block",fontWeight:400}}>from your drive times — if trucks really make more trips, a one-way drive is set too high</em></div>
+        </div>; })()}
       <div className="qmode mtabs"><button className={view==="day"?"on":""} onClick={()=>setView("day")}>Daily</button><button className={view==="week"?"on":""} onClick={()=>setView("week")}>Weekly</button></div>
 
       {view==="day" ? <>
@@ -3814,7 +3825,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
   const [copied,setCopied]=useState(false);
   const T = {...TRUCK_DEFAULTS, ...((cfg&&cfg.truck)||{})};
   const CYC = truckCycles(T);
-  const tripsPer = cyc => Math.max(1, Math.floor((T.shiftHrs*60*T.eff)/Math.max(1,cyc)));
+  const tripsPer = cyc => Math.max(1, Math.floor(((+T.shiftHrs||8)*60)/Math.max(1,cyc)));
   const anyLogged = weekTasks.some(t=>taskCalc(t).actQty>0);
   const groups = useMemo(()=>{
     const g={};
@@ -4161,7 +4172,10 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const tset = (k,v)=>setCfg(c=>({...c, truck:{...TRUCK_DEFAULTS, ...((c&&c.truck)||{}), [k]:v}}));
   const twSet = (fam,size,field,v)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS, ...((c&&c.truck)||{})}; const tw={...(t.tw||{})}, key=fam+"|"+size, cur={...(tw[key]||{})};
     if(v===""||v==null) delete cur[field]; else cur[field]=+v; if(Object.keys(cur).length) tw[key]=cur; else delete tw[key]; return {...c, truck:{...t, tw}}; });
-  const resetAutos = ()=>setCfg(c=>({...c, truck:{...TRUCK_DEFAULTS}}));
+  // Reset ONLY the auto fields — keep the user's haul sources (map pins, drive times, traffic,
+  // per-route stops) and per-size trench overrides, which live in other panels and are hard-won data.
+  const resetAutos = ()=>setCfg(c=>{ const t=(c&&c.truck)||{};
+    return {...c, truck:{...TRUCK_DEFAULTS, ...(t.sources?{sources:t.sources}:{}), ...(t.tw?{tw:t.tw}:{})}}; });
   const [pvFam,setPvFam]=useState("Arch pipe");
   const [pvSize,setPvSize]=useState(42);
   const [pvDepth,setPvDepth]=useState(8);
@@ -4312,9 +4326,10 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
             <input type="checkbox" checked={!!T.weightCap} onChange={e=>tset('weightCap',e.target.checked)}/><i/><span>Weight-governed loads (payload ÷ density)</span></label>
         </div>
         <div className="trkrow">
-          {NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}{NF('maxLegMin','Max one-way leg (min)',5)}
+          {NF('shiftHrs','Truck hrs/day',0.5)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}{NF('maxLegMin','Max one-way leg (min)',5)}
         </div>
-        {(()=>{ const C=truckCycles(T); return <div className="cycread">Round-trip cycle now <span className="dim2">(live)</span>: <b>spoil {fmtN(C.spoil,0)}</b> · <b>#57 {fmtN(C.stone,0)}</b> · <b>sand {fmtN(C.sand,0)}</b> · <b>#610 {fmtN(C.base,0)}</b> min <em className="dim2">— 2×drive×traffic + wait@site + stop@pit; moves the instant you drag a pin or edit a stop in Sources.</em></div>; })()}
+        {(()=>{ const C=truckCycles(T); const hrs=(+T.shiftHrs||8), tp=c=>Math.max(1,Math.floor(hrs*60/Math.max(1,c)));
+          return <div className="cycread">Round-trip cycle now <span className="dim2">(live)</span>: <b>spoil {fmtN(C.spoil,0)}</b> min ({tp(C.spoil)}/day) · <b>#57 {fmtN(C.stone,0)}</b> ({tp(C.stone)}/day) · <b>sand {fmtN(C.sand,0)}</b> ({tp(C.sand)}/day) · <b>#610 {fmtN(C.base,0)}</b> ({tp(C.base)}/day) <em className="dim2">— trips/day at {fmtN(hrs,1)} truck-hrs. If a truck really makes more trips than shown, the drive time is set too high (it must be ONE-WAY minutes, not round trip).</em></div>; })()}
         <div className="btnrow" style={{marginTop:4}}><button className="ghost sm" onClick={resetAutos}>Reset autos to defaults</button><span className="sp"/><em className="dim2">Assumed depth drives spoil &amp; sand on every card with no keyed depth. Blank a field to restore its default; stored with the board.</em></div>
       </div>
 
@@ -4337,9 +4352,9 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           </> : <tr><td colSpan={4} className="empty">Pick a pipe size.</td></tr>}</tbody>
         </table>
         {pv.applicable && (()=>{ const CYCt=truckCycles(T);
-          const tr=Math.max(1, Math.floor((T.shiftHrs*60*T.eff)/Math.max(1,CYCt.spoil)));
+          const tr=Math.max(1, Math.floor(((+T.shiftHrs||8)*60)/Math.max(1,CYCt.spoil)));
           const pk=Math.ceil(CYCt.spoil/Math.max(1,T.loadSpot));
-          return <p className="dim2" style={{margin:"6px 2px 0"}}>Spoil cycle ≈ <b>{fmtN(CYCt.spoil,0)} min</b> = 2×drive (with traffic) + {fmtN(T.loadSpot,0)} site + {fmtN(T.tipMin,0)} dump/pit → at {fmtN(T.shiftHrs,1)} hr/day × {Math.round(T.eff*100)}% that&rsquo;s <b>{tr}</b> trips/truck/day. Trucks now scale with LF/day; a full-shift dig tops out near the <b>{pk}</b>-truck feed peak. Tune truck hrs/day &amp; stops in the autos below, per-route traffic in Sources above.</p>; })()}
+          return <p className="dim2" style={{margin:"6px 2px 0"}}>Spoil cycle ≈ <b>{fmtN(CYCt.spoil,0)} min</b> = 2×drive (with traffic) + {fmtN(T.loadSpot,0)} site + {fmtN(T.tipMin,0)} dump/pit → at {fmtN((+T.shiftHrs||8),1)} truck-hrs/day that&rsquo;s <b>{tr}</b> trips/truck/day. Trucks now scale with LF/day; a full-shift dig tops out near the <b>{pk}</b>-truck feed peak. Tune truck hrs/day &amp; stops in the autos below, per-route traffic in Sources above.</p>; })()}
         <div className="trenchwrap"><TrenchSection g={pv.g} depth={+pvDepth} roadSection={T.roadSection}/></div>
         <p className="dim2" style={{margin:"2px 2px 8px",textAlign:"center"}}>Cross-section of the {pvSize}"{pvFam==="Arch pipe"?" arch":pvFam==="Water pipe"?" water main":pvFam==="Sewer pipe"?" sewer main":" round"} at {fmtN(+pvDepth,1)}′ cut — the layers the trucks move: dig-out (full box), {pv.g && pv.g.bedMat==="sand" ? "full sand embedment (pressure pipe, no stone)" : "#57 stone envelope, sand backfill"}, #610 base.</p>
         <div className="ph" style={{marginTop:10}}>{pvFam} — trench width, foundation &amp; assumed depth <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(per size, global; blank = SWB / global default)</em></div>
