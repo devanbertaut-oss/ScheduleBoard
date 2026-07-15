@@ -165,6 +165,9 @@ const expected = {
   timesheet: {
     rows: tsRows.length,
     truckDays: new Set(tsRows.map((r) => `${r[3]}|${r[8]}`)).size,
+    workDays: new Set(tsRows.map((r) => r[3])).size,
+    codes: new Set(tsRows.map((r) => String(r[9]).replace(/-/g, "."))).size,
+    totalC: Math.round(tsRows.reduce((s, r) => s + (r[14] || 0), 0) * 100),
     foremen: [JG, TN],
     dateSpan: ["2025-04-14", "2026-06-11"],
   },

@@ -109,10 +109,37 @@ try {
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
   await page.waitForSelector("nav.tabs button", { timeout: 45_000 });
 
+  step("progress: timesheet import");
+  await page.locator('nav.tabs button', { hasText: "Progress" }).click();
+  ok(await page.locator('.ph', { hasText: "No documents imported yet" }).isVisible(), "empty state shown");
+  await page.locator('header button', { hasText: "Import docs" }).click();
+  await page.locator('.modal input[type=file]').setInputFiles(join(FIX, "timesheet_fixture.xlsx"));
+  const rowsKpi = page.locator('.modal .kpi', { hasText: "Rows" }).locator("b");
+  await rowsKpi.waitFor({ timeout: 20_000 });
+  ok((await rowsKpi.textContent()) === String(expected.timesheet.rows), `preview rows = ${expected.timesheet.rows}`);
+  const total$ = "$" + Math.round(expected.timesheet.totalC / 100).toLocaleString("en-US");
+  ok((await page.locator('.modal .kpi', { hasText: "Total $" }).locator("b").textContent()) === total$, `preview total = ${total$}`);
+  await page.locator('.modal button', { hasText: "Commit import" }).click();
+
+  step("progress: ledger view");
+  const wdKpi = page.locator('.kpi', { hasText: "Work days" }).locator("b");
+  await wdKpi.waitFor({ timeout: 10_000 });
+  ok((await wdKpi.textContent()) === String(expected.timesheet.workDays), `work days = ${expected.timesheet.workDays}`);
+  ok((await page.locator('.kpi', { hasText: "Cost codes" }).locator("b").textContent()) === String(expected.timesheet.codes), `codes = ${expected.timesheet.codes}`);
+  ok((await page.locator('table.dt tbody tr').count()) >= expected.timesheet.codes, "per-code table populated");
+  await page.screenshot({ path: join(OUTDIR, "10-progress.png"), fullPage: true });
+
+  step("progress: survives reload (local + sync persistence)");
+  await page.waitForTimeout(1800); // debounce (600ms) + push
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("nav.tabs button", { timeout: 45_000 });
+  await page.locator('nav.tabs button', { hasText: "Progress" }).click();
+  await page.locator('.kpi', { hasText: "Work days" }).locator("b").waitFor({ timeout: 10_000 });
+  ok((await page.locator('.kpi', { hasText: "Work days" }).locator("b").textContent()) === String(expected.timesheet.workDays), "ledger intact after reload");
+
   // Later phases append steps here:
-  //  - Progress: import timesheet fixture → ledger/KPI assertions
   //  - Invoices: gate → import invoice fixture → recon → buckets → confirm/override
-  //  - export CSV, reload persistence, second-context merge
+  //  - export CSV, second-context merge
 
   step("summary");
   ok(pageErrors.length === 0, `no page errors (${pageErrors.length ? pageErrors.join(" | ").slice(0, 400) : "clean"})`);

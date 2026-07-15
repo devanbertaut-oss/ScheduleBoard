@@ -406,6 +406,24 @@ function dpwProgressSrcHash(tsRows){
     for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; } }
   return h.toString(36);
 }
+/* compact device-local storage of raw timesheet rows (docs.ts): string-pooled
+   array rows so a full job history stays a fraction of the localStorage quota */
+const TSR = { DOFF:0, FL:1, FM:2, TK:3, CODE:4, QTY:5, UM:6, TOTC:7, FILE:8, INV:9 };
+function dpwPackTs(rows){
+  const p = { fm:dpwPool(), tk:dpwPool(), codes:dpwPool(), um:dpwPool(), files:dpwPool() };
+  const out = rows.map(r=>[r.dOff, r.flId||"", p.fm.idx(r.fm), p.tk.idx(r.tk), p.codes.idx(r.code),
+    r.qty, p.um.idx(r.um), r.totalC||0, p.files.idx(r.srcFile), r.invSup||""]);
+  const codeDesc = {};
+  for(const r of rows) if(r.code && r.codeDesc && !codeDesc[r.code]) codeDesc[r.code]=r.codeDesc;
+  return { pool:{fm:p.fm.arr, tk:p.tk.arr, codes:p.codes.arr, um:p.um.arr, files:p.files.arr}, rows:out, codeDesc };
+}
+function dpwUnpackTs(packed){
+  if(!packed || !packed.rows) return [];
+  const P = packed.pool;
+  return packed.rows.map(a=>({ dOff:a[TSR.DOFF], flId:a[TSR.FL], fm:P.fm[a[TSR.FM]], tk:P.tk[a[TSR.TK]],
+    code:P.codes[a[TSR.CODE]], qty:a[TSR.QTY], um:P.um[a[TSR.UM]], totalC:a[TSR.TOTC],
+    srcFile:P.files[a[TSR.FILE]], invSup:a[TSR.INV], codeDesc:(packed.codeDesc||{})[P.codes[a[TSR.CODE]]]||"" }));
+}
 
 /* -- classification of one invoice line (classifier.classify row logic) -- */
 function dpwClassifyLine(raw, eras){
@@ -582,6 +600,59 @@ function dpwToCsv(rows, cols){
   return [cols.map(esc).join(","), ...rows.map(r=>cols.map(c=>esc(r[c])).join(","))].join("\n");
 }
 
+/* -- state-slice encodings + sync merges (Progress / Invoices tabs) --------
+   invAlloc.lines rows are compact arrays; ILI names the columns (codes,
+   trucks, items are indices into invAlloc.pool). Merge rules: document-
+   derived facts follow the newest import (slice-level LWW by
+   src.importedAt); human decisions merge per line by their `at` stamp with
+   local winning ties — the same rule the task logs use. Decisions whose
+   line hash disappeared on a re-import are preserved as orphans and
+   re-attached when a later import contains the hash again. */
+const ILI = { K:0, INV:1, RID:2, CC:3, QTY:4, RATE:5, TK:6, AMT:7, DOFF:8, IT:9, MAT:10, PIT:11,
+              LDS:12, UN:13, FL:14, SUG:15, M:16, CF:17, ST:18, OV:19, AT:20, BY:21, DSC:22 };
+function mergeProgress(local, remote){
+  if(!local) return remote; if(!remote) return local;
+  const base = ((remote.src&&remote.src.importedAt)||0) > ((local.src&&local.src.importedAt)||0) ? remote : local;
+  const acks = {};
+  const put = (side, winsTies) => { const a=(side&&side.acks)||{}; for(const k in a){ const v=a[k], o=acks[k];
+    if(!o || (v.at||0) > (o.at||0) || (winsTies && (v.at||0) === (o.at||0))) acks[k]=v; } };
+  put(remote,false); put(local,true);
+  return {...base, acks};
+}
+function mergeInvAlloc(local, remote){
+  if(!local) return remote; if(!remote) return local;
+  const base  = ((remote.src&&remote.src.importedAt)||0) > ((local.src&&local.src.importedAt)||0) ? remote : local;
+  const other = base===remote ? local : remote;
+  const cfg = ((remote.cfg&&remote.cfg.at)||0) > ((local.cfg&&local.cfg.at)||0) ? remote.cfg : local.cfg;
+  const codePool = base.pool.codes.slice();
+  const poolIdx = c => { const i=codePool.indexOf(c); if(i>=0) return i; codePool.push(c); return codePool.length-1; };
+  const decode = (side,sug) => (sug||[]).map(([ci,w])=>[side.pool.codes[ci], w]);
+  const encode = sug => (sug&&sug.length) ? sug.map(([c,w])=>[poolIdx(c), w]) : null;
+  // gather the other side's human decisions (incl. its orphans), newest per key
+  const dec = new Map();
+  const note = (k, st, ovCodes, at, by) => { const p=dec.get(k); if(!p || (at||0) > (p.at||0)) dec.set(k,{st,ovCodes,at,by}); };
+  for(const L of (other.lines||[])) if(L[ILI.ST]>=DPW_ST.CONFIRMED) note(L[ILI.K], L[ILI.ST], decode(other,L[ILI.OV]), L[ILI.AT], L[ILI.BY]);
+  for(const [k,ov,at,by] of (other.orphans||[])) note(k, DPW_ST.OVERRIDDEN, decode(other,ov), at, by);
+  const localTies = base!==local; // when base is remote, the other side is local and wins at-ties
+  const lines = (base.lines||[]).map(r=>r.slice());
+  const seen = new Set();
+  for(const L of lines){
+    seen.add(L[ILI.K]);
+    const d = dec.get(L[ILI.K]);
+    if(d && ((d.at||0) > (L[ILI.AT]||0) || (localTies && (d.at||0) === (L[ILI.AT]||0) && d.at!=null))){
+      L[ILI.ST]=d.st; L[ILI.OV]=encode(d.ovCodes); L[ILI.AT]=d.at; L[ILI.BY]=d.by;
+    }
+  }
+  const orph = new Map((base.orphans||[]).map(o=>[o[0], o.slice()]));
+  for(const [k,d] of dec) if(!seen.has(k)){ const p=orph.get(k); if(!p || (d.at||0) > (p[2]||0)) orph.set(k,[k, encode(d.ovCodes), d.at, d.by]); }
+  for(const L of lines){ // re-attach preserved decisions when the hash reappears
+    if(L[ILI.ST]>=DPW_ST.CONFIRMED) continue;
+    const o = orph.get(L[ILI.K]);
+    if(o){ L[ILI.ST]=DPW_ST.OVERRIDDEN; L[ILI.OV]=o[1]; L[ILI.AT]=o[2]; L[ILI.BY]=o[3]; orph.delete(L[ILI.K]); }
+  }
+  return {...base, cfg, pool:{...base.pool, codes:codePool}, lines, orphans:[...orph.values()]};
+}
+
 /* -- selftest: hand-computed assertion table (?selftest=1 renders a badge) -- */
 function dpwSelftest(){
   const D = []; let pass=0, fail=0;
@@ -703,12 +774,13 @@ if(/[?&]selftest=1\b/.test(location.search)){
   document.body.appendChild(el);
 }
 window.__DPW = { DPW_TAX, DOC_EPOCH, DPW_RATES, DPW_KNOWN_RATES, DPW_EXC_RATES, DPW_OVERHEAD,
-  DPW_ARCH_PREFIX, DPW_ERAS_DEFAULT, DPW_EXPECTED_DEFAULT, DPW_FLAG, DPW_ST, DPW_METHOD, PD,
+  DPW_ARCH_PREFIX, DPW_ERAS_DEFAULT, DPW_EXPECTED_DEFAULT, DPW_FLAG, DPW_ST, DPW_METHOD, PD, ILI,
   dpwC2S, dpwNum, dpwCents, dpwDOff, dpwDIso, dpwDate, dpwAnyDate, dpwUnit, dpwLoads, dpwBed,
   dpwTruckNorm, dpwEraOf, dpwCodeNorm, dpwHash32, dpwFirst, dpwParseInvoiceWB, dpwReconcile,
   dpwParseTimesheetWB, dpwBuildProgress, dpwBuildTdc, dpwProgressSrcHash, dpwClassifyLine,
   dpwRateAudit, dpwAnomalyFlags, dpwSplitAmounts, dpwBuildPrior, dpwPriorSuggest,
-  dpwAllocateLine, dpwToCsv, selftest: dpwSelftest };
+  dpwAllocateLine, dpwToCsv, mergeProgress, mergeInvAlloc, TSR, dpwPackTs, dpwUnpackTs,
+  selftest: dpwSelftest };
 /* ==== end DPW DOCS DOMAIN ═══════════════════════════════════════════════ */
 /* ── Bedding / embedment spec tables — SWB Standard Drawings ─────────────────
    Authoritative fall-back for trench detail when a plan sheet doesn't define it.
@@ -1270,6 +1342,13 @@ function LookAhead(){
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
+  /* Document features (Progress / Invoices tabs). progress + invAlloc are shared/synced;
+     docs holds the raw imported rows (drill-down + the allocator's truck-day joins) on THIS
+     device only — big, re-derivable by re-importing the same file, never in the sync payload. */
+  const [progress, setProgress] = useState(null);
+  const [invAlloc, setInvAlloc] = useState(null);
+  const [docs, setDocs] = useState(null);
+  const docsLoaded = useRef(false);
   const [palette, setPalette] = useState(false); // command palette (⌘K)
   const [installEvt, setInstallEvt] = useState(null); // PWA install prompt
   const [digest, setDigest] = useState(null); // once-a-day standup banner
@@ -1328,6 +1407,10 @@ function LookAhead(){
     if (s.truckDay) setTruckDay(s.truckDay);
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
+    // docs slices: remote applies merge (facts LWW by import time, decisions per-line by `at`);
+    // boot hydration replaces wholesale, mirroring the logs rule above.
+    if (s.progress) setProgress(local => (opts&&opts.mergeLogs) ? mergeProgress(local, s.progress) : s.progress);
+    if (s.invAlloc) setInvAlloc(local => (opts&&opts.mergeLogs) ? mergeInvAlloc(local, s.invAlloc) : s.invAlloc);
     if (opts && opts.skipView) return;
     // NB: we intentionally do NOT restore s.wk — the board always opens on the current week.
     if (s.cardStyle) setCardStyle(s.cardStyle); // per-device display pref (skipped on remote pulls)
@@ -1342,6 +1425,22 @@ function LookAhead(){
     }catch(e){ /* first run — seeds stand */ }
     setLoaded(true);
   })(); },[]);
+  /* device-local raw document rows (lafable-docs-v1) — separate key so the big
+     source tables can never crowd the 2 MB synced payload. Quota failure keeps
+     them in memory and tells the UI via memOnly. */
+  useEffect(()=>{ (async()=>{
+    try{ const r = await store.get("lafable-docs-v1"); if(r && r.value) setDocs(JSON.parse(r.value)); }catch(e){}
+    docsLoaded.current = true;
+  })(); },[]);
+  const docsTimer = useRef(null);
+  useEffect(()=>{
+    if(!docsLoaded.current || docs==null) return;
+    clearTimeout(docsTimer.current);
+    docsTimer.current = setTimeout(async()=>{
+      try{ await store.set("lafable-docs-v1", JSON.stringify(docs.memOnly?{...docs,memOnly:false}:docs)); }
+      catch(e){ setDocs(d => d && !d.memOnly ? {...d, memOnly:true} : d); }
+    }, 600);
+  },[docs]);
   const saveTimer = useRef(null);
   useEffect(()=>{
     if(!loaded) return;
@@ -1349,8 +1448,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,progress,invAlloc});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,progress,invAlloc,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -1362,7 +1461,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,progress,invAlloc,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -1975,7 +2074,7 @@ function LookAhead(){
           </span>
         </div>
         <nav className="tabs">
-          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"]].map(([k,l])=>
+          {[["board","Board"],["trends","Trends"],["milestones","Milestones"],["catalog","Catalog / CTC"],["progress","Progress"]].map(([k,l])=>
             <button key={k} className={tab===k?"on":""} onClick={()=>setTab(k)}>{l}</button>)}
         </nav>
         <div className="histnav no-print">
@@ -2021,6 +2120,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
           </>}
           {effTab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
+          {(effTab==="progress"||effTab==="invoices") && <button onClick={()=>setModal({type:"docsimport", kind: effTab==="invoices"?"inv":"ts"})}>Import docs</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
           <span className="syncwrap">
           <button ref={syncBtnRef} className={"pill syncpill "+(sync.status==="synced"?"pgood":(sync.status==="key"||sync.status==="error")?"pbad":"dim")}
@@ -2105,6 +2205,7 @@ function LookAhead(){
       {effTab==="catalog" && (catalogOK
         ? <CatalogView installedFor={installedFor} fcst={fcst} ctcOf={ctcOf} remainingFor={remainingFor} contractQtyFor={contractQtyFor} umOverrides={umOverrides} setUmOverrides={setUmOverrides} openSched={ci=>setModal({type:"sched",ci})}/>
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
+      {effTab==="progress" && <ProgressView {...{progress,docs,tasks,logs,ctcOf,installedFor,contractQtyFor,remainingFor,setModal}}/>}
       </div>
 
 
@@ -2123,6 +2224,7 @@ function LookAhead(){
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
       {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,close:()=>setModal(null)}}/>}
+      {modal?.type==="docsimport" && <DocsImportModal {...{kind:modal.kind||"ts",docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB:Math.round(((syncRef.current.latestJson||"").length)/1024),close:()=>setModal(null)}}/>}
       {modal?.type==="boardkey" && <BoardKeyModal close={()=>setModal(null)}
           onSet={k=>{ syncLS.setKey(k); const S=syncRef.current; S.keyPrompted=false; S.nextPollAt=0; pullNow(true); }}/>}
       {modal?.type==="trucking" && <TruckingModal {...{truckDay,setTruckDay,savings,setSavings,cfg,setCfg,close:()=>setModal(null)}}/>}
@@ -4068,6 +4170,210 @@ function NoteModal({note,rowId,day,save,del,close}){
     </Modal>
   );
 }
+/* ============ DOCUMENT IMPORT + PROGRESS TAB (docs features) ============ */
+/* Import modal for the two document types the job already produces:
+   consolidated foreman timesheets ("Consolidated Data") and the trucking
+   invoice tracker ("Sheet1" A–J). Parse → preview (row counts, spans, totals,
+   warnings, sync-size meter) → Commit. Nothing touches state until Commit. */
+function DocsImportModal({kind,docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB,close}){
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  const [prep,setPrep]=useState(null);   // parsed candidate awaiting Commit
+  const kb = o => Math.round(JSON.stringify(o??null).length/1024);
+  const onFile=async(e)=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    setErr(""); setPrep(null); setBusy(true);
+    try{
+      const XLSX=await ensureXLSX(); const buf=await f.arrayBuffer();
+      const {rows,warnings}=dpwParseTimesheetWB(XLSX,buf);
+      if(!rows.length) throw new Error((warnings&&warnings[0])||"no rows found");
+      const built=dpwBuildProgress(rows);
+      const hash=dpwProgressSrcHash(rows);
+      const src={name:f.name, rows:rows.length, hash, importedAt:Date.now(), device:syncLS.device()};
+      const cand={v:1, src, pool:built.pool, days:built.days, acks:(progress&&progress.acks)||{}};
+      const dated=rows.filter(r=>r.dOff!=null);
+      const sliceKB=kb(cand);
+      setPrep({kind:"ts", rows, cand, warnings, stats:{
+        n:rows.length,
+        days:new Set(dated.map(r=>r.dOff)).size,
+        codes:built.pool.codes.length, trucks:built.pool.tk.length, fms:built.pool.fm.length,
+        span: dated.length ? [Math.min(...dated.map(r=>r.dOff)), Math.max(...dated.map(r=>r.dOff))] : null,
+        totC: rows.reduce((s,r)=>s+(r.totalC||0),0),
+        dup:built.dup, skipped:built.skipped,
+        same: !!(progress&&progress.src&&progress.src.hash===hash),
+        sliceKB, projKB: Math.max(0, stateKB - kb(progress)) + sliceKB,
+      }});
+    }catch(ex){ setErr(String((ex&&ex.message)||ex)); }
+    setBusy(false);
+    e.target.value="";
+  };
+  const blockKB=1600, warnKB=1200;
+  const commit=()=>{
+    if(!prep || prep.stats.projKB>blockKB) return;
+    setProgress(prep.cand);
+    setDocs(d=>({ ...(d||{v:1}), v:1, memOnly:false,
+      ts:{ src:prep.cand.src, ...dpwPackTs(prep.rows) },
+      tdc: dpwBuildTdc(prep.rows) }));
+    flash("Progress ledger rebuilt from "+prep.stats.n+" timesheet rows");
+    close();
+  };
+  const S=prep&&prep.stats;
+  return (
+    <Modal close={close} w={560}>
+      <h3>Import documents</h3>
+      <p className="dim2">Import the <b>consolidated foreman timesheet</b> workbook (sheet "Consolidated Data").
+        The daily ledger — trucking hours, loads, tons/CY and $ per cost code per day — is rebuilt from the
+        file on every import, so re-importing the grown cumulative export is always safe. Raw rows stay on
+        this device; only the compact ledger syncs to other boards.</p>
+      <div className="btnrow">
+        <label className="btn cta" style={{cursor:"pointer"}}>{busy?"Reading…":"Choose timesheet .xlsx"}
+          <input type="file" accept=".xlsx" onChange={onFile} style={{display:"none"}} disabled={busy}/></label>
+      </div>
+      {err && <div className="warnline">{err}</div>}
+      {S && <div style={{marginTop:10}}>
+        <div className="loghdr">{prep.cand.src.name}</div>
+        <div className="kpis" style={{padding:"6px 0 4px"}}>
+          <div className="kpi"><label>Rows</label><b>{fmtN(S.n)}</b></div>
+          <div className="kpi"><label>Work days</label><b>{S.days}</b></div>
+          <div className="kpi"><label>Codes</label><b>{S.codes}</b></div>
+          <div className="kpi"><label>Trucks</label><b>{S.trucks}</b></div>
+          <div className="kpi"><label>Total $</label><b>{fmt$(S.totC/100)}</b></div>
+        </div>
+        {S.span && <p className="dim2" style={{margin:"2px 0"}}>Dates {dpwDIso(S.span[0])} → {dpwDIso(S.span[1])} · {S.fms} foremen{S.dup?` · ${S.dup} duplicate row${S.dup>1?"s":""} ignored`:""}{S.skipped?` · ${S.skipped} row${S.skipped>1?"s":""} without date/code excluded`:""}</p>}
+        {(prep.warnings||[]).map((w,i)=><div key={i} className="warnline">{w}</div>)}
+        {S.same && <div className="warnline">This file is identical to the current import — committing changes nothing.</div>}
+        <p className="dim2" style={{margin:"6px 0 2px"}}>
+          Synced ledger {S.sliceKB} KB · projected shared payload ≈ {S.projKB} KB of 2,000 KB
+          {S.projKB>blockKB ? " — over the safe limit; trim the source file" : S.projKB>warnKB ? " — getting close to the sync cap" : ""}
+        </p>
+        <div className="btnrow">
+          <button className="cta" disabled={S.projKB>blockKB} onClick={commit}>Commit import</button>
+          <button className="btn" onClick={()=>setPrep(null)}>Discard</button>
+        </div>
+      </div>}
+    </Modal>
+  );
+}
+/* Progress tab — document-driven daily ledger per cost code: activity chips by
+   day (hours / loads / material), per-code rollups tied to the same CTC install
+   math the Catalog tab uses. */
+function ProgressView({progress,docs,tasks,logs,ctcOf,installedFor,contractQtyFor,remainingFor,setModal}){
+  const P = progress;
+  const days = (P&&P.days)||[];
+  const codeOf = r => P.pool.codes[r[PD.CODE]];
+  const byCode = useMemo(()=>{
+    if(!P) return [];
+    const m=new Map();
+    for(const r of days){ const c=codeOf(r);
+      let e=m.get(c); if(!e){ e={code:c,hr:0,ld:0,tn:0,cy:0,costC:0,td:0,daysN:0,last:null}; m.set(c,e); }
+      e.hr+=r[PD.HR]; e.ld+=r[PD.LD]; e.tn+=r[PD.TN]; e.cy+=r[PD.CY]; e.costC+=r[PD.COSTC]; e.td+=r[PD.TD]; e.daysN++;
+      if(e.last==null || r[PD.DOFF]>e.last) e.last=r[PD.DOFF];
+    }
+    return [...m.values()].sort((a,b)=>b.costC-a.costC);
+  },[progress]);
+  const ciByCode = useMemo(()=>{ const m={};
+    CATALOG.forEach((row,i)=>{ const c=(row[CI.CC]||"").replace(/-/g,"."); if(c && m[c]==null) m[c]=i; });
+    return m; },[]);
+  const latest = days.length ? Math.max(...days.map(r=>r[PD.DOFF])) : null;
+  const [wkIso,setWkIso] = useState(null); // null until data exists; then latest week
+  const weekStart = wkIso || (latest!=null ? mondayOf(dpwDIso(latest)) : mondayOf(new Date().toISOString().slice(0,10)));
+  const weekRows = useMemo(()=>{
+    if(!P) return [];
+    const d0=dpwDOff(weekStart);
+    const inWk = days.filter(r=>r[PD.DOFF]>=d0 && r[PD.DOFF]<d0+5);
+    const m=new Map();
+    for(const r of inWk){ const c=codeOf(r);
+      let e=m.get(c); if(!e){ e={code:c, cells:[null,null,null,null,null]}; m.set(c,e); }
+      e.cells[r[PD.DOFF]-d0]=r;
+    }
+    return [...m.values()].sort((a,b)=>a.code<b.code?-1:1);
+  },[progress,weekStart]);
+  if(!P) return (
+    <div className="page">
+      <h2>Daily Progress</h2>
+      <div className="panel" style={{maxWidth:600}}>
+        <div className="ph">No documents imported yet</div>
+        <p className="dim2">Import the consolidated foreman timesheet workbook to build a daily ledger —
+          trucking hours, loads and $ per cost code per day — reconciled against this board's production logs.
+          The ledger syncs to every device; the raw rows stay on the device that imported them.</p>
+        <div className="btnrow"><button className="cta" onClick={()=>setModal({type:"docsimport",kind:"ts"})}>Import docs</button></div>
+      </div>
+    </div>
+  );
+  const workDays = new Set(days.map(r=>r[PD.DOFF])).size;
+  const tot = byCode.reduce((a,e)=>({hr:a.hr+e.hr, ld:a.ld+e.ld, costC:a.costC+e.costC}),{hr:0,ld:0,costC:0});
+  const cell = r => r && (
+    <div className="dpwcell">
+      {r[PD.HR]>0 && <span className="dchip">{fmtN(r[PD.HR],1)}h</span>}
+      {r[PD.LD]>0 && <span className="dchip">{fmtN(r[PD.LD])} ld</span>}
+      {r[PD.TN]>0 && <span className="dchip">{fmtN(r[PD.TN])} tn</span>}
+      {r[PD.CY]>0 && <span className="dchip">{fmtN(r[PD.CY])} cy</span>}
+      {r[PD.TD]>1 && <span className="dchip dim2">{r[PD.TD]}🚚</span>}
+    </div>);
+  return (
+    <div className="page">
+      <h2>Daily Progress <em className="dim2">— {P.src.name} · {fmtN(P.src.rows)} rows · imported {new Date(P.src.importedAt).toLocaleDateString()}{P.src.device?" on device "+P.src.device:""}</em></h2>
+      <div className="kpis" style={{padding:"8px 0 4px"}}>
+        <div className="kpi"><label>Work days</label><b>{workDays}</b></div>
+        <div className="kpi"><label>Cost codes</label><b>{byCode.length}</b></div>
+        <div className="kpi"><label>Truck hours</label><b>{fmtN(tot.hr)}</b></div>
+        <div className="kpi"><label>Loads</label><b>{fmtN(tot.ld)}</b></div>
+        <div className="kpi"><label>Trucking $</label><b>{fmt$(tot.costC/100)}</b></div>
+      </div>
+      <div className="panel" style={{marginTop:8}}>
+        <div className="ph" style={{display:"flex",alignItems:"center",gap:10}}>
+          <span>Week ledger</span>
+          <span style={{display:"inline-flex",gap:4,marginLeft:"auto"}}>
+            <button className="ghost sm" onClick={()=>setWkIso(addDays(weekStart,-7))}>‹</button>
+            <em className="dim2" style={{alignSelf:"center"}}>{wkTitle(weekStart)}</em>
+            <button className="ghost sm" onClick={()=>setWkIso(addDays(weekStart,7))}>›</button>
+          </span>
+        </div>
+        {weekRows.length===0 ? <p className="dim2">No documented activity this week.</p> :
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>CC</th><th>Item</th>{[0,1,2,3,4].map(i=><th key={i}>{DAYS[i]} {dLabel(weekStart,i)}</th>)}</tr></thead>
+          <tbody>{weekRows.map(w=>{
+            const ci=ciByCode[w.code];
+            return <tr key={w.code}>
+              <td className="mono">{w.code}</td>
+              <td>{ci!=null ? CATALOG[ci][CI.TASK].slice(0,34) : <em className="dim2">not in catalog</em>}</td>
+              {w.cells.map((r,i)=><td key={i}>{cell(r)}</td>)}
+            </tr>;})}
+          </tbody>
+        </table>
+        </div>}
+      </div>
+      <div className="panel" style={{marginTop:10}}>
+        <div className="ph">Cost codes — contract install vs documented trucking</div>
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>CC</th><th>Item</th><th className="r">Contract</th><th className="r">Installed</th><th style={{width:110}}>%</th><th className="r">Days</th><th className="r">Hours</th><th className="r">Loads</th><th className="r">Doc $</th><th className="r">Last</th></tr></thead>
+          <tbody>{byCode.map(e=>{
+            const ci=ciByCode[e.code];
+            const contract = ci!=null ? contractQtyFor(ci) : 0;
+            const inst = ci!=null ? installedFor(ci) : 0;
+            const pc = contract ? inst/contract : 0;
+            return <tr key={e.code}>
+              <td className="mono">{e.code}</td>
+              <td>{ci!=null ? CATALOG[ci][CI.TASK].slice(0,40) : <em className="dim2">not in catalog</em>}</td>
+              <td className="r">{contract?fmtN(contract):"—"}</td>
+              <td className="r">{ci!=null?fmtN(inst):"—"}</td>
+              <td>{contract ? <React.Fragment><div className="tbar"><i style={{width:Math.min(100,Math.max(0,pc*100))+"%"}}/></div><span className="pctlbl">{pct(pc)}</span></React.Fragment> : <span className="dim2">—</span>}</td>
+              <td className="r">{e.daysN}</td>
+              <td className="r">{fmtN(e.hr)}</td>
+              <td className="r">{fmtN(e.ld)}</td>
+              <td className="r">{fmt$(e.costC/100)}</td>
+              <td className="r mono">{e.last!=null?dpwDIso(e.last).slice(5):"—"}</td>
+            </tr>;})}
+          </tbody>
+        </table>
+        </div>
+      </div>
+      {!docs && <p className="dim2" style={{marginTop:8}}>Source rows live on the device that imported the file — re-import the same workbook here to browse row-level detail.</p>}
+    </div>
+  );
+}
 function DataModal({cfg,setCfg,ctc,setCtc,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
@@ -4897,6 +5203,8 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
     {label:"Go to Milestones",hint:"tab",run:()=>setTab("milestones")},
     {label:"Go to Catalog / CTC",hint:"tab",run:()=>setTab("catalog")},
+    {label:"Go to Progress",hint:"tab",run:()=>setTab("progress")},
+    {label:"Import documents",hint:"action",run:()=>{setTab("progress"); setModal({type:"docsimport",kind:"ts"});}},
     {label:"Schedule work",hint:"action",run:()=>setModal({type:"sched"})},
     {label:"EOS Summary",hint:"action",run:()=>setModal({type:"eos",day:Math.min(3,(new Date().getDay()+6)%7)})},
     {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
@@ -5484,6 +5792,10 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .tbar{position:relative;height:8px;background:var(--bg);border-radius:5px;overflow:hidden}
 .tbar i{position:absolute;left:0;top:0;bottom:0;background:var(--good)}
 .tbar u{position:absolute;left:0;top:4px;bottom:0;background:var(--acc);opacity:.9}
+/* docs features (Progress / Invoices) — compact ledger cells + tiny chips */
+.dpwcell{display:flex;flex-wrap:wrap;gap:3px}
+.dchip{display:inline-block;border:1px solid var(--ln);border-radius:6px;padding:1px 6px;font:600 11px "IBM Plex Mono";color:var(--tx);background:var(--bg);white-space:nowrap}
+.dchip.dim2{color:var(--dm2)}
 .printarea{background:#fff;color:#111;border-radius:8px;padding:14px;max-height:380px;overflow:auto}
 .printarea .dt{background:#fff;border-color:#ccc}
 .printarea .dt th,.printarea .dt td{border-color:#ddd;color:#111}
