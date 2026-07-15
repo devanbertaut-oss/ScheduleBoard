@@ -2753,7 +2753,7 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
           title={over_?`${fmtN(mh)} MH planned vs ${fmtN(cap)} MH cap — over capacity`:undefined}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,cl.d,cl.w)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:cl.d,wk:cl.w}); }}>
-          {cl.list.map((t,i)=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={calcs[i]} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={cl.w} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
+          {cl.list.map((t,i)=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={calcs[i]} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={cl.w} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
         </td>;})}
     </tr>
     </>
@@ -2851,7 +2851,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>
             <button className="mcardlog" onClick={()=>setModal({type:"qlog",id:t.id})}>{(taskCalc(t).done)?"✓ Logged — edit actuals":"✎ Log actuals"}</button>
           </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
@@ -2972,7 +2972,7 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
+function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
   const it=c.it;
   const [resizing,setResizing]=useState(false);
   const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
@@ -3052,7 +3052,9 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
           <div><label>Job #</label><span>{JOB_NO}</span></div>
           <div><label>Item</label><span>{name}</span></div>
           <div><label>Goal</label><span className={useRf && rf.atCap?"cbad":""}>{qtyStr}</span></div>
-          {showEquip && <div><label>Equipt</label><span>{t.equip||"—"}</span></div>}
+          {/* actual installed qty once logged — green made goal, red short (equipment lives on
+              the crew rail via the Equipment toggle, the task modal, and the printed cards) */}
+          {c.logged && <div><label>Actual</label><span className={c.actQty>=t.qty-0.01?"aq up":"aq dn"}>{fmtN(c.actQty,c.actQty%1?1:0)} {it[CI.UM]}</span></div>}
           <div><label>Trucks</label><span>{trucksStr}</span></div>
           {useRf && run && run.idx===run.total && rf.extraDaysNeeded>0 &&
             <div><label>Re-flow</label><span className="cbad">+{rf.extraDaysNeeded}d needed</span></div>}
@@ -6878,6 +6880,10 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .hqmh .genmh{display:block;font:800 9px "IBM Plex Mono";letter-spacing:0;text-transform:none;margin-top:1px}
 .genmh.up{color:#0c6e35}
 .genmh.dn{color:#b3261e}
+/* Actual-qty row on a logged card — same green/red language as the gen-MH corner. */
+.hqbody .aq{font-weight:700}
+.hqbody .aq.up{color:#0c6e35}
+.hqbody .aq.dn{color:#b3261e}
 .hqwm{font:800 15px "Saira Condensed";letter-spacing:.06em;text-align:center;margin:-2px 0 2px}
 .hqbody{font-size:10.5px;line-height:1.28}
 /* Quick-log affordance on a board card — hover-reveal on desktop so it never clutters the dense grid;
