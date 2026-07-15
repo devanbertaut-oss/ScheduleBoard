@@ -1258,6 +1258,19 @@ function LookAhead(){
   const linkRef = useRef(null), depLayerRef = useRef(null);
   const boardWrapRef = useRef(null);                       // horizontal strip scroller
   const [boardPrint, setBoardPrint] = useState(false);     // 🖨 Board: render stacked weeks (paginates) instead of the strip
+  // ⌘K jump: navigate to a searched run's card, scroll it into the middle of the strip, flash it.
+  const [jumpT,setJumpT]=useState(null);
+  const jumpToRun = (t)=>{ setTab("board"); setWk(t.wk); setJumpT({id:t.id, n:Date.now()}); };
+  useEffect(()=>{ if(!jumpT) return;
+    const tmr=setTimeout(()=>{
+      const wrap=boardWrapRef.current, el=wrap && wrap.querySelector(`.card[data-task="${jumpT.id}"]`);
+      if(el && wrap){ const w=wrap.getBoundingClientRect(), r=el.getBoundingClientRect();
+        wrap.scrollLeft += (r.left-w.left) - w.width/2 + r.width/2;
+        wrap.scrollTop  += (r.top -w.top ) - w.height/2 + r.height/2;
+        el.classList.add("jumpflash"); setTimeout(()=>{ el.classList.remove("jumpflash"); },2600); }
+    },160);   // let the week change + today-snap settle first
+    return ()=>clearTimeout(tmr);
+  },[jumpT]);
   // Snap the strip to TODAY's column when it's on the board (load / "Today" / week change);
   // otherwise back to the anchor week's Monday.
   useEffect(()=>{ const wrap=boardWrapRef.current; if(!wrap) return;
@@ -1524,7 +1537,7 @@ function LookAhead(){
   return (
     <div className="la-root" data-theme={theme}>
       <style>{CSS}</style>
-      {palette && <CommandPalette {...{setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}}/>}
+      {palette && <CommandPalette {...{setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn,tasks,jumpToRun}}/>}
 
       <div className="topzone">
       {/* ============ TOP BAR ============ */}
@@ -1571,6 +1584,7 @@ function LookAhead(){
             </button>
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
+          {!isMobile && <button className="ghost kbdchip no-print" title="Search commands, crews, and scheduled work (Ctrl/⌘ K)" onClick={()=>setPalette(true)}>⌘K <em>search</em></button>}
           {effTab==="board" && !isMobile && <span className="spanseg no-print" title="Stack the current week plus this many ahead into one look-ahead grid — cards and dependency arrows carry across the week boundary">
             {[1,2,3,4].map(n=><button key={n} className={wkSpan===n?"on":""} onClick={()=>setWkSpan(n)} aria-label={n+"-week look-ahead"}>{n}<em>wk</em></button>)}
           </span>}
@@ -1578,15 +1592,20 @@ function LookAhead(){
         <div className="actions no-print">
           {effTab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
-          <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
-          <button onClick={()=>{ setBoardPrint(true); document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); setBoardPrint(false); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },150); }} title="Print the live color board — Procore snapshot / trailer wall (landscape, one week per page)">🖨 Board</button>
-          <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
-          <button onClick={shareLookaheadPdf} disabled={pdfBusy} title="Build a crisp look-ahead PDF from the schedule and share it (or download) — one page per stacked week, works on the phone">{pdfBusy?"⏳ PDF…":"📄 Share PDF"}</button>
-          <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
-          <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
-          <button onClick={()=>setModal({type:"trucking"})}>Trucking</button>
-          <button onClick={()=>setModal({type:"rhythm"})} title="Weekly SOP touchpoints and last-updated status">📋 Rhythm</button>
-          <button onClick={()=>setModal({type:"kpisummary"})} title="This week's planned/actual MH, PF, PPC and staging">📊 KPIs</button>
+          <MenuBtn label="Reports" items={[
+            {label:"📊 KPI summary", run:()=>setModal({type:"kpisummary"})},
+            {label:"🚚 Truck report — order & cost", run:()=>setModal({type:"truckreport"})},
+            {label:"📦 Materials cheat sheet", run:()=>setModal({type:"cheat"})},
+            {label:"📋 Weekly rhythm", run:()=>setModal({type:"rhythm"})},
+            {label:"⚙ Truck setup — sources & assumptions", run:()=>setModal({type:"trucking"})},
+            {label:"❓ Help & shortcuts", run:()=>setModal({type:"help"})},
+          ]}/>
+          <MenuBtn label="Print / Share" items={[
+            {label:"🗂 Print field cards", run:()=>setModal({type:"cards"})},
+            {label:"🖨 Print board — trailer wall", run:()=>{ setBoardPrint(true); document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); setBoardPrint(false); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },150); }},
+            {label:"📑 Print / PDF reports", run:()=>setModal({type:"print"})},
+            {label:pdfBusy?"⏳ Building PDF…":"📄 Share look-ahead PDF", run:()=>{ if(!pdfBusy) shareLookaheadPdf(); }},
+          ]}/>
           </>}
           {effTab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {installEvt && <button className="cta hot" onClick={async()=>{ try{ installEvt.prompt(); await installEvt.userChoice; }catch(e){} setInstallEvt(null); }} title="Install RNGD Look-Ahead on this device">⬇ Install</button>}
@@ -1691,6 +1710,7 @@ function LookAhead(){
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,preset:modal.date,close:()=>setModal(null)}}/>}
       {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
       {modal?.type==="wxloc"    && <WeatherLocModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
+      {modal?.type==="help"     && <HelpModal close={()=>setModal(null)}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,setCfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
@@ -1722,6 +1742,23 @@ function AddRow({ph,onAdd,onX,span=8}){
     <button className="cta sm" disabled={!v.trim()} onClick={()=>onAdd(v.trim())}>Add</button>
     <button className="ghost sm" onClick={onX}>Cancel</button>
   </td></tr>;
+}
+/* Dropdown group for the action bar — closes on outside pointer / Escape. */
+function MenuBtn({label,items}){
+  const [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{ if(!open) return;
+    const down=e=>{ if(ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const key=e=>{ if(e.key==="Escape") setOpen(false); };
+    document.addEventListener("pointerdown",down); document.addEventListener("keydown",key);
+    return ()=>{ document.removeEventListener("pointerdown",down); document.removeEventListener("keydown",key); };
+  },[open]);
+  return <span className="menuwrap" ref={ref}>
+    <button className={"menubtn"+(open?" on":"")} aria-expanded={open} onClick={()=>setOpen(v=>!v)}>{label} <i className="mcaret">▾</i></button>
+    {open && <div className="menupop" role="menu">
+      {items.map(it=><button key={it.label} role="menuitem" onClick={()=>{ setOpen(false); it.run(); }}>{it.label}</button>)}
+    </div>}
+  </span>;
 }
 function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}){
   const recap = res => { let p=0,a=0,e=0,q=0,pq=0,cells=0,logged=0;
@@ -4629,8 +4666,19 @@ function celebrate(msg){
     setTimeout(()=>{ layer.remove(); t.remove(); },2000);
   }catch(e){}
 }
-function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn}){
+function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflowOn,tasks,jumpToRun}){
   const [q,setQ]=useState(""); const [i,setI]=useState(0);
+  // Scheduled work is searchable too: one entry per run (crew · item · location) that jumps
+  // the board to the card and flashes it.
+  const runCmds = useMemo(()=>{
+    if(!tasks || !jumpToRun) return [];
+    const seen=new Map();
+    tasks.forEach(t=>{ const k=runKey(t); const cur=seen.get(k);
+      if(!cur || wdi(t.wk,t.day)<wdi(cur.wk,cur.day)) seen.set(k,t); });
+    return [...seen.values()].map(t=>{ const it=itemFor(t); const cw=crews.find(c=>c.id===t.res);
+      return {label:`${cw?cw.name:"?"}: ${it[CI.TASK].slice(0,44)}${t.loc?" @ "+t.loc:""}`, hint:"run",
+        run:()=>jumpToRun(t)}; });
+  },[tasks,crews]);
   const cmds=[
     {label:"Go to Board",hint:"tab",run:()=>setTab("board")},
     {label:"Go to Trends",hint:"tab",run:()=>setTab("trends")},
@@ -4641,15 +4689,18 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Foreman Cheat Sheet",hint:"action",run:()=>setModal({type:"cheat"})},
     {label:"Print / PDF",hint:"action",run:()=>setModal({type:"print"})},
     {label:"Print Cards — 4×4 notepad sheets",hint:"action",run:()=>setModal({type:"cards"})},
-    {label:"Trucking",hint:"action",run:()=>setModal({type:"trucking"})},
-    {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
+    {label:"Truck report — order & cost",hint:"action",run:()=>setModal({type:"truckreport"})},
+    {label:"Truck setup — sources & assumptions",hint:"action",run:()=>setModal({type:"trucking"})},
+    {label:"Data — import / export / backups",hint:"action",run:()=>setModal({type:"data"})},
+    {label:"Help & shortcuts",hint:"action",run:()=>setModal({type:"help"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
     {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
     {label:"Holidays / non-working days",hint:"action",run:()=>setModal({type:"holidays"})},
     {label:"Weather forecast location",hint:"action",run:()=>setModal({type:"wxloc"})},
     {label:"KPI summary",hint:"action",run:()=>setModal({type:"kpisummary"})},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
-  ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})));
+  ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})))
+   .concat(runCmds);
   const f=cmds.filter(c=>c.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0,10);
   const go=c=>{ setPalette(false); c.run(); };
   return (
@@ -4746,6 +4797,39 @@ function QuickLogModal({t,c,lg,saveLog,openFull,close}){
   );
 }
 /* Board key prompt — shown when the sync endpoint answers 401 (BOARD_KEY set on the site). */
+/* One-page help: every shortcut and gesture, and a map of where each report lives. */
+function HelpModal({close}){
+  const K=({k})=><kbd className="hk">{k}</kbd>;
+  return (
+    <Modal close={close} w={560}>
+      <h3>Help &amp; shortcuts</h3>
+      <div className="loghdr">Keyboard</div>
+      <table className="dt list"><tbody>
+        <tr><td><K k="⌘/Ctrl K"/></td><td>Search — commands, crews, and any scheduled run (jumps the board to its card)</td></tr>
+        <tr><td><K k="⌘/Ctrl Z"/></td><td>Undo (30 steps) · <K k="⌘/Ctrl ⇧ Z"/> or <K k="⌘/Ctrl Y"/> redo</td></tr>
+        <tr><td><K k="Esc"/></td><td>Close any modal or menu</td></tr>
+      </tbody></table>
+      <div className="loghdr">Board gestures</div>
+      <table className="dt list"><tbody>
+        <tr><td>Drag a card</td><td>Move it — any day, any week; the rest of its run re-packs behind it</td></tr>
+        <tr><td>⌘/Ctrl-click cards</td><td>Multi-select, then bulk-shift by day or week</td></tr>
+        <tr><td>Drag a card's corners</td><td>Top-left = link a predecessor · bottom-right = link a successor</td></tr>
+        <tr><td>Drag the right edge</td><td>Resize a run — add or drop days at the same daily rate</td></tr>
+        <tr><td>Click an empty cell</td><td>Schedule work for that crew, that day, that week</td></tr>
+        <tr><td>Hover a card → ✎</td><td>Quick-log actuals (or tap the Log button on a phone)</td></tr>
+      </tbody></table>
+      <div className="loghdr">Where things live</div>
+      <table className="dt list"><tbody>
+        <tr><td><b>Reports ▾</b></td><td>KPIs · Truck report (order &amp; cost) · Materials cheat sheet · Weekly rhythm · Truck setup</td></tr>
+        <tr><td><b>Print / Share ▾</b></td><td>Field cards · Board print (one week per page) · Report PDFs · Share look-ahead PDF</td></tr>
+        <tr><td><b>Legend row</b></td><td>Scope colors · Re-flow forecast · Baseline snapshot · Roll forward · Rain-out · Weather location</td></tr>
+        <tr><td><b>Catalog → Data</b></td><td>CTC import · cost assumptions · full-board backup, restore &amp; daily backups</td></tr>
+        <tr><td><b>Sync pill</b></td><td>Save state · who changed the board last · board key &amp; this device's name</td></tr>
+      </tbody></table>
+      <div className="btnrow"><button className="cta" onClick={close}>Got it</button></div>
+    </Modal>
+  );
+}
 function BoardKeyModal({close,onSet}){
   const [v,setV]=useState(syncLS.key());
   const [nm,setNm]=useState(syncLS.name());
@@ -4844,6 +4928,19 @@ const CSS = `
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:17px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:16px}
+/* Action-bar dropdown groups */
+.menuwrap{position:relative;display:inline-block}
+.menubtn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 15px;font-weight:600;font-size:15px;cursor:pointer;white-space:nowrap}
+.menubtn.on{border-color:var(--acc);color:var(--acc)}
+.menubtn .mcaret{font-style:normal;font-size:11px;opacity:.7}
+.menupop{position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:250px;background:var(--pn);border:1px solid var(--ln);border-radius:11px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:5px;display:flex;flex-direction:column}
+.menupop button{text-align:left;background:none;border:0;border-radius:8px;padding:9px 12px;color:var(--tx);font-size:14px;cursor:pointer;white-space:nowrap}
+.menupop button:hover{background:var(--pn2)}
+.kbdchip{font:700 12px "IBM Plex Mono"!important;padding:6px 10px!important}
+.kbdchip em{font:600 11px "Saira Condensed";font-style:normal;letter-spacing:.06em;text-transform:uppercase;color:var(--dm);margin-left:4px}
+kbd.hk{font:700 11px "IBM Plex Mono";background:var(--pn2);border:1px solid var(--ln);border-bottom-width:2px;border-radius:5px;padding:1px 6px;white-space:nowrap}
+.jumpflash{animation:jumpFlash 1.2s ease 2}
+@keyframes jumpFlash{0%,100%{box-shadow:0 0 0 0 rgba(220,228,66,0)}50%{box-shadow:0 0 0 5px var(--lime)}}
 .spanseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2);margin-left:2px}
 .spanseg button{background:transparent;border:0;border-left:1px solid var(--ln);color:var(--dm);border-radius:0;padding:5px 9px;font:700 15px "Saira Condensed";cursor:pointer;display:flex;align-items:baseline;gap:2px}
 .spanseg button:first-child{border-left:0}
@@ -5366,8 +5463,11 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
  .actions button,.btn{min-height:40px}
  .histnav{display:none}
  .histnav-inline{display:flex}
- .actions{order:4;width:100%;display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+ .actions{order:4;width:100%;display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
  .actions button{flex:none;width:100%;min-width:0;padding:7px 4px;font-size:11.5px;white-space:normal}
+ .actions .menuwrap{width:100%}
+ .actions .menupop{left:auto;right:0;max-width:88vw}
+ .actions .menupop button{white-space:normal}
  .digest,.rhythm,.kpis,.weekprog{display:none}
  .legendswatches{display:none}
  .tagswitch-txt{display:none}
