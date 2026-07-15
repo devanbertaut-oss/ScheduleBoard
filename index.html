@@ -1107,7 +1107,7 @@ function LookAhead(){
     const trk = truckModel(it, t.qty, resolveDig(it,t.dig,cfg), cfg.truck);       // planned per-day trucks
     // Actual trucking is a function of ACTUAL production (logged qty) — never hand-counted loads.
     const actTrk = (lg.qty!=null) ? truckModel(it, lg.qty, resolveDig(it,t.dig,cfg), cfg.truck) : null;
-    return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, loads,
+    return { it, planMH, actQty:lg.qty||0, actMH:lg.mh||0, done:!!lg.done, logged:!!logs[t.id], loads,
       trk, trucks: trk.applicable ? trk.total : null,
       actTrk, actTrucks: actTrk && actTrk.applicable ? actTrk.total : null,
       mat:t.qty*it[CI.UM$], budAmt:t.qty*it[CI.BID], budCost:t.qty*unitCost(it),
@@ -1328,8 +1328,12 @@ function LookAhead(){
       const along = x => (x-S0)*dir, staAt = a => S0 + dir*a;
       const rho = (isSta && Ltot>EPS) ? Qtot/Ltot : null;
       const stepFt = (isSta && Ltot>EPS) ? Ltot/N : null, perDayQ = Qtot/N;
-      const locked = members.filter(m=>logs[m.id]!=null), open = members.filter(m=>logs[m.id]==null);
+      // treatLogged: {taskId: qty} — treat these as logged with that actual qty even though the
+      // log write is still in this click's queue (the inline recovery chips save + re-slice together).
+      const lgOf = m => (edit.treatLogged && edit.treatLogged[m.id]!==undefined) ? {qty:edit.treatLogged[m.id]} : logs[m.id];
+      const locked = members.filter(m=>lgOf(m)!=null), open = members.filter(m=>lgOf(m)==null);
       if(!open.length) return ts;                                   // all logged → no-op
+      if(edit.closeRun) return [...ts.filter(x=>runKey(x)!==k), ...locked];   // run finished early — drop the unlogged tail
       const lockedWdis = new Set(locked.map(m=>wdi(m.wk,m.day)));
       const lockedQty = locked.reduce((s,m)=>s+(+m.qty||0),0);
       const lastLocked = locked.length ? locked.reduce((a,b)=>wdi(a.wk,a.day)>wdi(b.wk,b.day)?a:b) : null;
@@ -1349,10 +1353,12 @@ function LookAhead(){
       } else if(edit.perDay!=null || edit.days!=null || edit.fromActuals){
         // fromActuals: remaining = contract total − what was ACTUALLY installed on logged days,
         // re-sliced over the open tail at the planned rate (absorbs an over/under-run into the plan).
-        const lockedActualQty = locked.reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
+        const lockedActualQty = locked.reduce((s,m)=>{ const lg=lgOf(m); return s+((lg&&lg.qty)||0); },0);
         const openQty = edit.fromActuals ? Math.max(0, Qtot - lockedActualQty) : (Qtot - lockedQty);
         if(openQty<=EPS) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // remaining installed → drop open days
-        const p = edit.perDay!=null ? +edit.perDay : (edit.fromActuals ? perDayQ : null);
+        // fromActuals + days = prorate: hold the day count, respread the actual remainder evenly.
+        // fromActuals alone = catch-up at the planned rate, growing the tail as needed.
+        const p = edit.perDay!=null ? +edit.perDay : (edit.fromActuals && edit.days==null ? perDayQ : null);
         // avg/day (plain {perDay}) = the ACTUAL daily rate: each open day makes p, last day = the
         // remainder, total/end-station held fixed. keepRate (drag) & fromActuals keep even fill.
         const rateEdit = edit.perDay!=null && !edit.keepRate && !edit.fromActuals;
@@ -1401,6 +1407,29 @@ function LookAhead(){
       const target=Math.max(...present.map(p=>Math.max(...byKey[p].map(m=>wdi(m.wk,m.day)))+1));
       const delta=target-Math.min(...mem.map(m=>wdi(m.wk,m.day))); if(delta===0) return ts;
       return ts.map(x=>{ if(runKey(x)!==k) return x; const w=fromWdi(wdi(x.wk,x.day)+delta); return {...x,day:w.day,wk:w.wk}; });
+    });
+  };
+  // Pull every direct successor of run k left so it starts the working day after k's (new) finish,
+  // bounded by each successor's OTHER predecessors — the downward mirror of asapRun. Runs only when
+  // the foreman taps the "pull successors left" chip after closing a run early; never automatic.
+  const pullRunSuccessors = k => {
+    pushUndo("Pulled successors left");
+    setTasks(ts=>{
+      const byKey={}; ts.forEach(x=>{ (byKey[runKey(x)]||(byKey[runKey(x)]=[])).push(x); });
+      if(!byKey[k]) return ts;
+      const finish = rk => byKey[rk] ? Math.max(...byKey[rk].map(m=>wdi(m.wk,m.day))) : null;
+      let out=ts, moved=0;
+      Object.keys(deps).forEach(sk=>{
+        if(!(deps[sk]||[]).includes(k) || !byKey[sk]) return;
+        const targets=(deps[sk]||[]).map(finish).filter(v=>v!=null).map(v=>v+1);
+        if(!targets.length) return;
+        const target=Math.max(...targets);
+        const start=Math.min(...byKey[sk].map(m=>wdi(m.wk,m.day)));
+        const delta=start-target;
+        if(delta>0){ moved++; out=out.map(x=>{ if(runKey(x)!==sk) return x; const w=fromWdi(wdi(x.wk,x.day)-delta); return {...x,day:w.day,wk:w.wk}; }); }
+      });
+      if(moved) setTimeout(()=>flash("↤ Pulled "+moved+" successor run"+(moved===1?"":"s")+" left"),0);
+      return out;
     });
   };
   // Preserve-merge each write: keep a prior reason when the caller doesn't pass one, and stamp `at` so the
@@ -1712,7 +1741,7 @@ function LookAhead(){
 
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk:(modal.wk||wk),crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, templates, rmTemplate, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
@@ -2206,7 +2235,10 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); onLog(); }}>{c.done?"✓ Logged":"✎ Log"}</span>}
       {!minimal && <div className="hqcorners">
         <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
-        <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
+        <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}
+          {/* generated (earned) MH = actual qty × the item's MH rate — green when the crew made rate */}
+          {c.logged && <b className={"genmh "+(c.earnMH>=c.planMH-0.05?"up":"dn")} title={"Generated MH — actual "+fmtN(c.actQty,c.actQty%1?1:0)+" "+it[CI.UM]+" × "+fmtN(it[CI.MH],3)+" MH/"+it[CI.UM]+(c.earnMH>=c.planMH-0.05?" — made plan":" — short of plan")}>{fmtN(c.earnMH,c.earnMH%1?1:0)} gen {c.earnMH>=c.planMH-0.05?"▲":"▼"}</b>}
+        </span>
       </div>}
       {!minimal && <div className="hqwm">RNGD{c.done && <b className="ck"> ✓</b>}</div>}
       {isCNO ? (
@@ -2455,7 +2487,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close}){
   const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
   const [showDetails,setShowDetails]=useState(false);
@@ -2478,6 +2510,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
   const lg = logs[t.id]||{};
   const L=useLogEntry(t,it,lg);
   const [reached,setReached]=useState("");
+  const [fix,setFix]=useState("none");        // inline recovery chip: none|prorate|addday|close|closepull
+  useEffect(()=>{ setFix("none"); },[t.id]);
   // Station-to-station takeoff (Edit): width/depth/density are ephemeral — they only
   // compute a generated qty (via the shared staGenQty), they are never saved on the task.
   const [width,setWidth]=useState(""); const [depth,setDepth]=useState(""); const [dens,setDens]=useState("");
@@ -2583,21 +2617,81 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
             </tbody>
           </table>
         );
+        /* Run-aware logging: the recap bar shows the whole run, and when the qty being punched
+           leaves the run off-plan, one-tap recovery chips appear — the chosen fix commits WITH
+           the save (prorate remaining / add days at plan rate / close early + pull successors). */
+        const um = it[CI.UM];
+        const dayIdx = runMem.findIndex(m=>m.id===t.id)+1;
+        const othersActual = runMem.filter(m=>m.id!==t.id && logs[m.id]).reduce((s,m)=>s+((logs[m.id].qty)||0),0);
+        const openAfter = runMem.filter(m=>m.id!==t.id && logs[m.id]==null).length;
+        const curQty = L.qty===""?null:(+L.qty||0);
+        const remAfter = curQty==null?null:Math.max(0, Math.round((runQtot-othersActual-curQty)*100)/100);
+        const openPlan = Math.round(runMem.filter(m=>logs[m.id]==null).reduce((s,m)=>s+(+m.qty||0),0)*100)/100;
+        const chips=[];
+        if(runN>1 && curQty!=null && openAfter>0 && Math.abs(curQty-t.qty)>0.01){
+          const fN=(v,d)=>fmtN(v,v%1?(d==null?1:d):0);
+          if(remAfter<=0.01){
+            chips.push({id:"close", why:"Run complete "+(openAfter===1?"a day":openAfter+" days")+" early",
+              title:"Close the run — remove the "+(openAfter===1?"remaining card":openAfter+" remaining cards"),
+              sub:"the run's total is in the ground · successors stay where they are"});
+            if(succCount>0) chips.push({id:"closepull",
+              title:"Close the run + pull "+succCount+" successor"+(succCount===1?"":"s")+" left",
+              sub:"linked runs slide up to start right after the new finish (their other predecessors still hold them)"});
+            chips.push({id:"none", title:"Keep the remaining day"+(openAfter===1?"":"s"), sub:"hold as float — nothing moves"});
+          } else if(curQty<t.qty-0.01){
+            const pr=remAfter/openAfter, prMH=pr*it[CI.MH];
+            chips.push({id:"prorate", why:"Day came in short — what happens to the remaining "+fN(remAfter)+" "+um+"?",
+              title:"Prorate over the "+openAfter+" day"+(openAfter===1?"":"s")+" left → "+fN(pr)+" "+um+"/day",
+              sub:fN(prMH,0)+" MH/day"+(prMH>capMH+0.5?" — OVER the "+capMH+" MH cap":" (cap "+capMH+")")+" · finish unchanged", warn:prMH>capMH+0.5});
+            const extra=Math.max(0, Math.ceil(remAfter/Math.max(runRate,0.0001))-openAfter);
+            if(extra>0){ const nf=fromWdi(runFinishWdi+extra), r2=remAfter/(openAfter+extra);
+              chips.push({id:"addday", title:"Add "+(extra===1?"a day":extra+" days")+" to catch up → "+fN(r2)+" "+um+"/day",
+                sub:fN(r2*it[CI.MH],0)+" MH/day · finish moves to "+DAYS[nf.day]+" "+dLabel(nf.wk,nf.day)+(succCount?" · "+succCount+" successor"+(succCount===1?"":"s")+" push with it":"")}); }
+            chips.push({id:"none", title:"Leave the plan alone", sub:"remaining days stay as drawn — the run will under-run"});
+          } else {
+            const pr=remAfter/openAfter;
+            chips.push({id:"prorate", why:"Ahead of plan — "+fN(remAfter)+" "+um+" left over "+openAfter+" day"+(openAfter===1?"":"s"),
+              title:"Lighten the remaining day"+(openAfter===1?"":"s")+" → "+fN(pr)+" "+um+"/day",
+              sub:fN(pr*it[CI.MH],0)+" MH/day · finish unchanged"});
+            chips.push({id:"none", title:"Leave the plan alone", sub:"keep the drawn rate — the run may finish early"});
+          }
+        }
+        const effFix = chips.some(c=>c.id===fix) ? fix : "none";
+        const doSave = () => {
+          saveLog(t.id,L.qty,L.mh,true,L.reason);
+          const tl={[t.id]:+L.qty||0};
+          if(effFix==="prorate") resliceRun(t,{fromActuals:true, days:runN, treatLogged:tl});
+          else if(effFix==="addday") resliceRun(t,{fromActuals:true, treatLogged:tl});
+          else if(effFix==="close"||effFix==="closepull"){ resliceRun(t,{closeRun:true, treatLogged:tl}); if(effFix==="closepull") pullRunSuccessors(myKey); }
+          close();
+        };
         const logSection = (
           <>
-            <div className="loghdr">Log — plan {fmtN(t.qty)} {it[CI.UM]} / {fmtN(t.qty*it[CI.MH])} MH</div>
+            <div className="loghdr">Log — {runN>1?`day ${dayIdx} of ${runN} · `:""}plan {fmtN(t.qty)} {um} / {fmtN(t.qty*it[CI.MH])} MH</div>
+            {runN>1 && <div className="runbar">
+              <b>{fmtN(runQtot,runQtot%1?1:0)} {um}</b> run<i>·</i>{fmtN(runActual,runActual%1?1:0)} in the ground<i>·</i>
+              <b className={openPlan>0.01?"rleft":""}>{fmtN(openPlan,openPlan%1?1:0)} still scheduled</b><i>·</i>{openAfter} open day{openAfter===1?"":"s"} after this
+              <span className="rtick"><i style={{width:Math.min(100,(runActual+openPlan)>0?runActual/(runActual+openPlan)*100:0)+"%"}}/></span>
+            </div>}
             {L.staTask && <div className="logrow">
               <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
-              <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+it[CI.UM]:"—"}</b></div>
+              <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+um:"—"}</b></div>
             </div>}
             <div className="logrow">
-              <label>Qty ({it[CI.UM]})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
+              <label>Qty ({um})<input type="number" value={L.qty} onChange={e=>L.setQty(e.target.value)}/></label>
               <label>Manhours<input type="number" value={L.mh} onChange={e=>L.setMh(e.target.value)}/></label>
               <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
                 <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
             </div>
+            {chips.length>0 && <div className={"fixchips"+(remAfter<=0.01?" pull":"")}>
+              {chips[0].why && <span className="fixwhy">{chips[0].why}</span>}
+              {chips.map(ch=>
+                <button key={ch.id} type="button" className={"fixchip"+(effFix===ch.id?" on":"")} onClick={()=>setFix(ch.id)}>
+                  <i className="rb"/><span><b>{ch.title}</b><small className={ch.warn?"warn":""}>{ch.sub}</small></span>
+                </button>)}
+            </div>}
             <div className="btnrow">
-              <button className="cta" onClick={()=>{saveLog(t.id,L.qty,L.mh,true,L.reason); close();}}>Save</button>
+              <button className="cta" onClick={doSave}>{effFix==="close"||effFix==="closepull"?"Save + close run":effFix!=="none"?"Save + re-slice":"Save"}</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>Save as in-progress</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true,""); close();}}>Log as planned ✓</button>
               <span className="sp"/>
@@ -5239,7 +5333,11 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .card.hq{padding:5px 8px 7px}
 .hqcorners{display:flex;justify-content:space-between;font:700 9px "Saira Condensed";letter-spacing:.04em;text-transform:uppercase;min-height:11px}
 .hqday{opacity:.85;transform:rotate(-4deg);transform-origin:left}
-.hqmh{opacity:.9;transform:rotate(4deg);transform-origin:right}
+.hqmh{opacity:.9;transform:rotate(4deg);transform-origin:right;text-align:right}
+/* Generated (earned) MH under the planned MH on a logged card — green made rate, red short. */
+.hqmh .genmh{display:block;font:800 9px "IBM Plex Mono";letter-spacing:0;text-transform:none;margin-top:1px}
+.genmh.up{color:#0c6e35}
+.genmh.dn{color:#b3261e}
 .hqwm{font:800 15px "Saira Condensed";letter-spacing:.06em;text-align:center;margin:-2px 0 2px}
 .hqbody{font-size:10.5px;line-height:1.28}
 /* Quick-log affordance on a board card — hover-reveal on desktop so it never clutters the dense grid;
@@ -5380,6 +5478,25 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .impact-i.over b{color:var(--bad)}
 .reflowbox{background:var(--pn2);border:1px solid var(--acc);border-radius:10px;padding:9px 11px;margin:6px 0 4px}
 .reflowbox .ovnote{color:var(--dm)}
+/* Run-aware logging: recap bar + inline recovery chips in the Details & Log tab */
+.runbar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;padding:7px 11px;margin:0 0 9px;font:600 12px "IBM Plex Mono";color:var(--tx)}
+.runbar i{color:var(--dm2);font-style:normal}
+.runbar b{font-size:13px}
+.runbar .rleft{color:var(--warn)}
+.runbar .rtick{height:7px;flex:1;min-width:90px;border-radius:99px;background:var(--ln);position:relative;overflow:hidden}
+.runbar .rtick i{position:absolute;top:0;bottom:0;left:0;background:var(--acc);border-radius:99px}
+.fixchips{display:flex;flex-direction:column;gap:6px;background:rgba(220,180,40,.06);border:1px dashed rgba(220,180,40,.45);border-radius:10px;padding:9px 11px;margin:2px 0 10px}
+.fixchips.pull{background:rgba(60,190,110,.07);border-color:rgba(60,190,110,.5)}
+.fixwhy{font:700 10.5px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:var(--warn)}
+.fixchips.pull .fixwhy{color:var(--good)}
+.fixchip{display:flex;align-items:center;gap:9px;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;padding:7px 10px;cursor:pointer;color:var(--tx);text-align:left;font:inherit}
+.fixchip:hover{border-color:var(--acc)}
+.fixchip.on{border-color:var(--acc);box-shadow:0 0 0 2px rgba(23,171,88,.25)}
+.fixchip .rb{flex:none;width:13px;height:13px;border-radius:50%;border:2px solid var(--dm2);box-sizing:border-box}
+.fixchip.on .rb{border-color:var(--acc);background:var(--acc)}
+.fixchip b{display:block;font-weight:700;font-size:12.5px;line-height:1.3}
+.fixchip small{display:block;font:600 11px "IBM Plex Mono";color:var(--dm)}
+.fixchip small.warn{color:var(--warn)}
 .toast.plain{border-color:var(--acc);font-size:14px}
 /* inline avg/day stepper + selection-bar bulk shift */
 .stepper{display:flex;align-items:stretch;gap:0}
