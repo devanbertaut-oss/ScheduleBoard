@@ -628,6 +628,12 @@ const wkTitle = wk => {
 /* Delay / production reason codes — attached to a day's log so the EOS letter and any delay claim
    carry the cause, not just the shortfall. "On plan" and "" both mean no delay. */
 const REASONS = ["On plan","Weather","Materials late/short","Equipment / breakdown","Utility conflict","Access / ROW","Inspection hold","Other"];
+/* Non-working holidays (US federal, observed) — the scheduler skips these when placing a run and the board
+   greys the column, so work never auto-lands on July 4th / Christmas. Editable + synced with the board. */
+const US_HOLIDAYS = {
+  "2025-01-01":"New Year's Day","2025-01-20":"MLK Day","2025-02-17":"Presidents' Day","2025-05-26":"Memorial Day","2025-06-19":"Juneteenth","2025-07-04":"Independence Day","2025-09-01":"Labor Day","2025-11-11":"Veterans Day","2025-11-27":"Thanksgiving","2025-11-28":"Day after Thanksgiving","2025-12-25":"Christmas",
+  "2026-01-01":"New Year's Day","2026-01-19":"MLK Day","2026-02-16":"Presidents' Day","2026-05-25":"Memorial Day","2026-06-19":"Juneteenth","2026-07-03":"Independence Day (obs)","2026-09-07":"Labor Day","2026-11-11":"Veterans Day","2026-11-26":"Thanksgiving","2026-11-27":"Day after Thanksgiving","2026-12-25":"Christmas"
+};
 /* ---------- field-voice EOS descriptions (Silas cadence) ---------- */
 const stickLen = n => /arch pipe|reinforced concrete pipe|rcp\b/i.test(n)?8 : /hppp|polypropylene|pvc/i.test(n)?20 : /ductile|di water/i.test(n)?18 : 0;
 function autoDesc(name, ts, logs, calc, isSub){
@@ -713,6 +719,7 @@ function LookAhead(){
   const [reflowOn, setReflowOn] = useState(false);       // board: capacity re-forecast on/off
   const [deps, setDeps] = useState({});                  // predecessors: { dependentRunKey: [predRunKey,...] } — dependent auto-starts after latest pred finishes
   const [rainDays, setRainDays] = useState({});          // rain-outs: { 'YYYY-MM-DD': true } — the day is lost; all work from it pushes one working day
+  const [holidays, setHolidays] = useState(US_HOLIDAYS); // non-working holidays: { 'YYYY-MM-DD': label } — skipped when placing a run, greyed on the board
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
@@ -772,6 +779,7 @@ function LookAhead(){
     if (s.milestones) setMilestones(s.milestones);
     if (s.deps) setDeps(_mig ? _mig.deps : s.deps);
     if (s.rainDays) setRainDays(s.rainDays);
+    if (s.holidays) setHolidays(s.holidays);
     if (s.truckDay) setTruckDay(s.truckDay);
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
@@ -795,8 +803,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -808,7 +816,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -1100,6 +1108,17 @@ function LookAhead(){
     setLogs(l=>{const c={...l}; ids.forEach(id=>delete c[id]); return c;});
     setDeps(d=>{ const c={...d}; delete c[k]; Object.keys(c).forEach(dk=>{ const f=c[dk].filter(p=>p!==k); if(f.length) c[dk]=f; else delete c[dk]; }); return c; });
     setModal(null);
+  };
+  // Duplicate an entire run: clone its cards to a fresh run id, placed the working days immediately after
+  // the original ends (rolling weekends/holidays). Logs are NOT copied — the copy is fresh, unlogged.
+  const dupRun = t => {
+    const k=runKey(t); const src=tasks.filter(x=>runKey(x)===k).sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+    if(!src.length) return;
+    pushUndo("Duplicated run"); const newRid=rid(), N=src.length;
+    const start=wdi(src[src.length-1].wk,src[src.length-1].day)+1;   // first working day after the run ends
+    const clones=src.map((x,i)=>{ const nw=fromWdi(start+i); const {id,rid:_r,...rest}=x; return {...rest, id:tid(), rid:newRid, wk:nw.wk, day:nw.day}; });
+    setTasks(ts=>[...ts,...clones]); setModal(null);
+    flash(`Duplicated ${N===1?"task":N+"-day run"} → ${clones[0].wk} · drag to reposition`);
   };
   const addDep = (depKey,predKey)=> { pushUndo("Added link"); setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; }); };
   const rmDep  = (depKey,predKey)=> { pushUndo("Removed link"); setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; }); };
@@ -1483,10 +1502,11 @@ function LookAhead(){
               <th className="rescol">Resource</th>
               {DAYS.map((d,i)=>{
                 const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
-                const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date];
+                const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
                 const w = wxForDate(date);
-                return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+                return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(hol?"holiday":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
                   {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
+                  {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
                   {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
                   {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
               })}
@@ -1520,11 +1540,12 @@ function LookAhead(){
 
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
-      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
+      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
+      {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
@@ -2019,7 +2040,7 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
-function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close}){
   const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
   const [showDetails,setShowDetails]=useState(false);
@@ -2165,6 +2186,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
               <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>Save as in-progress</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true,""); close();}}>Log as planned ✓</button>
               <span className="sp"/>
+              <button className="ghost" onClick={()=>dupRun(t)} title="Clone this run to the working days right after it — drag to reposition">⧉ Duplicate</button>
               {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
               <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
             </div>
@@ -2358,6 +2380,7 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
         <button className="cta" onClick={close}>Done</button>
         {hasOv && <button className="ghost" onClick={()=>upTask(t.id,{ov:null})}>Reset all overrides</button>}
         <span className="sp"/>
+        <button className="ghost" onClick={()=>dupRun(t)} title="Clone this run to the working days right after it — drag to reposition">⧉ Duplicate</button>
         {runN>1 && <button className="danger" onClick={()=>{ if(window.confirm("Delete all "+runN+" days of this run (crew + item + location)?")) rmRun(t); }}>Delete run ({runN})</button>}
         <button className="danger" onClick={()=>rmTask(t.id)}>Delete task</button>
       </div>
@@ -2414,7 +2437,7 @@ function CrewModal({res,weekTasks,logs,taskCalc,setCrews,rmResource,close}){
 }
 
 /* ============ SCHEDULE MODAL — search + station→qty (PPC logic) ============ */
-function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close,add}){
+function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,holidays,addDep,close,add}){
   const [q,setQ]=useState("");
   const [ci,setCi]=useState(preset.ci ?? null);
   // Smart defaults: reuse the last-scheduled crew and default to today's weekday.
@@ -2618,13 +2641,15 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
             const sliceRate = (prodOv!==""&&+prodOv>0) ? +prodOv : perDay;
             const calloutSta = (mode==="sta" && a!=null) ? [a, b??a] : null; // callout: location range kept in entered order, same on each day
             let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
-            for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend work
+            const isHol = d => !!(holidays && holidays[addDays(curWk,d)]);   // curWk+d is a non-working holiday
+            while(isHol(curDay)){ curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); } }   // never start a run on a holiday
+            for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend/holiday work
               const dq=Math.min(left, Math.round(sliceRate*100)/100); left=Math.round((left-dq)*100)/100;
               const staSpan = (!isCallout && cursor!=null && useQty>0) ? (b-a)*(dq/useQty) : null;
               const sta = isCallout ? calloutSta : (cursor!=null? [cursor, cursor+staSpan] : null); if(cursor!=null && !isCallout) cursor+=staSpan;
               list.push({ id:tid(), rid:runId, res, ci, day:curDay, qty:dq, sta, wk:curWk, loc:loc.trim()||null,
                 ...(equip.trim()?{equip:equip.trim()}:{}), ...(trucks.trim()?{trucks:trucks.trim()}:{}), ...((+dig>0)?{dig:+dig}:{}) });
-              curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); }  // after Friday → next Monday
+              do { curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); } } while(isHol(curDay));  // next working day, skipping weekends + holidays
             }
             if(predSel.length){ predSel.forEach(pk=>addDep(runId,pk)); }
             add(list);
@@ -2660,6 +2685,30 @@ function EosLogRow({t,it,saveLog,logged}){
         <select value={L.reason} onChange={e=>{ const v=e.target.value; L.setReason(v); if(logged||L.qty!=="") saveLog(t.id, L.qty===""?t.qty:L.qty, L.mh===""?L.planMH():L.mh, done, v); }}>
           <option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>}
     </div>
+  );
+}
+/* Holiday calendar — non-working days the scheduler skips and the board greys. Seeded with US federal
+   holidays; editable for company days / shutdowns. Synced with the board like any other state. */
+function HolidayModal({holidays,setHolidays,close}){
+  const [date,setDate]=useState(""); const [label,setLabel]=useState("");
+  const list=Object.keys(holidays||{}).sort();
+  const today=new Date().toISOString().slice(0,10);
+  const add=()=>{ if(!date) return; setHolidays(h=>({...h,[date]:label.trim()||"Holiday"})); setDate(""); setLabel(""); };
+  const rm=d=>setHolidays(h=>{ const c={...h}; delete c[d]; return c; });
+  return (
+    <Modal close={close} w={480}>
+      <h3>Holidays — non-working days</h3>
+      <div className="ovnote">New runs skip these days and the board greys the column, so work never auto-lands on a holiday. Seeded with US federal holidays — add company days or a shutdown, or remove any you work.</div>
+      <div className="logrow" style={{marginTop:10}}>
+        <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+        <label>Label<input type="text" placeholder="e.g. Company shutdown" value={label} onChange={e=>setLabel(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")add();}}/></label>
+        <button className="cta" disabled={!date} onClick={add}>Add</button>
+      </div>
+      <table className="dt list" style={{marginTop:8}}><thead><tr><th>Date</th><th>Holiday</th><th aria-label="remove"/></tr></thead>
+        <tbody>{list.length ? list.map(d=><tr key={d} className={d>=today?"":"dim2"}><td>{d}</td><td>{holidays[d]}</td><td className="r"><button className="ghost sm" title="Remove" onClick={()=>rm(d)}>✕</button></td></tr>)
+          : <tr><td colSpan={3} className="empty">No holidays set — the crew works every weekday.</td></tr>}</tbody></table>
+      <div className="btnrow"><button className="ghost" onClick={close}>Close</button></div>
+    </Modal>
   );
 }
 function RainoutModal({wk,tasks,rainDays,applyRainout,clearRainout,close}){
@@ -4010,6 +4059,7 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Data — import / export",hint:"action",run:()=>setModal({type:"data"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
     {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
+    {label:"Holidays / non-working days",hint:"action",run:()=>setModal({type:"holidays"})},
     {label:"KPI summary",hint:"action",run:()=>setModal({type:"kpisummary"})},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
   ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})));
@@ -4359,6 +4409,8 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .msflag{display:inline-flex;align-items:center;gap:3px;margin-top:4px;font:700 9px "Saira Condensed";letter-spacing:.02em;color:#0c0d0c;background:var(--lime);padding:2px 6px 2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .board thead th.rain{background:linear-gradient(var(--bg),rgba(90,120,170,.14))}
 .rainflag{display:block;margin-top:3px;font:700 9px "Saira Condensed";letter-spacing:.04em;color:#bcd0ea;background:rgba(70,100,150,.28);border:1px solid rgba(120,150,200,.5);padding:1px 6px;border-radius:3px;white-space:nowrap}
+.board thead th.holiday{background:linear-gradient(var(--bg),rgba(150,120,60,.16))}
+.holflag{display:block;margin-top:3px;font:700 9px "Saira Condensed";letter-spacing:.04em;color:#e6cf9a;background:rgba(150,115,45,.26);border:1px solid rgba(190,155,80,.5);padding:1px 6px;border-radius:3px;white-space:nowrap}
 .wxflag{display:block;margin-top:3px;font:700 10px "IBM Plex Mono";color:var(--dm);white-space:nowrap}
 .wxflag.wet{color:#bcd0ea}
 .wxrain{color:#7fa8d8}
