@@ -1406,6 +1406,8 @@ function LookAhead(){
   const wx = useForecast(wxLoc);
   const wxForDate = date => { if(!wx) return null; const i=wx.time.indexOf(date); if(i<0) return null;
     return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
+  // Which visible columns are storming (rain ≥ 40%) — drives the canvas StormLayer's rebuild.
+  const stormSig = useMemo(()=> spanWeeks.map(w=>[0,1,2,3,4].map(i=>{ const f=wxForDate(addDays(w,i)); return (f && f.rain!=null && f.rain>=40)?"1":"0"; }).join("")).join("|"), [spanWeeks, wx]);
 
   return (
     <div className="la-root" data-theme={theme}>
@@ -1548,6 +1550,7 @@ function LookAhead(){
             {wi>0 && <div className="weekband no-print"><span>Week {wi} ahead</span><em>{wkTitle(w)}</em></div>}
             <WeekTable wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>
           </React.Fragment>)}
+        <StormLayer {...{stormSig,wk,wkSpan,cardStyle,reflowOn,tasks}}/>
         <DepLayer {...{deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef:depLayerRef}}/>
       </div>
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
@@ -1649,7 +1652,6 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
             const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
             const w = wxForDate(date); const storm = stormDays[i];
             return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(storm?"stormy ":"")+(hol?"holiday":"")}>
-              {storm && <span className="stormfx" aria-hidden="true"><i className="rainfx"/><i className="boltfx"/></span>}
               <span>{d}</span><b>{dLabel(wk,i)}</b>
               {w && <span className={"wxflag"+(w.rain>=60?" wet":w.rain>=40?" storm":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
               {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
@@ -2080,6 +2082,106 @@ function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef}){
       <path ref={rubberRef} className="deprubber" d="" markerEnd="url(#depah)"/>
     </svg>
   );
+}
+/* Canvas storm — falling rain + forked lightning painted only inside the day columns whose forecast
+   rain chance is ≥ 40% (marked th.stormy). A single content-sized canvas over the board (mirrors
+   DepLayer). Battery-guarded: paused when the tab is hidden; skipped entirely under reduced-motion,
+   where the static blue column tint stands in. */
+const STORM_OPT = { density:0.0013, len:[7,18], spd:[3.0,6.0], wind:0.16, lw:[0.8,1.4], alpha:[0.16,0.55], every:[3200,6800], flash:0.42, dbl:0.32 };
+const _srnd = a => a[0]+Math.random()*(a[1]-a[0]);
+function _boltPath(x0,x1,top,bottom){
+  let pts=[{x:x0+Math.random()*(x1-x0),y:top},{x:x0+Math.random()*(x1-x0),y:bottom}];
+  for(let it=0;it<5;it++){ const np=[], spread=((x1-x0)*0.55)/(it+1);
+    for(let i=0;i<pts.length-1;i++){ const a=pts[i],b=pts[i+1];
+      np.push(a,{x:Math.max(x0,Math.min(x1,(a.x+b.x)/2+(Math.random()-0.5)*spread)), y:(a.y+b.y)/2}); }
+    np.push(pts[pts.length-1]); pts=np; }
+  const forks=[], nf=1+(Math.random()<0.6?1:0);
+  for(let k=0;k<nf;k++){ const idx=3+Math.floor(Math.random()*(pts.length-6)); if(idx<1||idx>=pts.length) continue;
+    let fx=pts[idx].x, fy=pts[idx].y, seg=3+Math.floor(Math.random()*3), dir=Math.random()<0.5?-1:1, fp=[{x:fx,y:fy}];
+    for(let s=0;s<seg;s++){ fx+=dir*(5+Math.random()*13); fy+=9+Math.random()*15; fp.push({x:fx,y:fy}); } forks.push(fp); }
+  return {pts, forks};
+}
+function _drawBolt(ctx,b){
+  const p=b.pts; ctx.save(); ctx.globalAlpha=Math.max(0,Math.min(1,b.life));
+  ctx.lineJoin="round"; ctx.lineCap="round";
+  ctx.shadowColor="rgba(190,216,255,0.9)"; ctx.shadowBlur=15; ctx.strokeStyle="#dbeaff"; ctx.lineWidth=2.3;
+  ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y); for(let i=1;i<p.length;i++) ctx.lineTo(p[i].x,p[i].y); ctx.stroke();
+  b.forks.forEach(fp=>{ ctx.beginPath(); ctx.moveTo(fp[0].x,fp[0].y); for(let j=1;j<fp.length;j++) ctx.lineTo(fp[j].x,fp[j].y); ctx.stroke(); });
+  ctx.shadowBlur=0; ctx.strokeStyle="#ffffff"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y); for(let i=1;i<p.length;i++) ctx.lineTo(p[i].x,p[i].y); ctx.stroke();
+  ctx.restore();
+}
+function StormLayer({stormSig,wk,wkSpan,cardStyle,reflowOn,tasks}){
+  const ref = useRef(null);
+  const S = useRef({regions:[],drops:[],bolts:[],flashes:[]});
+  const raf = useRef(0);
+  useEffect(()=>{
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cv = ref.current; if(!cv) return; const wrap = cv.parentNode; if(!wrap) return;
+    let live = true;
+    const build = ()=>{
+      const base = cv.getBoundingClientRect();
+      const regions=[]; let maxBottom=0;
+      wrap.querySelectorAll(".board thead th.stormy").forEach(th=>{
+        const table=th.closest("table.board"); if(!table) return;
+        const tr=th.getBoundingClientRect(), tb=table.getBoundingClientRect().bottom;
+        const thead=table.tHead, hb=thead?thead.getBoundingClientRect().bottom:tr.bottom;
+        const x=tr.left-base.left, w=tr.width, top=hb-base.top, bottom=tb-base.top;
+        if(w>2 && bottom-top>10){ regions.push({x,w,top,bottom,next:0}); maxBottom=Math.max(maxBottom,bottom); }
+      });
+      const dpr=Math.min(1.5, window.devicePixelRatio||1);
+      const W=Math.max(1, wrap.scrollWidth), H=Math.max(1, Math.min(wrap.scrollHeight, Math.ceil(maxBottom)+6));
+      cv.style.width=W+"px"; cv.style.height=H+"px"; cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+      cv.getContext("2d").setTransform(dpr,0,0,dpr,0,0);
+      const drops=[];
+      regions.forEach((r,ri)=>{ const n=Math.max(6, Math.min(60, Math.round(r.w*(r.bottom-r.top)*STORM_OPT.density)));
+        for(let i=0;i<n;i++) drops.push({ri, x:r.x+Math.random()*r.w, y:r.top+Math.random()*(r.bottom-r.top), len:_srnd(STORM_OPT.len), spd:_srnd(STORM_OPT.spd), a:_srnd(STORM_OPT.alpha), lw:_srnd(STORM_OPT.lw)}); });
+      S.current={regions, drops, bolts:[], flashes:[]};
+      return regions.length;
+    };
+    const animate = (t)=>{
+      if(!live) return;
+      const s=S.current, ctx=cv.getContext("2d");
+      for(const r of s.regions) ctx.clearRect(r.x-1, r.top-1, r.w+2, (r.bottom-r.top)+2);
+      // schedule strikes (bolts/flashes tagged with their region index so they stay in-column)
+      for(let ri=0; ri<s.regions.length; ri++){ const r=s.regions[ri]; if(!r.next) r.next=t+_srnd(STORM_OPT.every);
+        if(t>=r.next){ r.next=t+_srnd(STORM_OPT.every);
+          s.bolts.push({...(_boltPath(r.x+2,r.x+r.w-2,r.top,r.bottom)), ri, life:1});
+          s.flashes.push({ri, life:1});
+          if(Math.random()<STORM_OPT.dbl){ s.bolts.push({...(_boltPath(r.x+2,r.x+r.w-2,r.top,r.bottom)), ri, life:0.8, delay:t+70}); s.flashes.push({ri, life:0.8, delay:t+70}); } } }
+      // draw each column clipped to its own rectangle — rain, flash, bolt glow and forks never bleed sideways
+      for(let ri=0; ri<s.regions.length; ri++){ const r=s.regions[ri];
+        ctx.save(); ctx.beginPath(); ctx.rect(r.x, r.top, r.w, r.bottom-r.top); ctx.clip();
+        for(const f of s.flashes){ if(f.ri!==ri || (f.delay&&t<f.delay)) continue;
+          const al=f.life*STORM_OPT.flash, g=ctx.createLinearGradient(0,r.top,0,r.bottom);
+          g.addColorStop(0,"rgba(228,242,255,"+al+")"); g.addColorStop(0.55,"rgba(200,224,255,"+(al*0.5)+")"); g.addColorStop(1,"rgba(200,224,255,0)");
+          ctx.fillStyle=g; ctx.fillRect(r.x, r.top, r.w, r.bottom-r.top); }
+        ctx.lineCap="round"; ctx.strokeStyle="rgba(200,222,255,1)";
+        for(const d of s.drops){ if(d.ri!==ri) continue;
+          ctx.globalAlpha=d.a; ctx.lineWidth=d.lw; ctx.beginPath(); ctx.moveTo(d.x,d.y); ctx.lineTo(d.x+STORM_OPT.wind*d.len, d.y+d.len); ctx.stroke();
+          d.y+=d.spd; d.x+=STORM_OPT.wind*d.spd*0.6;
+          if(d.y>r.bottom){ d.y=r.top-d.len; d.x=r.x+Math.random()*r.w; }
+          else if(d.x>r.x+r.w){ d.x-=r.w; } }   // recirculate horizontally so wind can't march drops out of the column
+        ctx.globalAlpha=1;
+        for(const b of s.bolts){ if(b.ri!==ri || (b.delay&&t<b.delay)) continue; _drawBolt(ctx,b); }
+        ctx.restore();
+      }
+      for(let i=s.flashes.length-1;i>=0;i--){ const f=s.flashes[i]; if(f.delay&&t<f.delay) continue; f.life-=0.05; if(f.life<=0) s.flashes.splice(i,1); }
+      for(let i=s.bolts.length-1;i>=0;i--){ const b=s.bolts[i]; if(b.delay&&t<b.delay) continue; b.life-=0.07; if(b.life<=0) s.bolts.splice(i,1); }
+      raf.current=requestAnimationFrame(animate);
+    };
+    const start = ()=>{ if(raf.current) return; if(document.hidden) return; if(!S.current.regions.length) return; raf.current=requestAnimationFrame(animate); };
+    const stop = ()=>{ if(raf.current){ cancelAnimationFrame(raf.current); raf.current=0; } };
+    const rebuild = ()=>{ stop(); const n=build(); if(!reduce && n) start(); else { const ctx=cv.getContext("2d"); ctx.clearRect(0,0,cv.width,cv.height); } };
+    rebuild();
+    const ro = new ResizeObserver(()=>{ if(live) rebuild(); });
+    ro.observe(wrap); wrap.querySelectorAll("table.board").forEach(tb=>ro.observe(tb));
+    const onVis = ()=>{ if(document.hidden) stop(); else if(!reduce) start(); };
+    document.addEventListener("visibilitychange", onVis);
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(live) rebuild(); });
+    return ()=>{ live=false; stop(); ro.disconnect(); document.removeEventListener("visibilitychange", onVis); };
+  },[stormSig,wk,wkSpan,cardStyle,reflowOn,tasks]);
+  return <canvas ref={ref} className="stormcanvas" aria-hidden="true"/>;
 }
 function SiteRow({row,notes,setNotes,setModal,stormDays}){
   const mine = d => notes.filter(n=>n.row===row.id && n.day===d);
@@ -4631,39 +4733,13 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .wxflag.wet .wxrain{color:#bcd0ea}
 .wxflag.storm{color:#a9c6ef}
 .wxflag.storm .wxrain{color:#cfe0f8}
-/* Storm treatment — rain chance ≥ 40%: real falling raindrops down the whole day column,
-   with a periodic lightning flash + bolt at the head. Two parallax rain layers give depth;
-   background-position loops seamlessly on the tile size. */
-.board thead th.stormy{background:linear-gradient(rgba(38,66,116,.34),rgba(58,95,158,.20));position:relative;overflow:hidden;box-shadow:inset 0 -2px 0 rgba(120,170,235,.65)}
-.board thead th.stormy>:not(.stormfx){position:relative;z-index:2}
-.stormfx{position:absolute;inset:0;pointer-events:none;z-index:0;overflow:hidden}
-.stormfx .rainfx{position:absolute;inset:0;opacity:.85;animation:rainFall .5s linear infinite;
-  background-image:
-    repeating-linear-gradient(94deg, transparent 0 7px, rgba(198,224,255,.6) 7px 8px, transparent 8px 10px),
-    repeating-linear-gradient(94deg, transparent 0 13px, rgba(165,202,248,.42) 13px 14px, transparent 14px 17px);
-  background-size:20px 20px, 30px 30px}
-.stormfx .boltfx{position:absolute;inset:0;opacity:0;z-index:1;
-  background:radial-gradient(140% 120% at 50% 0%, rgba(236,246,255,1), rgba(198,222,255,.35) 48%, transparent 74%);
-  animation:lightning 4.2s ease-out infinite}
-.stormfx .boltfx::after{content:"";position:absolute;left:50%;top:8%;width:16px;height:80%;transform:translateX(-50%);
-  background:linear-gradient(#ffffff,#dcecff);
-  clip-path:polygon(58% 0, 22% 52%, 50% 52%, 28% 100%, 84% 40%, 52% 40%);
-  filter:drop-shadow(0 0 6px rgba(220,236,255,1)) drop-shadow(0 0 2px #fff)}
-.cell.rainy{background:linear-gradient(rgba(70,110,178,.18),rgba(70,110,178,.08))!important;position:relative;overflow:hidden}
-.cell.rainy::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;opacity:.62;
-  background-image:
-    repeating-linear-gradient(94deg, transparent 0 7px, rgba(198,224,255,.5) 7px 8px, transparent 8px 10px),
-    repeating-linear-gradient(94deg, transparent 0 13px, rgba(165,202,248,.34) 13px 14px, transparent 14px 17px);
-  background-size:20px 20px, 30px 30px;
-  animation:rainFall .55s linear infinite}
-/* Lightning flashes the WHOLE column: header bolt + a synced white flash over every cell below. */
-.cell.rainy::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:2;opacity:0;
-  background:linear-gradient(rgba(226,240,255,.9),rgba(200,224,255,.5));
-  animation:lightning 4.2s ease-out infinite}
-.cell.rainy>*{position:relative;z-index:3}
-@keyframes rainFall{from{background-position:0 0, 0 0}to{background-position:-5px 20px, -7px 30px}}
-@keyframes lightning{0%,84%,100%{opacity:0}85%{opacity:.95}86.5%{opacity:.12}88%{opacity:1}90%{opacity:.04}91%{opacity:.6}92.5%{opacity:0}}
-@media (prefers-reduced-motion: reduce){ .stormfx .rainfx,.stormfx .boltfx,.cell.rainy::before,.cell.rainy::after{animation:none} }
+/* Storm days — rain chance ≥ 40%. Static column cues (dark sky header + faint blue cell tint)
+   mark which columns are stormy; the falling rain + lightning is painted by <StormLayer/>, a single
+   canvas over the board (see .stormcanvas). The static cues also stand in under reduced-motion. */
+.board thead th.stormy{background:linear-gradient(rgba(38,66,116,.34),rgba(58,95,158,.20));box-shadow:inset 0 -2px 0 rgba(120,170,235,.6)}
+.cell.rainy{background:linear-gradient(rgba(70,110,178,.13),rgba(70,110,178,.05))!important}
+tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,110,178,.08))!important}
+.stormcanvas{position:absolute;top:0;left:0;pointer-events:none;z-index:3}
 .trenchwrap{display:flex;justify-content:center;margin:8px 0 0}
 .trenchsvg{max-width:100%;height:auto;border:1px solid var(--ln);border-radius:8px;background:#fbfaf7}
 .msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
@@ -5124,6 +5200,7 @@ tr.altrow .cell:hover{background:var(--cellhov)}
  body.board-print .boardwrap.multiweek>table.board{break-before:page;page-break-before:always;break-inside:avoid}
  body.board-print .boardwrap.multiweek>table.board:first-of-type{break-before:auto;page-break-before:auto}
  body.board-print .boardwrap.multiweek .deparrows{display:none!important}
+ body.board-print .stormcanvas{display:none!important}
 }
 `;
 
