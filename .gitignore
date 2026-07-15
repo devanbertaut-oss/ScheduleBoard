@@ -1,0 +1,5 @@
+node_modules/
+# Synthetic test fixtures — regenerate with: node tools/make-fixtures.mjs
+tools/fixtures/
+# Playwright e2e artifacts (screenshots, traces)
+tools/e2e-out/

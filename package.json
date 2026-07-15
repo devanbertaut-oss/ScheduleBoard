@@ -3,9 +3,18 @@
   "private": true,
   "description": "RNGD Look-Ahead board - static app + Netlify Blobs sync function",
   "scripts": {
-    "build": "echo \"No build step required - static site published as-is\""
+    "build": "echo \"No build step required - static site published as-is\"",
+    "fixtures": "node tools/make-fixtures.mjs",
+    "e2e": "node tools/e2e-docs.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^10.0.0"
+  },
+  "devDependencies": {
+    "@babel/standalone": "^7.29.7",
+    "playwright-core": "^1.56.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
   }
 }
