@@ -171,6 +171,545 @@ const TRUCK_BASE = {
   pits:{"Wood EB (sand)":32,"PMC (limestone)":26,"Vulcan (limestone)":40,"Five-S":36,"Haul-out / dump":24},
   rates:{triHr:105, quadHr:120, Sand:{r:8.5,u:"CY"}, Dirt:{r:10,u:"CY"}, "57 Limestone":{r:7.5,u:"TN"}, "610 Limestone":{r:7.5,u:"TN"}, "Crushed Concrete":{r:10,u:"TN"}, "#8 Washed":{r:7.5,u:"TN"}}
 };
+/* ==== DPW DOCS DOMAIN ═══════════════════════════════════════════════════════
+   Deterministic JS port of analysis/trucking (rates.py / classifier.py /
+   loader.py / timesheets.py / analyzer.py) so timesheet + invoice workbooks
+   can be imported and allocated in-app instead of through the offline Python
+   pipeline. Pure functions only — no React, no app state. All money is
+   integer CENTS; all rate-table keys are cent-rounded strings ("105.00") so
+   float equality can never lie. Two upstream bugs are deliberately fixed
+   here: the rate-audit verdict ternary (analyzer.py:156 returns
+   NEW_RATE_ALERT on both branches) and trailing code-spend stats crossing
+   invoice-era boundaries (analyzer.py:94 groups by Code only; rates.py
+   documents that stats must stay within an era). */
+const DPW_TAX = 1.0945;                       // 9.45% embedded in col H on CC=M rows
+const DOC_EPOCH = "2025-01-01";               // day-offset origin for compact dates
+const dpwC2S = c => (c/100).toFixed(2);       // 10500 -> "105.00" (rate-table key form)
+const DPW_RATES = {                           // rates.py tables, keyed by cent-string
+  hourly:   { "105.00":"tri", "120.00":"quad" },
+  haul:     { "8.50":["CY","sand haul"], "7.50":["TN","limestone haul"],
+              "10.00":[null,"dirt haul-out (CY) or crushed concrete (TN)"],
+              "15.50":["TN","contaminated haul (River Birch)"] },
+  dump:     { "6.05":["CY","Gentilly landfill dump fee"], "42.00":["TN","River Birch disposal fee"] },
+  material: { "5.50":["CY","Sand from Wood EB"], "42.00":["TN","610 Limestone (PMC or Wood)"],
+              "44.00":["TN","57 Limestone (PMC, Vulcan, Five-S)"],
+              "54.45":["TN","57 Limestone from Wood EB (premium source - flag)"],
+              "22.00":["TN","610 Crushed Concrete (PMC or Wood)"],
+              "47.00":["TN","#8 Washed Limestone from Wood (new Jun 2026)"] },
+};
+const DPW_KNOWN_RATES = (()=>{ const s=new Set(); for(const t of Object.values(DPW_RATES)) for(const k of Object.keys(t)) s.add(k); return s; })();
+const DPW_EXC_RATES = new Set(["46.20","47.85","48.95","49.50","51.70","54.45"]); // legacy tax-inclusive display rates
+const DPW_OVERHEAD = new Set(["99.12.00.00","99.13.00.00","02.41.91.00"]); // never auto-win an allocation
+const DPW_ARCH_PREFIX = "33.40.19.";          // contested family: every assignment surfaced individually
+const DPW_ERAS_DEFAULT = [[72919,73099],[73853,75313],[77857,78829]]; // invoice-number eras (tracker gaps)
+const DPW_EXPECTED_DEFAULT = { expTotalC: 203089067, expInv: 31, tolC: 5 }; // rates.py recon targets
+// line flag bits · status enum · method enum (shared by state encoding + UI)
+const DPW_FLAG = { ARCH:1, OVERHEAD:2, CCS:4, UNDATED:8, NOUNIT:16, NEWRATE:32, KNOWNEXC:64, MISMATCH:128 };
+const DPW_ST = { AUTO:0, SUG:1, MANUAL:2, CONFIRMED:3, OVERRIDDEN:4 };
+const DPW_METHOD = { EXACT:0, SPLIT:1, HOURS:2, PRIOR:3, FLOOR:4, HAND:5, IMPORTED:6 };
+const DPW_METHOD_LABEL = ["truck-day","truck-day split","hours match","history","rules","manual","imported"];
+
+/* -- classifier.py ports (ordered lists preserve first-match semantics) -- */
+const DPW_LOAD_RE = /(\d+(?:\.\d+)?)\s*lds?\b/gi;
+const DPW_DATE_RE = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})/;
+const DPW_BED_RE  = /\((\d{2})\s*yd/i;
+const DPW_PITS = [
+  ["Wood EB",      /wood\s*eb|from\s*wood/i],
+  ["PMC",          /\bpmc\b/i],
+  ["Vulcan",       /vulcan/i],
+  ["Five-S",       /five[- ]?s/i],
+  ["Gentilly",     /gentilly/i],
+  ["River Birch",  /river\s*birch/i],
+];
+const DPW_MATS = [
+  ["Sand",             /\bsand\b/i],
+  ["57 Limestone",     /\b57\b.*lime|lime.*\b57\b/i],
+  ["610 Limestone",    /\b610\b.*lime/i],
+  ["#8 Washed",        /#?\s*8\b.*wash|wash.*\b8\b/i],
+  ["Crushed Concrete", /crush/i],
+  ["Limestone",        /lime/i],
+  ["Dirt",             /dirt|haul\s*out|haul\s*off/i],
+];
+const dpwFirst = (pairs, text) => { const s=String(text||""); for(const [name,rx] of pairs) if(rx.test(s)) return name; return null; };
+const dpwNum = x => { if(x==null||x==="") return null; const n=parseFloat(String(x).replace(/[$,]/g,"")); return isFinite(n)?n:null; };
+const dpwCents = x => { const n=dpwNum(x); return n==null?null:Math.round(n*100); };
+const dpwDOff = iso => Math.round((Date.UTC(+iso.slice(0,4), +iso.slice(5,7)-1, +iso.slice(8,10)) - Date.UTC(2025,0,1)) / 864e5);
+const dpwDIso = dOff => new Date(Date.UTC(2025,0,1) + dOff*864e5).toISOString().slice(0,10);
+/* date from a description's leading M/D/YY(YY) (classifier._date) -> dOff | null */
+function dpwDate(desc){
+  const m = DPW_DATE_RE.exec(String(desc||"")); if(!m) return null;
+  const mo=+m[1], da=+m[2]; let yr=+m[3]; if(yr<100) yr+=2000;
+  const t = Date.UTC(yr, mo-1, da), d = new Date(t);
+  if(d.getUTCFullYear()!==yr || d.getUTCMonth()!==mo-1 || d.getUTCDate()!==da) return null; // 13/45 style rollovers rejected
+  return Math.round((t - Date.UTC(2025,0,1)) / 864e5);
+}
+const dpwSerial = v => Math.round(((v - 25569) * 864e5 - Date.UTC(2025,0,1)) / 864e5); // Excel serial -> dOff
+/* any spreadsheet date cell -> dOff | null: Date object, Excel serial, ISO or M/D/YY string */
+function dpwAnyDate(v){
+  if(v==null||v==="") return null;
+  if(v instanceof Date) return isNaN(v) ? null : Math.round((Date.UTC(v.getFullYear(),v.getMonth(),v.getDate()) - Date.UTC(2025,0,1))/864e5);
+  if(typeof v==="number") return v>20000 ? dpwSerial(v) : null;
+  const s=String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return dpwDOff(s.slice(0,10));
+  return dpwDate(s);
+}
+/* unit from item text + rate + description (classifier._unit, cents-string keyed) */
+function dpwUnit(item, rateC, desc){
+  const it = String(item||"");
+  if (it.includes("Hourly") || rateC===10500 || rateC===12000) return "HR";
+  if (rateC===850)  return "CY";   // sand haul
+  if (rateC===750)  return "TN";   // limestone haul
+  if (rateC===605)  return "CY";   // Gentilly dump fee
+  if (rateC===1550 || rateC===4200) return "TN"; // contaminated / River Birch
+  if (rateC===1000) return /crush/i.test(String(desc||"")) ? "TN" : "CY";
+  if (it.includes("Material")) return "TN"; // materials mostly TN; Sand->CY override in dpwClassifyLine
+  return null;
+}
+const dpwLoads = desc => { let s=0; for(const m of String(desc||"").matchAll(DPW_LOAD_RE)) s+=parseFloat(m[1]); return s; };
+const dpwBed = desc => { const m=DPW_BED_RE.exec(String(desc||"")); return m?+m[1]:null; };
+const dpwTruckNorm = raw => { if(!raw) return ""; const tok=String(raw).trim().split(/\s+/)[0]; return tok.replace(/-?Q$/i,""); };
+const dpwEraOf = (inv, eras) => { if(inv==null) return null; const E=eras||DPW_ERAS_DEFAULT;
+  for(let i=0;i<E.length;i++) if(inv>=E[i][0] && inv<=E[i][1]) return i+1; return null; };
+const dpwCodeNorm = c => { const s=String(c==null?"":c).trim(); return /^\d/.test(s) ? s.replace(/-/g,".") : s; };
+/* FNV-1a 32-bit -> base36; content identity for invoice lines across re-exports */
+function dpwHash32(str){ let h=0x811c9dc5; const s=String(str);
+  for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; } return h.toString(36); }
+const dpwPool = () => ({ arr:[], _m:new Map(), idx(v){ const k=String(v??""); if(!this._m.has(k)){ this._m.set(k,this.arr.length); this.arr.push(k); } return this._m.get(k); } });
+
+/* -- loader.py port: invoice tracker workbook (Sheet1, positional A-J) -- */
+function dpwParseInvoiceWB(XLSX, buf){
+  const wb = XLSX.read(buf, {type:"array"});
+  const warnings = [];
+  let ws = wb.Sheets["Sheet1"];
+  if(!ws){ ws = wb.Sheets[wb.SheetNames[0]]; warnings.push(`no "Sheet1" — using "${wb.SheetNames[0]}"`); }
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+  if(rows.length && String(rows[0][0]??"").trim().toLowerCase()!=="inv")
+    warnings.push(`unexpected header row (A1 = "${rows[0][0]}" — expected "Inv"); parsing positionally anyway`);
+  const out = []; let noInv=0;
+  for(let r=1; r<rows.length; r++){
+    const row = rows[r]||[];
+    if(row.every(c=>c==null||String(c).trim()==="")) continue;
+    const inv = (()=>{ const n=dpwNum(row[0]); return n==null?null:Math.round(n); })();
+    if(inv==null) noInv++;
+    out.push({
+      rowId: r+1, inv,
+      cc:   String(row[1]??"").trim(),
+      item: String(row[2]??"").trim(),
+      qty:  dpwNum(row[3]),
+      desc: String(row[4]??"").trim(),
+      rateC: dpwCents(row[5]),
+      truck: String(row[6]??"").trim(),
+      amtC:  dpwCents(row[7]) ?? 0,
+      code:  dpwCodeNorm(row[8]),
+      codeDesc: String(row[9]??"").trim(),
+    });
+  }
+  if(noInv) warnings.push(`${noInv} row(s) missing an invoice number — kept, flagged for review`);
+  return { rows: out, warnings };
+}
+/* loader.reconcile port — UI decides block-vs-accept instead of raising */
+function dpwReconcile(lines, cfg){
+  const totalC = lines.reduce((s,l)=>s+(l.amtC||0), 0);
+  const nInv = new Set(lines.filter(l=>l.inv!=null).map(l=>l.inv)).size;
+  const okTotal = Math.abs(totalC - cfg.expTotalC) <= cfg.tolC;
+  const okInv = nInv === cfg.expInv;
+  return { totalC, nInv, rows: lines.length, okTotal, okInv, ok: okTotal && okInv };
+}
+
+/* -- timesheets.py port: consolidated foreman timesheets (header-name-keyed) -- */
+function dpwParseTimesheetWB(XLSX, buf){
+  const wb = XLSX.read(buf, {type:"array"});
+  const warnings = [];
+  const ws = wb.Sheets["Consolidated Data"];
+  if(!ws) return { rows: [], warnings: [`"Consolidated Data" sheet not found — sheets: ${wb.SheetNames.join(", ")}`] };
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+  if(!rows.length) return { rows: [], warnings: ["empty sheet"] };
+  const hdr = rows[0].map(c=>String(c??"").trim());
+  const col = name => hdr.indexOf(name);
+  const need = ["Date","Account ID","Quantity","UM"];
+  const missing = need.filter(n=>col(n)<0);
+  if(missing.length) return { rows: [], warnings: [`missing required column(s): ${missing.join(", ")}`] };
+  const gx = (row,name) => { const i=col(name); return i<0?null:row[i]; };
+  const out = []; let badDate=0;
+  for(let r=1; r<rows.length; r++){
+    const row = rows[r]||[];
+    if(row.every(c=>c==null||String(c).trim()==="")) continue;
+    const dOff = dpwAnyDate(gx(row,"Date"));
+    if(dOff==null) badDate++;
+    out.push({
+      dOff,
+      srcFile: String(gx(row,"Source File")??"").trim(),
+      invSup:  String(gx(row,"Invoice Supported")??"").trim(),
+      flId:    String(gx(row,"Field Log ID")??"").trim(),
+      fm:      String(gx(row,"Foreman")??"").trim(),
+      job:     String(gx(row,"Job Number")??"").trim(),
+      tkRaw:   String(gx(row,"Truck ID Listing")??"").trim(),
+      tk:      dpwTruckNorm(gx(row,"Truck ID Listing")),
+      code:    dpwCodeNorm(gx(row,"Account ID")),
+      codeDesc:String(gx(row,"Account Description")??"").trim(),
+      qty:     dpwNum(gx(row,"Quantity")),
+      um:      String(gx(row,"UM")??"").trim().toUpperCase(),
+      unitCostC: dpwCents(gx(row,"Unit Cost")),
+      totalC:  dpwCents(gx(row,"Total Cost")) ?? 0,
+    });
+  }
+  if(badDate) warnings.push(`${badDate} row(s) with unparseable Date — excluded from the daily ledger`);
+  return { rows: out, warnings };
+}
+
+/* -- ledger + truck-day-code builders (analyzer.py groupings) -- */
+const DPW_UM_TN = new Set(["TON","TN"]), DPW_UM_CY = new Set(["CY","CYT"]);
+function dpwBuildProgress(tsRows){
+  const pool = { codes: dpwPool(), fm: dpwPool(), tk: dpwPool() };
+  const seen = new Set(); let dup=0, skipped=0;
+  const agg = new Map(); // "dOff|codeIdx" -> {hr,loads,tn,cy,costC,tks:Set,fms:Set}
+  for(const t of tsRows){
+    if(t.dOff==null || !t.code){ skipped++; continue; }
+    const rh = dpwHash32([t.dOff,t.flId,t.tk,t.code,t.qty,t.um,t.totalC].join("|"));
+    if(seen.has(rh)){ dup++; continue; }           // a doubled export row can't double the ledger
+    seen.add(rh);
+    const ci = pool.codes.idx(t.code);
+    const k = t.dOff+"|"+ci;
+    let a = agg.get(k); if(!a){ a={hr:0,loads:0,tn:0,cy:0,costC:0,tks:new Set(),fms:new Set()}; agg.set(k,a); }
+    const q = t.qty||0;
+    if(t.um==="HR") a.hr+=q; else if(t.um==="LOAD") a.loads+=q;
+    else if(DPW_UM_TN.has(t.um)) a.tn+=q; else if(DPW_UM_CY.has(t.um)) a.cy+=q;
+    a.costC += t.totalC||0;
+    if(t.tk) a.tks.add(t.tk); if(t.fm) a.fms.add(t.fm);
+  }
+  const days = [...agg.entries()].map(([k,a])=>{
+    const [dOff,ci] = k.split("|").map(Number);
+    return [dOff, ci, +a.hr.toFixed(2), +a.loads.toFixed(2), +a.tn.toFixed(2), +a.cy.toFixed(2),
+            a.costC, a.tks.size, [...a.fms].map(f=>pool.fm.idx(f))];
+  }).sort((x,y)=> x[0]-y[0] || x[1]-y[1]);
+  for(const t of tsRows) if(t.tk) pool.tk.idx(t.tk); // stable truck pool for drill-down
+  return { days, pool: { codes: pool.codes.arr, fm: pool.fm.arr, tk: pool.tk.arr }, dup, skipped };
+}
+const PD = { DOFF:0, CODE:1, HR:2, LD:3, TN:4, CY:5, COSTC:6, TD:7, FM:8 }; // progress.days row indices
+function dpwBuildTdc(tsRows){
+  const tdc = {}; // "dOff|truck" -> [[code, hr, loads], ...]
+  const agg = new Map();
+  for(const t of tsRows){
+    if(t.dOff==null || !t.tk || !t.code) continue;
+    const k = t.dOff+"|"+t.tk;
+    let m = agg.get(k); if(!m){ m=new Map(); agg.set(k,m); }
+    let e = m.get(t.code); if(!e){ e=[0,0]; m.set(t.code,e); }
+    const q = t.qty||0;
+    if(t.um==="HR") e[0]+=q; else if(t.um==="LOAD") e[1]+=q;
+  }
+  for(const [k,m] of agg) tdc[k] = [...m.entries()].map(([code,[hr,ld]])=>[code,+hr.toFixed(2),+ld.toFixed(2)]);
+  return tdc;
+}
+function dpwProgressSrcHash(tsRows){
+  let h=0x811c9dc5>>>0;
+  for(const t of tsRows){ const s=[t.dOff,t.flId,t.tk,t.code,t.qty,t.um,t.totalC].join("|");
+    for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; } }
+  return h.toString(36);
+}
+
+/* -- classification of one invoice line (classifier.classify row logic) -- */
+function dpwClassifyLine(raw, eras){
+  const dOff = dpwDate(raw.desc);
+  let unit = dpwUnit(raw.item, raw.rateC, raw.desc);
+  const material = dpwFirst(DPW_MATS, raw.desc);
+  if(String(raw.item||"").includes("Material") && material==="Sand") unit = "CY"; // sand is CY not TN
+  let flags = 0;
+  if(raw.cc==="S") flags |= DPW_FLAG.CCS;
+  if(dOff==null)   flags |= DPW_FLAG.UNDATED;
+  if(unit==null)   flags |= DPW_FLAG.NOUNIT;
+  return { ...raw, dOff, era: dpwEraOf(raw.inv, eras), unit,
+    loads: dpwLoads(raw.desc), bed: dpwBed(raw.desc), material,
+    pit: dpwFirst(DPW_PITS, raw.desc),
+    axle: raw.rateC===12000 ? "quad" : (raw.rateC===10500 ? "tri" : null),
+    tk: dpwTruckNorm(raw.truck), flags,
+    k: dpwHash32([raw.inv,raw.cc,raw.item,raw.qty,raw.rateC,raw.truck,raw.amtC,raw.desc].join("|")) };
+}
+
+/* -- rate audit (analyzer.rate_audit with the verdict bug fixed): first
+      unexplained sighting of an (item, rate) pair = NEW_RATE_ALERT; repeats
+      = MISMATCH (a recurring unexplained rate needs a rate-table decision) -- */
+function dpwRateAudit(lines){
+  const rows = []; const seen = new Set();
+  const sorted = [...lines].sort((a,b)=>(a.inv??1e9)-(b.inv??1e9) || a.rowId-b.rowId);
+  for(const l of sorted){
+    if(l.rateC==null) continue;
+    const rk = dpwC2S(l.rateC);
+    let verdict;
+    if(DPW_KNOWN_RATES.has(rk)) verdict = "OK";
+    else if(DPW_EXC_RATES.has(rk)) verdict = "KNOWN_EXCEPTION";
+    else { const key = l.item+"|"+rk; verdict = seen.has(key) ? "MISMATCH" : "NEW_RATE_ALERT"; seen.add(key); }
+    if(verdict!=="OK") rows.push({ k:l.k, rowId:l.rowId, inv:l.inv, item:l.item, rateC:l.rateC, verdict, desc:String(l.desc||"").slice(0,60) });
+  }
+  return rows;
+}
+
+/* -- code-spend anomaly flags (analyzer.code_week_costs, era-isolated):
+      input rows {era, inv, code, amtC}; expanding mean/std over PRIOR
+      invoices only (shift-1), sample std (ddof=1), grouped by (code, era) -- */
+function dpwAnomalyFlags(rows){
+  const byInv = new Map(); // "code|era|inv" -> amtC
+  for(const r of rows){ if(r.era==null||r.code==null||r.inv==null) continue;
+    const k=r.code+"|"+r.era+"|"+r.inv; byInv.set(k,(byInv.get(k)||0)+r.amtC); }
+  const groups = new Map(); // "code|era" -> [{inv, amtC}]
+  for(const [k,amtC] of byInv){ const [code,era,inv]=k.split("|");
+    const gk=code+"|"+era; if(!groups.has(gk)) groups.set(gk,[]);
+    groups.get(gk).push({inv:+inv, amtC}); }
+  const out = [];
+  for(const [gk,arr] of groups){
+    const [code,era] = gk.split("|");
+    arr.sort((a,b)=>a.inv-b.inv);
+    const prior = [];
+    for(const {inv,amtC} of arr){
+      let z = 0;
+      if(prior.length>=2){
+        const m = prior.reduce((s,x)=>s+x,0)/prior.length;
+        const sd = Math.sqrt(prior.reduce((s,x)=>s+(x-m)*(x-m),0)/(prior.length-1));
+        z = sd>0 ? (amtC-m)/sd : 0;
+      }
+      out.push({ code, era:+era, inv, amtC, z:+z.toFixed(2), flag: Math.abs(z)>2 });
+      prior.push(amtC);
+    }
+  }
+  return out.sort((a,b)=> a.code<b.code?-1:a.code>b.code?1: a.era-b.era || a.inv-b.inv);
+}
+
+/* -- allocation engine (plan section 4) -- */
+function dpwSplitAmounts(amtC, sug){
+  const parts = sug.map(([,w])=>Math.round(amtC*w));
+  const diff = amtC - parts.reduce((s,x)=>s+x,0);
+  if(diff!==0 && parts.length){ let bi=0; for(let i=1;i<sug.length;i++) if(sug[i][1]>sug[bi][1]) bi=i; parts[bi]+=diff; }
+  return parts; // residual cent to the largest weight: per-line dollars always sum exactly
+}
+/* prior: decision history (confirmed/overridden lines, weighted by $) blended
+   with each truck's timesheet code frequency (day counts). Never persisted. */
+function dpwBuildPrior(decided, tdc){
+  const ov = new Map(); // ctxKey -> {mass, byCode:{code:$w}}
+  const bump = (key, code, w) => { if(!key) return;
+    let e=ov.get(key); if(!e){ e={mass:0, byCode:{}}; ov.set(key,e); }
+    e.mass++; e.byCode[code]=(e.byCode[code]||0)+w; };
+  for(const l of decided){
+    const eff = (l.ov && l.ov.length) ? l.ov : l.sug;
+    if(!eff || !eff.length) continue;
+    const ctxs = dpwPriorKeys(l);
+    for(const [code,w] of eff){ const $w=(l.amtC||1)*w; for(const k of ctxs) bump(k, code, $w); }
+  }
+  const ts = new Map(); // tk -> {mass(dayCount), byCode:{code:days}}
+  const dayCodes = new Map(); // "dOff|tk" per code presence
+  for(const [k, entries] of Object.entries(tdc||{})){
+    const tk = k.split("|")[1];
+    let e=ts.get(tk); if(!e){ e={mass:0, byCode:{}}; ts.set(tk,e); }
+    e.mass++;
+    for(const [code] of entries) e.byCode[code]=(e.byCode[code]||0)+1;
+  }
+  return { ov, ts };
+}
+function dpwPriorKeys(l){
+  const {tk, material:mat, pit, era} = l;
+  const K = [];
+  if(tk&&mat&&pit&&era!=null) K.push(`1|${tk}|${mat}|${pit}|${era}`);
+  if(mat&&pit&&era!=null)     K.push(`2|${mat}|${pit}|${era}`);
+  if(tk&&era!=null)           K.push(`3|${tk}|${era}`);
+  if(mat&&era!=null)          K.push(`4|${mat}|${era}`);
+  if(tk)                      K.push(`5|${tk}`);
+  if(mat)                     K.push(`6|${mat}`);
+  return K;
+}
+function dpwPriorSuggest(line, prior){
+  for(const key of dpwPriorKeys(line)){
+    const o = prior.ov.get(key);
+    const t = key.startsWith("5|") ? prior.ts.get(line.tk) : null; // ts freq joins on the truck-only key
+    const mass = (o?o.mass:0) + (t?t.mass:0);
+    if(mass < 3) continue;
+    const shares = {};
+    const tot = m => Object.values(m).reduce((s,x)=>s+x,0);
+    const oTot = o ? tot(o.byCode) : 0, tTot = t ? tot(t.byCode) : 0;
+    const wo = o&&oTot>0 ? 0.6 : 0, wt = t&&tTot>0 ? 0.4 : 0, wsum = wo+wt;
+    if(!wsum) continue;
+    const addShares = (m, totv, w) => { if(!m||!totv) return; for(const [c,v] of Object.entries(m)) shares[c]=(shares[c]||0)+ w*(v/totv)/wsum; };
+    addShares(o&&o.byCode, oTot, wo); addShares(t&&t.byCode, tTot, wt);
+    let top=null, topShare=0; for(const [c,s] of Object.entries(shares)) if(s>topShare){ top=c; topShare=s; }
+    if(top) return { code: top, share: topShare, key, mass };
+  }
+  return null;
+}
+function dpwAllocateLine(line, tdc, prior, cfg){
+  const th = { auto: cfg?.thAuto ?? 0.9, sug: cfg?.thSug ?? 0.6 };
+  let sug=[], method=DPW_METHOD.FLOOR, conf=0.4, flags=line.flags||0;
+  const td = (line.dOff!=null && line.tk) ? tdc[line.dOff+"|"+line.tk] : null;
+  if(td && td.length){
+    const cands = td.filter(([code])=>!DPW_OVERHEAD.has(code));
+    if(!cands.length){ // the truck only worked overhead that day: suggest it but never auto-win
+      const hrs = td.reduce((s,e)=>s+e[1],0);
+      sug = td.map(([code,hr])=>[code, hrs>0?hr/hrs:1/td.length]); method=DPW_METHOD.EXACT; conf=0.5;
+      flags |= DPW_FLAG.OVERHEAD;
+    } else if(cands.length===1){
+      sug=[[cands[0][0],1]]; method=DPW_METHOD.EXACT; conf=0.95;
+    } else {
+      const hrMatch = line.unit==="HR" && line.qty!=null ? cands.filter(([,hr])=>Math.abs(hr-line.qty)<=0.25) : [];
+      if(hrMatch.length===1){ sug=[[hrMatch[0][0],1]]; method=DPW_METHOD.HOURS; conf=0.9; }
+      else {
+        const tot = cands.reduce((s,e)=>s+e[1],0);
+        const byLd = tot<=0;
+        const base = byLd ? cands.reduce((s,e)=>s+e[2],0) : tot;
+        sug = cands.map(([code,hr,ld])=>[code, base>0 ? (byLd?ld:hr)/base : 1/cands.length]);
+        // exact weight closure: make the split sum to 1 despite float division
+        const wsum = sug.reduce((s,[,w])=>s+w,0); if(wsum>0 && sug.length) sug[sug.length-1][1] += 1-wsum;
+        method=DPW_METHOD.SPLIT; conf=0.75;
+      }
+    }
+  } else {
+    const p = prior ? dpwPriorSuggest(line, prior) : null;
+    if(p){ sug=[[p.code,1]]; method=DPW_METHOD.PRIOR; conf=Math.min(0.85, 0.35+0.5*p.share);
+           if(p.share<0.5) conf=Math.min(conf, th.sug-0.01); } // weak prior: never auto
+    else { // rules floor: no allocation fabricated — attach any material-context hint
+      const hint = prior && line.material ? prior.ov.get(`6|${line.material}`) : null;
+      if(hint){ let top=null,tv=0; for(const [c,v] of Object.entries(hint.byCode)) if(v>tv){top=c;tv=v;}
+                if(top) sug=[[top,1]]; }
+      method=DPW_METHOD.FLOOR; conf=0.4;
+    }
+  }
+  if(sug.length && DPW_OVERHEAD.has(sug[0][0])) flags |= DPW_FLAG.OVERHEAD;
+  if(sug.some(([c])=>c.startsWith(DPW_ARCH_PREFIX))) flags |= DPW_FLAG.ARCH;
+  let status = conf>=th.auto ? DPW_ST.AUTO : conf>=th.sug ? DPW_ST.SUG : DPW_ST.MANUAL;
+  if(flags & DPW_FLAG.OVERHEAD) status = DPW_ST.MANUAL;              // overhead never auto-wins
+  if(flags & (DPW_FLAG.CCS|DPW_FLAG.UNDATED|DPW_FLAG.NOUNIT)) status = Math.max(status, DPW_ST.SUG); // never auto
+  return { sug: sug.map(([c,w])=>[c,+w]), method, conf:+conf.toFixed(2), status, flags };
+}
+
+/* -- CSV writer (Phase-5 exports) -- */
+function dpwToCsv(rows, cols){
+  const esc = v => { const s=v==null?"":String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  return [cols.map(esc).join(","), ...rows.map(r=>cols.map(c=>esc(r[c])).join(","))].join("\n");
+}
+
+/* -- selftest: hand-computed assertion table (?selftest=1 renders a badge) -- */
+function dpwSelftest(){
+  const D = []; let pass=0, fail=0;
+  const eq = (got, want, label) => { const ok = JSON.stringify(got)===JSON.stringify(want);
+    ok?pass++:fail++; if(!ok) D.push(`${label}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`); };
+  // eras (72918 out, boundaries in, gap out)
+  eq(dpwEraOf(72918), null, "era-72918"); eq(dpwEraOf(72919), 1, "era-72919");
+  eq(dpwEraOf(73099), 1, "era-73099");    eq(dpwEraOf(73853), 2, "era-73853");
+  eq(dpwEraOf(78829), 3, "era-78829");    eq(dpwEraOf(78830), null, "era-78830");
+  // unit matrix incl. the 10.00 disambiguation
+  eq(dpwUnit("Hourly Rate",10500,""), "HR", "unit-hourly");
+  eq(dpwUnit("Haul",12000,""), "HR", "unit-120");
+  eq(dpwUnit("Haul",850,""), "CY", "unit-850");
+  eq(dpwUnit("Haul",750,""), "TN", "unit-750");
+  eq(dpwUnit("Dump Fee",605,""), "CY", "unit-605");
+  eq(dpwUnit("Haul",1550,""), "TN", "unit-1550");
+  eq(dpwUnit("Dump Fee",4200,""), "TN", "unit-4200");
+  eq(dpwUnit("Haul",1000,"crushed concrete run"), "TN", "unit-1000-crush");
+  eq(dpwUnit("Haul",1000,"dirt haul out"), "CY", "unit-1000-dirt");
+  eq(dpwUnit("Material",4400,""), "TN", "unit-material");
+  eq(dpwUnit("Other",999,""), null, "unit-none");
+  const sand = dpwClassifyLine({inv:78820,cc:"M",item:"Material",qty:10,desc:"Sand from Wood EB",rateC:550,truck:"",amtC:6020,code:"",rowId:1});
+  eq(sand.unit, "CY", "sand-override"); eq(sand.material, "Sand", "sand-mat"); eq(sand.pit, "Wood EB", "sand-pit");
+  // material precedence (ordered first-match)
+  eq(dpwFirst(DPW_MATS,"57 limestone from PMC"), "57 Limestone", "mat-57");
+  eq(dpwFirst(DPW_MATS,"610 Crushed Concrete"), "Crushed Concrete", "mat-610cc");
+  eq(dpwFirst(DPW_MATS,"610 limestone base"), "610 Limestone", "mat-610");
+  eq(dpwFirst(DPW_MATS,"#8 washed from Wood"), "#8 Washed", "mat-8w");
+  eq(dpwFirst(DPW_MATS,"plain limestone"), "Limestone", "mat-lime");
+  eq(dpwFirst(DPW_MATS,"dirt haul out"), "Dirt", "mat-dirt");
+  // loads / bed / dates / trucks
+  eq(dpwLoads("3 lds then 2 lds more"), 5, "loads-sum");
+  eq(dpwLoads("2.5 lds (16 yd bed)"), 2.5, "loads-frac");
+  eq(dpwLoads("many loads"), 0, "loads-none");
+  eq(dpwBed("haul (16 yd bed)"), 16, "bed-16");
+  eq(dpwDate("6/3/26 sewer haul"), dpwDOff("2026-06-03"), "date-2dig");
+  eq(dpwDate("12/31/2025 x"), dpwDOff("2025-12-31"), "date-4dig");
+  eq(dpwDate("13/1/26 bad"), null, "date-badmonth");
+  eq(dpwDate("standby - no date"), null, "date-none");
+  eq(dpwDOff("2025-01-01"), 0, "doff-epoch"); eq(dpwDOff("2026-06-01"), 516, "doff-516");
+  eq(dpwDIso(516), "2026-06-01", "diso-roundtrip");
+  eq(dpwAnyDate(46174), 516, "anydate-serial");        // Excel serial for 2026-06-01
+  eq(dpwAnyDate("2026-06-01"), 516, "anydate-iso");
+  eq(dpwAnyDate("6/1/26"), 516, "anydate-us");
+  eq(dpwTruckNorm("3C22 Three C's Prop"), "3C22", "truck-tok");
+  eq(dpwTruckNorm("3C22-Q"), "3C22", "truck-dashq");
+  eq(dpwTruckNorm("3C09Q"), "3C09", "truck-q");
+  eq(dpwHash32("abc")===dpwHash32("abc"), true, "hash-stable");
+  eq(dpwHash32("abc")!==dpwHash32("abd"), true, "hash-distinct");
+  // split residual-cent invariant
+  eq(dpwSplitAmounts(1001,[["A",.5],["B",.5]]).reduce((s,x)=>s+x,0), 1001, "split-1001");
+  eq(dpwSplitAmounts(100,[["A",1/3],["B",1/3],["C",1/3]]).reduce((s,x)=>s+x,0), 100, "split-thirds");
+  // anomaly z: era-isolated, sample std, prior-only window
+  const an = dpwAnomalyFlags([
+    {era:1,inv:72920,code:"X",amtC:40000000},                       // era-1 wild value must not touch era 3
+    {era:3,inv:78800,code:"X",amtC:500000},{era:3,inv:78810,code:"X",amtC:520000},
+    {era:3,inv:78820,code:"X",amtC:2400000},
+  ]);
+  const spike = an.find(r=>r.inv===78820);
+  eq(spike.flag, true, "anom-flag");
+  eq(Math.abs(spike.z-133.64)<0.5, true, "anom-z~133.6");
+  eq(an.find(r=>r.inv===78810).flag, false, "anom-noflag-2nd");
+  // reconciliation ±5¢
+  const rl = [{inv:1,amtC:100},{inv:2,amtC:105}];
+  eq(dpwReconcile(rl,{expTotalC:205,expInv:2,tolC:5}).ok, true, "recon-ok");
+  eq(dpwReconcile(rl,{expTotalC:211,expInv:2,tolC:5}).okTotal, false, "recon-off6");
+  eq(dpwReconcile(rl,{expTotalC:205,expInv:3,tolC:5}).okInv, false, "recon-ninv");
+  // rate audit verdict semantics (the fixed analyzer.py:156)
+  const ra = dpwRateAudit([
+    {k:"a",rowId:2,inv:1,item:"Hourly Rate",rateC:10500,desc:""},
+    {k:"b",rowId:3,inv:1,item:"Material",rateC:4620,desc:""},
+    {k:"c",rowId:4,inv:2,item:"Material",rateC:5500,desc:""},
+    {k:"d",rowId:5,inv:3,item:"Material",rateC:5500,desc:""},
+  ]);
+  eq(ra.length, 3, "audit-okhidden");
+  eq(ra.find(r=>r.k==="b").verdict, "KNOWN_EXCEPTION", "audit-exc");
+  eq(ra.find(r=>r.k==="c").verdict, "NEW_RATE_ALERT", "audit-new");
+  eq(ra.find(r=>r.k==="d").verdict, "MISMATCH", "audit-mismatch");
+  // allocation methods against a tiny tdc
+  const tdc = {
+    "516|3C22":[["33.30.19.13",8,18]],
+    "517|3C07":[["33.40.19.42",5,10],["02.61.13.00",3,6]],
+    "518|3C11":[["33.10.14.00",7.5,0],["33.49.13.00",2,0]],
+    "520|3C09":[["99.12.00.00",8,0]],
+  };
+  const mkl = o => ({flags:0, qty:8, unit:"HR", material:null, pit:null, era:3, ...o});
+  const a1 = dpwAllocateLine(mkl({dOff:516,tk:"3C22"}), tdc, null, {});
+  eq([a1.sug,[a1.method,a1.conf,a1.status]], [[["33.30.19.13",1]],[DPW_METHOD.EXACT,0.95,DPW_ST.AUTO]], "alloc-exact");
+  const a2 = dpwAllocateLine(mkl({dOff:517,tk:"3C07"}), tdc, null, {});
+  eq(a2.method, DPW_METHOD.SPLIT, "alloc-split");
+  eq(a2.sug.reduce((s,[,w])=>s+w,0), 1, "alloc-split-w1");
+  eq(Math.abs(a2.sug.find(([c])=>c==="33.40.19.42")[1]-0.625)<1e-9, true, "alloc-split-58");
+  eq((a2.flags&DPW_FLAG.ARCH)!==0, true, "alloc-split-archflag");
+  const a3 = dpwAllocateLine(mkl({dOff:518,tk:"3C11",qty:7.5}), tdc, null, {});
+  eq([a3.sug,[a3.method,a3.conf]], [[["33.10.14.00",1]],[DPW_METHOD.HOURS,0.9]], "alloc-hours");
+  const a4 = dpwAllocateLine(mkl({dOff:520,tk:"3C09"}), tdc, null, {});
+  eq([a4.status,(a4.flags&DPW_FLAG.OVERHEAD)!==0], [DPW_ST.MANUAL,true], "alloc-overhead-manual");
+  // prior: ts-only via truck key, then blended after one $ override
+  const prior0 = dpwBuildPrior([], {"530|3C15":[["33.10.15.00",8,14]],"531|3C15":[["33.10.15.00",8,15]],"532|3C15":[["33.10.15.00",7,12]],"533|3C15":[["33.30.19.13",8,16]]});
+  const p0 = dpwPriorSuggest(mkl({dOff:null,tk:"3C15"}), prior0);
+  eq([p0.code, Math.abs(p0.share-0.75)<1e-9], ["33.10.15.00", true], "prior-ts");
+  const prior1 = dpwBuildPrior(
+    [{tk:"3C15",material:"Sand",pit:"Wood EB",era:3,amtC:153000,sug:[["33.30.19.13",1]],ov:null,}],
+    {"530|3C15":[["33.10.15.00",8,14]],"531|3C15":[["33.10.15.00",8,15]],"532|3C15":[["33.10.15.00",7,12]],"533|3C15":[["33.30.19.13",8,16]]});
+  const p1 = dpwPriorSuggest(mkl({dOff:null,tk:"3C15",material:"Sand",pit:"Wood EB"}), prior1);
+  eq([p1.code, Math.abs(p1.share-0.7)<1e-9], ["33.30.19.13", true], "prior-blend-flip");
+  const a5 = dpwAllocateLine(mkl({dOff:null,tk:"3C15",flags:DPW_FLAG.UNDATED}), tdc, prior0, {});
+  eq([a5.method, a5.status], [DPW_METHOD.PRIOR, DPW_ST.SUG], "alloc-prior-undated-capped");
+  return { pass, fail, details: D };
+}
+if(/[?&]selftest=1\b/.test(location.search)){
+  const r = dpwSelftest();
+  const el = document.createElement("div");
+  el.id = "dpwselftest"; el.setAttribute("data-pass", r.fail===0 ? "1" : "0");
+  el.style.cssText = "position:fixed;bottom:8px;right:8px;z-index:99999;padding:6px 12px;font:600 12px/1.4 monospace;border-radius:6px;color:#fff;background:"+(r.fail===0?"#00833e":"#a01818");
+  el.textContent = `DPW selftest: ${r.pass} pass / ${r.fail} fail`;
+  el.title = r.details.join("\n");
+  if(r.fail) console.error("DPW selftest failures:", r.details);
+  document.body.appendChild(el);
+}
+window.__DPW = { DPW_TAX, DOC_EPOCH, DPW_RATES, DPW_KNOWN_RATES, DPW_EXC_RATES, DPW_OVERHEAD,
+  DPW_ARCH_PREFIX, DPW_ERAS_DEFAULT, DPW_EXPECTED_DEFAULT, DPW_FLAG, DPW_ST, DPW_METHOD, PD,
+  dpwC2S, dpwNum, dpwCents, dpwDOff, dpwDIso, dpwDate, dpwAnyDate, dpwUnit, dpwLoads, dpwBed,
+  dpwTruckNorm, dpwEraOf, dpwCodeNorm, dpwHash32, dpwFirst, dpwParseInvoiceWB, dpwReconcile,
+  dpwParseTimesheetWB, dpwBuildProgress, dpwBuildTdc, dpwProgressSrcHash, dpwClassifyLine,
+  dpwRateAudit, dpwAnomalyFlags, dpwSplitAmounts, dpwBuildPrior, dpwPriorSuggest,
+  dpwAllocateLine, dpwToCsv, selftest: dpwSelftest };
+/* ==== end DPW DOCS DOMAIN ═══════════════════════════════════════════════ */
 /* ── Bedding / embedment spec tables — SWB Standard Drawings ─────────────────
    Authoritative fall-back for trench detail when a plan sheet doesn't define it.
    Bedding = compacted #610 crushed-stone aggregate; per Notes, backfill around/
@@ -607,6 +1146,11 @@ const runInfoFor = (tasks,crews,key) => { const rep=tasks.find(x=>runKey(x)===ke
 const fmt$ = (n,d=0) => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmtN = (n,d=0) => Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct  = n => Math.round(n*100)+"%";
+/* Lazy SheetJS loader — shared by the CTC importer (DataModal), the docs
+   importer (timesheets / invoice tracker), and the allocation xlsx export. */
+const ensureXLSX = () => new Promise((res,rej)=>{ if(window.XLSX) return res(window.XLSX);
+  const el=document.createElement("script"); el.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  el.onload=()=>res(window.XLSX); el.onerror=()=>rej(new Error("could not load the spreadsheet reader (offline?) — import a .json instead")); document.head.appendChild(el); });
 const parseSTA = s => {
   if (s===""||s==null) return null;
   const m = String(s).trim().match(/^(\d+)\s*\+\s*(\d+(\.\d+)?)$/);
@@ -3536,9 +4080,6 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="watershed_board_data.json";
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
   };
-  const ensureXLSX=()=>new Promise((res,rej)=>{ if(window.XLSX) return res(window.XLSX);
-    const el=document.createElement("script"); el.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-    el.onload=()=>res(window.XLSX); el.onerror=()=>rej(new Error("could not load the spreadsheet reader (offline?) — import a .json instead")); document.head.appendChild(el); });
   const parseWB=(XLSX,buf)=>{ const wb=XLSX.read(buf,{type:"array"}); const ws=wb.Sheets["CTC by Cost Code"]||wb.Sheets[wb.SheetNames[0]];
     const rows=XLSX.utils.sheet_to_json(ws,{header:1}); const out={};
     for(let i=4;i<rows.length;i++){ const r=rows[i]||[]; const code=(r[0]==null?"":(""+r[0])).trim(); if(!/^\d/.test(code)) continue;

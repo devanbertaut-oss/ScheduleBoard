@@ -98,8 +98,18 @@ try {
   ok((await page.locator("nav.tabs button").count()) >= 4, "nav tabs rendered");
   await page.screenshot({ path: join(OUTDIR, "00-boot.png") });
 
+  step("domain selftest");
+  await page.goto(BASE + "/?selftest=1", { waitUntil: "domcontentloaded" });
+  const badge = page.locator("#dpwselftest");
+  await badge.waitFor({ timeout: 45_000 });
+  const badgeText = await badge.textContent();
+  ok((await badge.getAttribute("data-pass")) === "1", `selftest badge green (${badgeText})`);
+  const st = await page.evaluate(() => window.__DPW.selftest());
+  ok(st.fail === 0, `window.__DPW.selftest: ${st.pass} pass / ${st.fail} fail${st.fail ? " — " + st.details.join(" ; ") : ""}`);
+  await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("nav.tabs button", { timeout: 45_000 });
+
   // Later phases append steps here:
-  //  - domain selftest (?selftest=1 badge)
   //  - Progress: import timesheet fixture → ledger/KPI assertions
   //  - Invoices: gate → import invoice fixture → recon → buckets → confirm/override
   //  - export CSV, reload persistence, second-context merge
