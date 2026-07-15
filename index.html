@@ -176,7 +176,7 @@ const TRUCK_BASE = {
    Bedding = compacted #610 crushed-stone aggregate; per Notes, backfill around/
    above the pipe is PUMPED SAND (owner-pumped, not a haul driver), so the STONE
    BEDDING is what drives trucking. tw=trench width(ft), bed=bedding depth(ft). */
-const STONE_TON_PER_CY = 1.4;                       // #610 crushed stone density
+const STONE_TON_PER_CY = 1.4;   // loose hauled crushed-stone tn/CY — same basis as TRUCK_DEFAULTS.stone57Den (keep in sync)
 const ARCH_BED = {  /* D-3933  Reinf. Concrete Arch Pipe — bottom bedding layer */
   18:{od:'22"x13.5"',tw:3.75,bed:0.50}, 21:{od:'26"x15.5"',tw:4.13,bed:0.50},
   24:{od:'28.5"x18"',tw:4.50,bed:0.50}, 30:{od:'36"x23"', tw:5.08,bed:0.50},
@@ -229,11 +229,17 @@ function bedForItem(cc, desc, um, ov){
   const fin = r => { if(ov && r && r.fam && r.size!=null){ const o=ov[r.fam+"|"+r.size];
       if(o && r.span!=null && r.rise!=null){ const tw=+o.tw>0?+o.tw:r.tw, f=+o.f>0?+o.f:r.f;
         return {...r, tw, f, ...stoneEnvelope(tw,f,r.span,r.rise)}; } } return r; };
-  // structures (manholes / catch basins) — bedding per EACH from base footprint
+  // structures (manholes / catch basins) — bedding per EACH from the SIZED base footprint.
+  // The structure No. rides in the cost code tail (33.49.14.08 → No. 8) or the description
+  // ("No. 8 Standard Drain Manhole"); unknown sizes fall back to a No. 3 base.
   if(um==="EACH"||um==="VF"){
     if(/catch basin|manhole|drop inlet|structure/i.test(desc||"")||/^33\.49\./.test(code)){
-      const cyEa=(MH_BASE[3]*MH_BED_FT)/27; // default No.3 base unless sized below
-      return {size:null, cyPer:cyEa, tonPer:cyEa*STONE_TON_PER_CY, per:um, spec:"MH sched (D-870/3340/3937)", fam:"Structure"}; }
+      let mhN=null; const mC=code.match(/^33\.49\.\d{2}\.(\d{2})/); if(mC && MH_BASE[+mC[1]]) mhN=+mC[1];
+      if(mhN==null){ const mD=(desc||"").match(/no\.?\s*(\d{1,2})\b/i); if(mD && MH_BASE[+mD[1]]) mhN=+mD[1]; }
+      const n = mhN!=null ? mhN : 3;
+      const footSf = MH_BASE[n];
+      const cyEa=(footSf*MH_BED_FT)/27;
+      return {size:(mhN!=null?n:null), footSf, cyPer:cyEa, tonPer:cyEa*STONE_TON_PER_CY, per:um, spec:"MH sched (D-870/3340/3937)"+(mhN!=null?" No."+n:""), fam:"Structure"}; }
     return null;
   }
   if(um!=="LF") return null;
@@ -271,7 +277,8 @@ function bedForItem(cc, desc, um, ov){
    come from `tcfg` (editable autos); geometry from bedForItem. Non-LF items → not applicable. */
 const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
-  stone57Den:2.0, sandDen:1.4, swell:1.25, compaction:1.20,
+  stone57Den:1.4, sandDen:1.4, swell:1.25, compaction:1.20,   // stone57Den = loose hauled tn/CY — MUST match STONE_TON_PER_CY (takeoff basis)
+  spoilDen:1.5, weightCap:false,   // weightCap ON = spoil/sand loads governed by payload tn ÷ density, not the box CY
   roadSection:1.0, shiftHrs:8, eff:0.85, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,
   cycSpoil:24, cycStone:26, cycSand:32, cycBase:28, maxLegMin:60,
   // Haul sources for the back-haul optimizer + map. oneWayMin = one-way DRIVE (windshield)
@@ -293,13 +300,20 @@ function trafficOf(src){ const v=+(src&&src.traffic); return v>0 ? v : 1; }   //
 // siteMin/stopMin; a blank field falls back to the global default (loadSpot / tipMin).
 function siteStopOf(c,key){ const s=(c.sources||{})[key]||{}; return +s.siteMin>0 ? +s.siteMin : (+c.loadSpot||6); }
 function endStopOf(c,key){  const s=(c.sources||{})[key]||{}; return +s.stopMin>0 ? +s.stopMin : (+c.tipMin||3); }
+// Typical bury depth by discipline (ft, grade→bottom) — the global avgDepth is a DRAINAGE depth;
+// pressure water mains run far shallower and gravity sewer sits between. Per-size overrides still win.
+const FAM_DEPTH = { "Water pipe":4, "Sewer pipe":6 };
 // Depth used for the trucking calc, in priority: a card's hard-keyed depth → the per-size assumed
-// depth (global, set per pipe size next to trench width/foundation) → the global assumed depth.
+// depth (global, set per pipe size next to trench width/foundation) → the discipline default →
+// the global assumed depth.
 function resolveDig(item,taskDig,cfg){
   if(taskDig!=null && taskDig!=="") return +taskDig;
   const T=(cfg&&cfg.truck)||{};
   if(item){ const g=bedForItem(item[CI.CC], item[CI.TASK], item[CI.UM], null);
-    if(g && g.fam && g.size!=null){ const o=(T.tw||{})[g.fam+"|"+g.size]; if(o && +o.d>0) return +o.d; } }
+    if(g && g.fam){
+      if(g.size!=null){ const o=(T.tw||{})[g.fam+"|"+g.size]; if(o && +o.d>0) return +o.d; }
+      if(FAM_DEPTH[g.fam]) return FAM_DEPTH[g.fam];
+    } }
   return (+T.avgDepth)||8;
 }
 // Guard against a mis-set / auto-filled far source silently collapsing trips-per-truck: the effective
@@ -339,22 +353,69 @@ function spoilFleet(loads, tripsSpoil, feedMin, loadSpot, availMin){
   const feed = feedMin*Math.min(1, loads*(+loadSpot||6)/Math.max(1,availMin));   // feed crew × dig fraction of the shift
   return Math.ceil(Math.max(haul, feed));
 }
-/* Smart POOLED fleet: one shared fleet hauls every stream and back-hauls material-in on the
-   spoil-out return, so a day of fractional streams (spoil 1.8 + #57 0.7 + sand 0.7 loads) is ONE
-   truck doing a couple of trips — not three dedicated trucks. Sum the per-stream truck-days, overlap
-   the back-hauled portion; a full-shift dig can't fall below the excavator-feed floor. ≥0.75 truck-day
-   of work rounds up to whole trucks; below that it's a shared HALF-truck call-out (a truck splits the
-   day with another crew). `loads`/`tset` are per-stream {spoil,stone,sand,base} loads / trips-per-shift. */
-function poolFleet(loads, tset, feedMin, dumpSite, availMin){
-  const L=k=>Math.max(0,+(loads&&loads[k])||0), tp=k=>Math.max(1,(tset&&tset[k])||1);
-  const outTD = L("spoil")/tp("spoil");                                          // spoil-out truck-days
-  const inTD  = L("stone")/tp("stone") + L("sand")/tp("sand") + L("base")/tp("base");   // material-in truck-days
-  const paired = Math.min(outTD, inTD);                                          // back-haul overlap ⇒ out+in−paired = max
-  let td = outTD + inTD - paired;                                                // fractional truck-days
-  td = Math.max(td, (feedMin||0)*Math.min(1, L("spoil")*(+dumpSite||6)/Math.max(1,availMin)));  // excavator-feed floor
-  const any = L("spoil")+L("stone")+L("sand")+L("base") > 0.001;
-  if(!any) return 0;
-  return td < 0.75 ? 0.5 : Math.ceil(td - 1e-9);    // <0.75 truck-day → half-truck call-out; ≥0.75 rounds up to a whole truck
+/* ONE pairing engine for the whole app — the single basis behind truckModel.total,
+   mergeTruckModels.total, routePlan and the cheat sheet's pooled row, so every surface agrees.
+   Greedy back-haul: pair each spoil-out load with a material-in load into one combined cycle
+   site→dump→pit→site, priced at its TRUE cost (both stops + three legs) — a back-hauled load is
+   cheaper than two round trips but it is NOT free. Leftovers run dedicated round trips.
+   Missing drive times fall back to the flat cyc* autos (same basis as truckCycles — the report can
+   never diverge from the cards because a pin was cleared). Returns total truck-MINUTES both ways. */
+function haulPlan(streams, sources, autos){
+  const c={...TRUCK_DEFAULTS, ...(autos||{})}, S=sources||c.sources||{};
+  const N=k=>Math.max(0,+(streams&&streams[k])||0);
+  const spoilN=N("spoil"), stoneN=N("stone"), sandN=N("sand"), baseN=N("base");
+  const availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
+  const clamp=legClamp(c), tf=key=>trafficOf(S[key]);
+  const FLAT={dump:c.cycSpoil, stone:c.cycStone, sand:c.cycSand, base:c.cycBase};
+  // one-way leg (min): drive×traffic clamped; no drive time set → back it out of the flat cycle auto
+  const legSite = key => { const v=+(S[key]&&S[key].oneWayMin);
+    if(v>0) return Math.max(1, clamp(v*tf(key)));
+    return Math.max(1, ((+FLAT[key]||26) - siteStopOf(c,key) - endStopOf(c,key))/2); };
+  // implied FREE-FLOW road speed (mi/min) from the site legs → derive dump↔pit legs from the pins
+  const impl=[];
+  for(const k of ["dump","stone","sand","base"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
+  const mpm = impl.length ? impl.reduce((a,x)=>a+x,0)/impl.length : null;
+  const legPair = (a,b) => { const d=haversine(S[a],S[b]), tavg=(tf(a)+tf(b))/2; return (d!=null && mpm>0) ? Math.max(1, d/mpm*tavg) : (legSite(a)+legSite(b)); };
+  // round-trip + combined cycles — identical basis to truckCycles (2·drive·traffic + wait@site + stop@pit)
+  const spoilRT = siteStopOf(c,"dump") + 2*legSite("dump") + endStopOf(c,"dump");
+  const rt = key => 2*legSite(key) + siteStopOf(c,key) + endStopOf(c,key);
+  const combined = key => siteStopOf(c,"dump") + endStopOf(c,"dump") + siteStopOf(c,key) + endStopOf(c,key) + legSite("dump") + legPair("dump",key) + legSite(key);
+  const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));
+  const feedMin = Math.ceil(spoilRT/Math.max(1,siteStopOf(c,"dump")));      // excavator-feed floor on the spoil cycle
+  const mats = [
+    {key:"stone", label:"#57 stone", loads:stoneN, rt:rt("stone"), comb:combined("stone"), save:(legSite("dump")+legSite("stone")-legPair("dump","stone"))},
+    {key:"sand",  label:"sand",      loads:sandN,  rt:rt("sand"),  comb:combined("sand"),  save:(legSite("dump")+legSite("sand") -legPair("dump","sand"))},
+    {key:"base",  label:"#610 base", loads:baseN,  rt:rt("base"),  comb:combined("base"),  save:(legSite("dump")+legSite("base") -legPair("dump","base"))}
+  ];
+  // greedy: pair spoil with the higher-saving material first; a pairing must actually save time
+  let spoilLeft=spoilN; const combos=[]; const order=[...mats].sort((a,b)=>b.save-a.save);
+  for(const m of order){ if(spoilLeft<=0) break; if(!(m.save>0.01) || m.loads<=0) continue;
+    const pair=Math.min(spoilLeft, m.loads); if(pair<=0) continue;
+    combos.push({material:m.label, key:m.key, count:pair, cycleMin:m.comb, savedMin:pair*m.save});
+    spoilLeft-=pair; m.paired=pair; }
+  let smartMin=0; const dedic=[];
+  combos.forEach(x=>{ smartMin += x.count*x.cycleMin; });
+  if(spoilLeft>0.001){ smartMin += spoilLeft*spoilRT; dedic.push({material:"spoil", count:spoilLeft, cycleMin:spoilRT}); }
+  mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001){ smartMin += rem*m.rt; dedic.push({material:m.label, key:m.key, count:rem, cycleMin:m.rt}); } });
+  const dumbMin = spoilN*spoilRT + mats.reduce((a,m)=>a+m.loads*m.rt,0);
+  const tset = {spoil:trips(spoilRT), stone:trips(rt("stone")), sand:trips(rt("sand")), base:trips(rt("base"))};
+  return { smartMin, dumbMin, combos, dedic, mats, spoilRT, feedMin, availMin, tset, trips,
+    dumpSite:siteStopOf(c,"dump"),
+    legs:{ dump:legSite("dump"), stone:legSite("stone"), sand:legSite("sand"), base:legSite("base"),
+           dumpStone:legPair("dump","stone"), dumpSand:legPair("dump","sand"), dumpBase:legPair("dump","base") } };
+}
+/* Smart POOLED fleet: one shared fleet hauls every stream, back-hauling material-in on the spoil-out
+   return — so a day of fractional streams is one truck doing a few trips, not three dedicated trucks.
+   Truck-days come from haulPlan's honest combined-cycle minutes (a paired trip costs its real time,
+   not zero); a full-shift dig can't fall below the excavator-feed floor. ≥0.75 truck-day rounds up to
+   whole trucks; below that it's a shared HALF-truck call-out (a truck splits the day with another crew). */
+function poolFleet(loads, autos, sources){
+  const L=k=>Math.max(0,+(loads&&loads[k])||0);
+  if(!(L("spoil")+L("stone")+L("sand")+L("base") > 0.001)) return 0;
+  const hp = haulPlan(loads, sources||(autos&&autos.sources), autos);
+  let td = hp.smartMin/hp.availMin;
+  td = Math.max(td, hp.feedMin*Math.min(1, L("spoil")*(+hp.dumpSite||6)/hp.availMin));  // excavator-feed floor
+  return td < 0.75 ? 0.5 : Math.ceil(td - 1e-9);    // <0.75 truck-day → half-truck call-out; ≥0.75 rounds up
 }
 function truckModel(item, dailyQty, D, tcfg){
   const c={...TRUCK_DEFAULTS, ...(tcfg||{})};
@@ -363,6 +424,11 @@ function truckModel(item, dailyQty, D, tcfg){
   if(!item || !(+dailyQty>0)) return na;
   const P=+dailyQty, um=item[CI.UM];
   const volCap=c.axle==="quad"?c.quadCY:c.triCY, stoneCap=c.axle==="quad"?c.stoneTnQuad:c.stoneTnTri;
+  // Optional weight governor (Advanced, OFF by default): a 17-CY box of wet spoil or sand runs well
+  // past a tri-axle's legal payload, so the effective cap is min(box CY, payload tn ÷ density).
+  // Left off, loads stay on the volume basis the crew calibrated against invoices.
+  const capFor = den => c.weightCap ? Math.min(volCap, stoneCap/Math.max(0.1,+den||1)) : volCap;
+  const spoilCap = capFor(c.spoilDen||1.5), sandCap = capFor(c.sandDen||1.4);
   const availMin = Math.max(1, c.shiftHrs*60*c.eff);           // productive truck-minutes per day
   const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));
   const CYC = truckCycles(c);                                  // drive-derived round-trip minutes
@@ -373,32 +439,51 @@ function truckModel(item, dailyQty, D, tcfg){
   if(g && g.cyEnv!=null){
     const Dd=Math.max(0,+D||0);
     const spoilCy=P*(g.tw*Dd/27)*c.swell;
-    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
+    const spoilTrucks=spoilFleet(spoilCy/spoilCap, tset.spoil, feedMin, dumpSite, availMin);
     const sandBed = g.bedMat==="sand";                            // water main = full sand embedment, no #57 stone
     const stoneCy = sandBed ? 0 : P*g.cyEnv, stoneTn=stoneCy*c.stone57Den;
     const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/tset.stone):0;
     const sandHt=Math.max(0, Dd-g.springHtFt-c.roadSection);
     // upper sand (springline→base) + (for water) the whole bedding envelope routed to sand
     const sandCy=P*Math.max(0,(g.tw*sandHt-g.aUpSf)/27 + (sandBed?g.cyEnv:0))*c.compaction;
-    const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
-    const dLoads={spoil:spoilCy/volCap, stone:stoneTn/stoneCap, sand:sandCy/volCap, base:0};
-    return {applicable:true, mode:"drain", total:poolFleet(dLoads,tset,feedMin,dumpSite,availMin), dedicated:spoilTrucks+stoneTrucks+sandTrucks,
-      spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks},
+    const sandTrucks=sandCy>0?Math.ceil(sandCy/sandCap/tset.sand):0;
+    const dLoads={spoil:spoilCy/spoilCap, stone:stoneTn/stoneCap, sand:sandCy/sandCap, base:0};
+    return {applicable:true, mode:"drain", total:poolFleet(dLoads,c), dedicated:spoilTrucks+stoneTrucks+sandTrucks,
+      spoil:{cy:spoilCy, loads:spoilCy/spoilCap, trucks:spoilTrucks},
       stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
-      sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks}, base:z(),
-      mat:{spoil:"dig-out", stone:sandBed?"":"#57 stone", sand:"sand", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, g};
+      sand:{cy:sandCy, loads:sandCy/sandCap, trucks:sandTrucks}, base:z(),
+      mat:{spoil:"dig-out", stone:sandBed?"":"#57 stone", sand:"sand", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, autos:c, g};
+  }
+  // Structures (manholes / catch basins, EACH): box excavation OUT + #57 bedding IN under the sized
+  // base. Spoil = base footprint × depth (grade→bottom) × swell — conservative (no working-room
+  // factor); backfill is excluded on purpose (usually returned spoil or owner-pumped sand).
+  if(um==="EACH"||um==="VF"){
+    const gs = bedForItem(item[CI.CC], item[CI.TASK], um, c.tw);
+    if(gs && gs.fam==="Structure" && gs.footSf>0){
+      const Dd=(Math.max(0,+D||0))||((+c.avgDepth)||8);
+      const spoilCy=P*(gs.footSf*Dd/27)*c.swell;
+      const spoilTrucks=spoilFleet(spoilCy/spoilCap, tset.spoil, feedMin, dumpSite, availMin);
+      const stoneCy=P*gs.cyPer, stoneTn=stoneCy*c.stone57Den;
+      const stoneTrucks=stoneCy>0?Math.ceil(stoneTn/stoneCap/tset.stone):0;
+      const sLoads={spoil:spoilCy/spoilCap, stone:stoneTn/stoneCap, sand:0, base:0};
+      return {applicable:true, mode:"struct", total:poolFleet(sLoads,c), dedicated:spoilTrucks+stoneTrucks,
+        spoil:{cy:spoilCy, loads:spoilCy/spoilCap, trucks:spoilTrucks},
+        stone:{cy:stoneCy, tn:stoneTn, loads:stoneTn/stoneCap, trucks:stoneTrucks},
+        sand:z(), base:z(),
+        mat:{spoil:"structure dig-out", stone:"#57 bedding", sand:"", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, autos:c, g:gs};
+    }
   }
   const rg = roadForItem(item[CI.CC], item[CI.TASK], um);
   if(rg && rg.kind==="exc"){
     const spoilCy=P*c.swell;                                   // excavation qty is bank CY
-    const spoilTrucks=spoilFleet(spoilCy/volCap, tset.spoil, feedMin, dumpSite, availMin);
+    const spoilTrucks=spoilFleet(spoilCy/spoilCap, tset.spoil, feedMin, dumpSite, availMin);
     const sandCy=rg.sandFill ? P*c.compaction : 0;             // unsuitable-subgrade sand replacement
-    const sandTrucks=sandCy>0?Math.ceil(sandCy/volCap/tset.sand):0;
-    const eLoads={spoil:spoilCy/volCap, stone:0, sand:sandCy/volCap, base:0};
-    return {applicable:true, mode:"road", total:poolFleet(eLoads,tset,feedMin,dumpSite,availMin), dedicated:spoilTrucks+sandTrucks,
-      spoil:{cy:spoilCy, loads:spoilCy/volCap, trucks:spoilTrucks}, stone:z(),
-      sand:{cy:sandCy, loads:sandCy/volCap, trucks:sandTrucks}, base:z(),
-      mat:{spoil:"excavation", stone:"", sand:"sand fill", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, g:null};
+    const sandTrucks=sandCy>0?Math.ceil(sandCy/sandCap/tset.sand):0;
+    const eLoads={spoil:spoilCy/spoilCap, stone:0, sand:sandCy/sandCap, base:0};
+    return {applicable:true, mode:"road", total:poolFleet(eLoads,c), dedicated:spoilTrucks+sandTrucks,
+      spoil:{cy:spoilCy, loads:spoilCy/spoilCap, trucks:spoilTrucks}, stone:z(),
+      sand:{cy:sandCy, loads:sandCy/sandCap, trucks:sandTrucks}, base:z(),
+      mat:{spoil:"excavation", stone:"", sand:"sand fill", base:""}, trips:tset, feedMin, availMin, loadSpot:c.loadSpot, autos:c, g:null};
   }
   if(rg && rg.kind==="base"){
     // #57/#8 = washed stone from the stone pit; #610 = crushed limestone from its own base pit.
@@ -408,9 +493,9 @@ function truckModel(item, dailyQty, D, tcfg){
     const trk = tn>0?Math.ceil(tn/stoneCap/(washed?tset.stone:tset.base)):0;
     const strm = {cy, tn, loads:tn/stoneCap, trucks:trk};
     const bLoads={spoil:0, stone: washed?tn/stoneCap:0, sand:0, base: washed?0:tn/stoneCap};
-    return {applicable:true, mode:"road", total:poolFleet(bLoads,tset,feedMin,dumpSite,availMin), dedicated:trk,
+    return {applicable:true, mode:"road", total:poolFleet(bLoads,c), dedicated:trk,
       spoil:z(), stone: washed?strm:z(), sand:z(), base: washed?z():strm,
-      mat:{spoil:"", stone:washed?rg.material:"", sand:"", base:washed?"":rg.material}, trips:tset, feedMin:0, availMin, loadSpot:c.loadSpot, g:null};
+      mat:{spoil:"", stone:washed?rg.material:"", sand:"", base:washed?"":rg.material}, trips:tset, feedMin:0, availMin, loadSpot:c.loadSpot, autos:c, g:null};
   }
   return na;
 }
@@ -421,15 +506,16 @@ function mergeTruckModels(models){
   const ms = models.filter(m=>m&&m.applicable);
   if(!ms.length) return null;
   const sum = k => ms.reduce((a,m)=>a+m[k].loads,0);
+  const autos = ms[0].autos || TRUCK_DEFAULTS;
   const tr = ms[0].trips, feedMin = Math.max(...ms.map(m=>m.feedMin||0));
-  const loadSpot = ms[0].loadSpot||6, availMin = ms[0].availMin||1;
+  const dumpSite = siteStopOf(autos,"dump"), availMin = ms[0].availMin||1;   // spoil-route load/spot time, not the global default
   const spoilCy = ms.reduce((a,m)=>a+m.spoil.cy,0);
-  const spoil = spoilCy>0 ? spoilFleet(sum("spoil"), tr.spoil, feedMin, loadSpot, availMin) : 0;
+  const spoil = spoilCy>0 ? spoilFleet(sum("spoil"), tr.spoil, feedMin, dumpSite, availMin) : 0;
   const stone = ms.some(m=>m.stone.cy>0) ? Math.ceil(sum("stone")/tr.stone) : 0;
   const sand  = ms.some(m=>m.sand.cy>0)  ? Math.ceil(sum("sand")/tr.sand)   : 0;
   const base  = ms.some(m=>m.base&&m.base.cy>0) ? Math.ceil(sum("base")/tr.base) : 0;
   // pooled headline (one shared fleet back-hauls) + dedicated per-stream sum for reference
-  const total = poolFleet({spoil:sum("spoil"), stone:sum("stone"), sand:sum("sand"), base:sum("base")}, tr, feedMin, loadSpot, availMin);
+  const total = poolFleet({spoil:sum("spoil"), stone:sum("stone"), sand:sum("sand"), base:sum("base")}, autos);
   return { applicable:true, total, dedicated:spoil+stone+sand+base, spoilTrucks:spoil, stoneTrucks:stone, sandTrucks:sand, baseTrucks:base };
 }
 /* Great-circle distance (miles) between two {lat,lng}. */
@@ -448,57 +534,22 @@ function haversine(a, b){
    pins' straight-line distance scaled by the site legs' implied speed; when a pin is unset the
    leg is treated as the full detour (savings 0), so back-haul only kicks in once pins are placed. */
 function routePlan(streams, sources, autos){
-  const c={...TRUCK_DEFAULTS, ...(autos||{})}, S=sources||c.sources||{};
-  const spoilN=Math.max(0,+ (streams&&streams.spoil)||0), stoneN=Math.max(0,+(streams&&streams.stone)||0), sandN=Math.max(0,+(streams&&streams.sand)||0), baseN=Math.max(0,+(streams&&streams.base)||0);
-  const availMin=Math.max(1,(+c.shiftHrs||8)*60*(+c.eff||0.85));
-  const siteOf = key => siteStopOf(c,key), endOf = key => endStopOf(c,key);   // per-route wait@site + stop@pit
-  // one-way leg (min) between site and a source role, inflated by that route's traffic factor
-  const tf = key => trafficOf(S[key]);
-  const clamp = legClamp(c);   // guard: cap the effective one-way leg (drive×traffic) at maxLegMin
-  const legSite = key => Math.max(1, clamp((+(S[key]&&S[key].oneWayMin) || 1) * tf(key)));
-  // implied FREE-FLOW road speed (mi/min) from the site legs → derive dump↔pit legs from the pins
-  const impl=[];
-  for(const k of ["dump","stone","sand","base"]){ const d=haversine(S.site,S[k]); const t=+(S[k]&&S[k].oneWayMin); if(d!=null&&t>0) impl.push(d/t); }
-  const mpm = impl.length ? impl.reduce((a,x)=>a+x,0)/impl.length : null;   // miles per min (free-flow)
-  const legPair = (a,b) => { const d=haversine(S[a],S[b]), tavg=(tf(a)+tf(b))/2; return (d!=null && mpm>0) ? Math.max(1, d/mpm*tavg) : (legSite(a)+legSite(b)); };
-  // round-trip cycle minutes — SAME basis as truckModel (2·drive·traffic + wait@site + stop@pit)
-  const spoilRT = siteOf("dump") + 2*legSite("dump") + endOf("dump");
-  const rt = key => 2*legSite(key) + siteOf(key) + endOf(key);
-  const combined = key => siteOf("dump") + endOf("dump") + siteOf(key) + endOf(key) + legSite("dump") + legPair("dump",key) + legSite(key);
-  const trips = cyc => Math.max(1, Math.floor(availMin/Math.max(1,cyc)));   // round trips one truck can run in a shift
-  const feedMin = Math.ceil(spoilRT/Math.max(1,siteOf("dump")));            // excavator-feed floor on the spoil cycle
-  const mats = [
-    {key:"stone", label:"#57 stone", loads:stoneN, rt:rt("stone"), comb:combined("stone"), save:(legSite("dump")+legSite("stone")-legPair("dump","stone"))},
-    {key:"sand",  label:"sand",      loads:sandN,  rt:rt("sand"),  comb:combined("sand"),  save:(legSite("dump")+legSite("sand") -legPair("dump","sand"))},
-    {key:"base",  label:"#610 base", loads:baseN,  rt:rt("base"),  comb:combined("base"),  save:(legSite("dump")+legSite("base") -legPair("dump","base"))}
-  ];
-  // greedy: pair spoil with the higher-saving material first
-  let spoilLeft=spoilN; const combos=[]; const order=[...mats].sort((a,b)=>b.save-a.save);
-  for(const m of order){ if(spoilLeft<=0) break; if(!(m.save>0.01) || m.loads<=0) continue;
-    const pair=Math.min(spoilLeft, m.loads); if(pair<=0) continue;
-    combos.push({material:m.label, key:m.key, count:pair, cycleMin:m.comb, savedMin:pair*m.save});
-    spoilLeft-=pair; m.paired=pair; }
-  // minutes (for hours saved) + dedicated remainders
-  let smartMin=0; const dedic=[];
-  combos.forEach(x=>{ smartMin += x.count*x.cycleMin; });
-  if(spoilLeft>0.001){ smartMin += spoilLeft*spoilRT; dedic.push({material:"spoil", count:spoilLeft, cycleMin:spoilRT}); }
-  mats.forEach(m=>{ const rem=m.loads-(m.paired||0); if(rem>0.001){ smartMin += rem*m.rt; dedic.push({material:m.label, key:m.key, count:rem, cycleMin:m.rt}); } });
-  const dumbMin = spoilN*spoilRT + mats.reduce((a,m)=>a+m.loads*m.rt,0);
+  const spoilN=Math.max(0,+(streams&&streams.spoil)||0), stoneN=Math.max(0,+(streams&&streams.stone)||0), sandN=Math.max(0,+(streams&&streams.sand)||0), baseN=Math.max(0,+(streams&&streams.base)||0);
+  // All cycle/pairing math lives in haulPlan — the same engine behind truckModel.total, so the
+  // report's numbers and the card totals share one basis by construction.
+  const hp = haulPlan({spoil:spoilN, stone:stoneN, sand:sandN, base:baseN}, sources, autos);
+  const {combos, dedic, mats, smartMin, dumbMin, spoilRT, feedMin, availMin, tset, dumpSite, legs} = hp;
   // TRUCK COUNTS — per-stream fleets, so dedicated == the sum of truckModel's stream trucks (card totals).
-  const dumbSpoil = spoilN>0 ? spoilFleet(spoilN, trips(spoilRT), feedMin, siteOf("dump"), availMin) : 0;
-  const dumbMat = mats.reduce((a,m)=> a + (m.loads>0?Math.ceil(m.loads/trips(m.rt)):0), 0);
+  const dumbSpoil = spoilN>0 ? spoilFleet(spoilN, tset.spoil, feedMin, dumpSite, availMin) : 0;
+  const dumbMat = mats.reduce((a,m)=> a + (m.loads>0?Math.ceil(m.loads/Math.max(1,Math.floor(availMin/Math.max(1,m.rt)))):0), 0);
   const dumbTrucks = dumbSpoil + dumbMat;
-  // smart headline: pool every stream's truck-days and round up ONCE — material-in back-hauls on the
-  // spoil-out return, so fractional streams share one fleet instead of each demanding a dedicated truck.
-  // Floored by the excavator-feed requirement; SAME basis as truckModel.total (they agree by construction).
-  const tset = {spoil:trips(spoilRT), stone:trips(rt("stone")), sand:trips(rt("sand")), base:trips(rt("base"))};
-  const smartTrucks = poolFleet({spoil:spoilN, stone:stoneN, sand:sandN, base:baseN}, tset, feedMin, siteOf("dump"), availMin);
+  // smart headline: pooled truck-days at honest combined-cycle cost, rounded up ONCE (0.75 → half-truck rule).
+  const smartTrucks = poolFleet({spoil:spoilN, stone:stoneN, sand:sandN, base:baseN}, autos, sources);
   const trucks = Math.min(smartTrucks, dumbTrucks);   // back-haul never needs more trucks than dedicated
   const hoursSaved = Math.max(0, (dumbMin-smartMin)/60);
   return { combos, dedic, smartMin, dumbMin, trucks, dumbTrucks, hoursSaved,
     savings:{stone:mats[0].save, sand:mats[1].save, base:mats[2].save},
-    legs:{ dump:legSite("dump"), stone:legSite("stone"), sand:legSite("sand"), base:legSite("base"),
-           dumpStone:legPair("dump","stone"), dumpSand:legPair("dump","sand"), dumpBase:legPair("dump","base") } };
+    legs };
 }
 /* Labor-category cost codes: exclude leave/holiday (50.50.x), misc/overhead (99.x),
    fuel/consumables, and sales-tax phases so daily tracking stays on productive work. */
@@ -681,9 +732,13 @@ function autoDesc(name, ts, logs, calc, isSub){
   const tms = ts.map(x=>{ const cx=calc(x); return (cx.actTrk&&cx.actTrk.applicable)?cx.actTrk:(cx.trk&&cx.trk.applicable?cx.trk:null); }).filter(Boolean);
   if (tms.length){
     const merged=mergeTruckModels(tms);
-    const trucks=merged?Math.max(1,Math.ceil(merged.total)):0;   // whole trucks that ran (a truck showed up or it didn't)
+    const total=merged?merged.total:0;
     const physLoads=tms.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads+(m.base?m.base.loads:0),0);
-    if(trucks>0 && physLoads>=0.5) s += ` The crew ran ${trucks} truck${trucks>1?"s":""}, moving ${Math.round(physLoads)} load${Math.round(physLoads)>1?"s":""} of material.`;
+    if(total>0 && physLoads>=0.5){
+      const loadsTxt=`moving ${Math.round(physLoads)} load${Math.round(physLoads)>1?"s":""} of material`;
+      s += total<1 ? ` The crew ran a shared half-day truck, ${loadsTxt}.`   // 0.5 call-out — split with another crew
+                   : ` The crew ran ${Math.ceil(total)} truck${Math.ceil(total)>1?"s":""}, ${loadsTxt}.`;
+    }
   }
   return s;
 }
@@ -1709,7 +1764,7 @@ const capOf = (crews, id) => { const c=crews.find(x=>x.id===id); return (c && c.
 function computeReflow(tasks, logs, baseline, crews, cfg){
   const byTask={}, byCrew={}, crewDayLoads={}, crewDayTrucks={};
   const truckRate = (cfg && cfg.truckRate>0) ? cfg.truckRate : 220;
-  const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * 8; // proxy for non-pipe haul items (no physical model)
+  const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * (((cfg&&cfg.truck&&+cfg.truck.shiftHrs)||8)); // proxy for non-pipe haul items (no physical model) — empirical loads/hr × the configured shift
   const groups={};
   tasks.forEach(t=>{ const k=runKey(t); (groups[k]||(groups[k]=[])).push(t); });
   Object.entries(groups).forEach(([k,arr])=>{
@@ -2968,10 +3023,18 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
       // physical truck model (actuals when logged), pooled per crew — matches the Trucking report
       const ms = dayTasks(c.id).map(t=>{ const cc=taskCalc(t); return (cc.actTrk&&cc.actTrk.applicable)?cc.actTrk:(cc.trk&&cc.trk.applicable?cc.trk:null); }).filter(Boolean);
       const merged = ms.length ? mergeTruckModels(ms) : null;
-      return {name:c.name, trucks: merged ? Math.ceil(merged.total) : 0};   // whole trucks to dispatch per crew
+      return {name:c.name, trucks: merged ? merged.total : 0};   // pooled per crew — may be a 0.5 call-out
     }).filter(x=>x.trucks>0);
-    const total = per.reduce((a,x)=>a+x.trucks,0);
-    return total? `${total} truck${total>1?"s":""} requested for today's operation (${per.map(x=>`${x.name} - ${x.trucks}`).join(", ")}).` : "No trucking requested for today's operation.";
+    // Dispatch: whole-truck crews get their own; half-truck crews PAIR UP on one shared truck
+    // (the smart-trucking half-day call-out), so two 0.5 crews request 1 truck, not 2.
+    const wholes = per.filter(x=>x.trucks>=1), halves = per.filter(x=>x.trucks<1);
+    const parts = wholes.map(x=>`${x.name} - ${Math.ceil(x.trucks)}`);
+    for(let i=0;i<halves.length;i+=2){
+      if(halves[i+1]) parts.push(`${halves[i].name} + ${halves[i+1].name} share 1`);
+      else parts.push(`${halves[i].name} - 1 (half-day)`);
+    }
+    const total = wholes.reduce((a,x)=>a+Math.ceil(x.trucks),0) + Math.ceil(halves.length/2);
+    return total? `${total} truck${total>1?"s":""} requested for today's operation (${parts.join(", ")}).` : "No trucking requested for today's operation.";
   },[weekTasks,day,crews,cfg]);
 
   const text = useMemo(()=>{
@@ -3453,11 +3516,15 @@ function CardExportModal({weekTasks,runDayMap,crews,taskCalc,cfg,wk,close}){
     const groups = new Map();
     for(const cd of base){ const k=cd.t.res+"|"+cd.t.day; (groups.get(k) ?? groups.set(k,[]).get(k)).push(cd); }
     const same=(g,f)=> g.every(x=>f(x)===f(g[0]));
-    return [...groups.values()].map(g=>{ if(g.length===1) return g[0]; const mt=mergeTruckModels(g.map(x=>x.trk)); return {
+    return [...groups.values()].map(g=>{ if(g.length===1) return g[0]; const mt=mergeTruckModels(g.map(x=>x.trk));
+    // A hand-keyed trucks override survives the merge when every member card has a numeric one (sum them).
+    const ovs=g.map(x=>x.t.trucks).map(v=>v==null||v===""?null:+v);
+    const ovSum=ovs.every(v=>v!=null&&!isNaN(v)) ? ovs.reduce((a,v)=>a+v,0) : null;
+    return {
       merged:true, t:g[0].t, run:g[0].run, place:g[0].place,   // primary code's run drives the Day X/Y counter
       mh:    g.reduce((s,x)=>s+x.mh,0),
       loads: g.reduce((s,x)=>s+x.loads,0),
-      trucks: mt ? mt.total : null,
+      trucks: ovSum!=null ? ovSum : (mt ? mt.total : null),
       loc:   same(g,x=>x.t.loc||"")   ? (g[0].t.loc||"")   : "",  // shared value or blank
       equip: same(g,x=>x.t.equip||"") ? (g[0].t.equip||"") : "",
       lines: g.map(x=>({ it:x.it, qty:x.t.qty, sta:x.t.sta })),
@@ -3601,7 +3668,10 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,cl
   },[weekTasks,crews,cfg]);
 
   const wkDumb=week.reduce((a,d)=>a+d.sumDumb,0), wkSmart=week.reduce((a,d)=>a+d.cross,0);
-  const wkSaved$=Math.max(0,(wkDumb-wkSmart))*truckHr*(T.shiftHrs||8);
+  // Honest $ basis: trucks are hired by the HOUR (rate sheet), so the week's saving is the hours the
+  // routing actually cuts (routePlan.hoursSaved) × the hourly rate — not truck-count × a full shift.
+  const wkSavedHrs=week.reduce((a,d)=>a+(d.poolRp?d.poolRp.hoursSaved:0),0);
+  const wkSaved$=Math.round(wkSavedHrs*truckHr);
   const peakDay=week.reduce((a,d)=>d.cross>a.cross?d:a, week[0]);
   const maxBar=Math.max(1,...week.map(d=>d.cross));
   const D=week[day];
@@ -3610,7 +3680,7 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,cl
     const L=[`TRUCK ORDER — ${wkTitle(wk)}`,""];
     week.forEach(d=>{ if(!d.perCrew.length) return; L.push(`${DAYS[d.di]} ${dLabel(wk,d.di)} — ${d.cross} truck(s) (pooled; ${d.sumDumb} dedicated)`);
       d.perCrew.forEach(x=>L.push(`   • ${x.crew.name}: ${x.rp.trucks} (${x.rp.dumbTrucks} ded)${x.rp.hoursSaved>0.05?` · saves ~${fmtN(x.rp.hoursSaved,1)}h`:""}`)); });
-    L.push("", `PEAK DAY: ${DAYS[peakDay.di]} — ${peakDay.cross} trucks`, `WEEK $ SAVED vs dedicated: ${fmt$(wkSaved$)}`);
+    L.push("", `PEAK DAY: ${DAYS[peakDay.di]} — ${peakDay.cross} trucks`, `WEEK $ SAVED by back-haul routing: ${fmt$(wkSaved$)} (${fmtN(wkSavedHrs,1)} truck-hrs × ${fmt$(truckHr)}/hr)`);
     return L.join("\n");
   },[week]);
 
@@ -3644,7 +3714,7 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,cl
       <div className="kpis" style={{padding:"8px 0 4px"}}>
         <div className="kpi"><label>Peak fleet</label><b>{peakDay.cross} 🚚</b></div>
         <div className="kpi"><label>Truck $/hr</label><b>{fmt$(truckHr)}</b></div>
-        <div className="kpi"><label>Week $ saved</label><b className="pos">{fmt$(wkSaved$)}</b></div>
+        <div className="kpi" title={fmtN(wkSavedHrs,1)+" truck-hours actually cut by back-haul routing × "+fmt$(truckHr)+"/hr (hourly rate sheet)"}><label>Week $ saved</label><b className="pos">{fmt$(wkSaved$)}</b></div>
       </div>
       <div className="btnrow">
         <button className="cta" onClick={()=>{navigator.clipboard?.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500);}}>{copied?"Copied ✓":"Copy order sheet"}</button>
@@ -3698,6 +3768,11 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
   ].filter(s=>s.loads>0.05);
   streams.forEach(s=> s.truckDays = Math.ceil(s.loads/s.tp) );
   const totalTruckDays = streams.reduce((a,s)=>a+s.truckDays,0);
+  // What to actually BOOK: one pooled fleet back-hauls material-in on spoil-out returns —
+  // same engine as the cards and the Trucking report, so the numbers agree across surfaces.
+  // Per-stream truck-days above remain the material-ordering detail (they over-count trucks).
+  const hpWk = haulPlan({spoil:tot.spoil, stone:tot.stone, sand:tot.sand, base:tot.base}, T.sources, T);
+  const pooledTruckDays = (tot.spoil+tot.stone+tot.sand+tot.base>0.05) ? Math.ceil(hpWk.smartMin/hpWk.availMin - 1e-9) : 0;
 
   const text = useMemo(()=>{
     const L=[`WATERSHED LOOK-AHEAD — MATERIALS & TRUCKING CHEAT SHEET`, wkTitle(wk), "", "PIPE / STRUCTURES TO STAGE:"];
@@ -3705,7 +3780,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     L.push("", "HAUL STREAMS (from the physical truck model):");
     streams.forEach(s=>L.push(`  • ${s.label}: ${fmtN(s.cy,0)} CY${s.tn?` / ${fmtN(s.tn,0)} tn`:""} ≈ ${fmtN(s.loads,0)} loads = ${s.truckDays} truck-day(s)  [${s.src}]`));
     L.push("", `TOTAL PIPE: ${fmtN(tot.pipe)} LF`,
-      `TRUCK-DAYS TO BOOK: ${totalTruckDays}  (spoil-out + stone/base-in + sand-in, sized on your drive times)`,
+      `TRUCK-DAYS TO BOOK (pooled, back-haul): ${pooledTruckDays}  — vs ${totalTruckDays} if each stream ran its own trucks`,
       "", "Book to the peak day; verify materials against yard inventory before ordering.");
     return L.join("\n");
   },[groups]);
@@ -3719,7 +3794,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
         <div className="kpi"><label>Spoil out</label><b>{fmtN(tot.spoil,0)} ld</b></div>
         <div className="kpi"><label>Stone in</label><b>{fmtN(tot.stoneTn,0)} tn</b></div>
         <div className="kpi"><label>Sand in</label><b>{fmtN(tot.sand,0)} ld</b></div>
-        <div className="kpi"><label>Truck-days</label><b>{totalTruckDays}</b></div>
+        <div className="kpi" title={"Pooled fleet with back-haul — vs "+totalTruckDays+" if each stream ran its own trucks"}><label>Truck-days</label><b>{pooledTruckDays}</b></div>
       </div>
       <div className="loghdr">Pipe &amp; structures to stage</div>
       <table className="dt list"><thead><tr><th>Item</th><th className="r">Scheduled</th><th>Crew</th></tr></thead>
@@ -3729,7 +3804,8 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
       <table className="dt list"><thead><tr><th>Stream</th><th>Source</th><th className="r">Volume</th><th className="r">Loads</th><th className="r">Truck-days</th></tr></thead>
         <tbody>{streams.length? streams.map((s,i)=><tr key={i}><td>{s.label}</td><td className="dim2">{s.src}</td><td className="r">{fmtN(s.cy,0)} CY{s.tn?` · ${fmtN(s.tn,0)} tn`:""}</td><td className="r">{fmtN(s.loads,1)}</td><td className="r"><b>{s.truckDays}</b></td></tr>)
           : <tr><td colSpan={5} className="empty">No haul-driving work scheduled this week.</td></tr>}
-          {streams.length>0 && <tr className="cheattot"><td><b>Total</b></td><td/><td/><td/><td className="r"><b>🚚 {totalTruckDays}</b></td></tr>}</tbody></table>
+          {streams.length>0 && <tr className="cheattot"><td><b>Per-stream total</b> <em className="dim2" style={{fontWeight:400}}>(material ordering)</em></td><td/><td/><td/><td className="r"><b>{totalTruckDays}</b></td></tr>}
+          {streams.length>0 && <tr className="cheattot"><td><b>To book — pooled fleet</b> <em className="dim2" style={{fontWeight:400}}>(back-haul, matches the Trucking report)</em></td><td/><td/><td/><td className="r"><b>🚚 {pooledTruckDays}</b></td></tr>}</tbody></table>
       <div className="loghdr">Per-item haul <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>{anyLogged?"(plan → actual from logged production)":""}</em></div>
       <table className="dt list"><thead><tr><th>Item</th><th className="r">Spoil</th><th className="r">Stone</th><th className="r">Sand</th></tr></thead>
         <tbody>{haulItems.length? haulItems.map((g,i)=>{ const cell=(pl,ac)=> pl<0.05?"—":(anyLogged&&g.actQty>0?`${fmtN(pl,1)}→${fmtN(ac,1)}`:fmtN(pl,1)); return (
@@ -4153,7 +4229,11 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           {NF('triCY','Tri vol (LCY)')}{NF('quadCY','Quad vol (CY)')}{NF('stoneTnTri','Tri stone (tn)')}{NF('stoneTnQuad','Quad stone (tn)')}
         </div>
         <div className="trkrow">
-          {NF('stone57Den','#57 tn/CY',0.1)}{NF('baseDen','#610 tn/CY',0.1)}{NF('sandDen','Sand tn/CY',0.1)}{NF('swell','Spoil swell ×',0.05)}{NF('compaction','Sand compaction ×',0.05)}{NF('roadSection','Grade→base (ft)',0.25)}
+          {NF('stone57Den','#57 tn/CY',0.1)}{NF('baseDen','#610 tn/CY',0.1)}{NF('sandDen','Sand tn/CY',0.1)}{NF('spoilDen','Spoil tn/CY',0.1)}{NF('swell','Spoil swell ×',0.05)}{NF('compaction','Sand compaction ×',0.05)}{NF('roadSection','Grade→base (ft)',0.25)}
+        </div>
+        <div className="trkrow">
+          <label className="switch" title={"ON: spoil/sand loads capped by legal payload ÷ density instead of the box volume — effective spoil "+fmtN(Math.min(T.axle==="quad"?T.quadCY:T.triCY,(T.axle==="quad"?T.stoneTnQuad:T.stoneTnTri)/Math.max(0.1,T.spoilDen||1.5)),1)+" CY/load, sand "+fmtN(Math.min(T.axle==="quad"?T.quadCY:T.triCY,(T.axle==="quad"?T.stoneTnQuad:T.stoneTnTri)/Math.max(0.1,T.sandDen||1.4)),1)+" CY/load. OFF: volume basis (calibrated against invoices)."}>
+            <input type="checkbox" checked={!!T.weightCap} onChange={e=>tset('weightCap',e.target.checked)}/><i/><span>Weight-governed loads (payload ÷ density)</span></label>
         </div>
         <div className="trkrow">
           {NF('shiftHrs','Truck hrs/day',0.5)}{NF('eff','Truck eff ×',0.05)}{NF('loadSpot','Default site stop',1)}{NF('tipMin','Default pit stop',1)}{NF('avgDepth','Assumed depth (ft)',0.5)}{NF('maxLegMin','Max one-way leg (min)',5)}
