@@ -721,6 +721,7 @@ function LookAhead(){
   const [rainDays, setRainDays] = useState({});          // rain-outs: { 'YYYY-MM-DD': true } — the day is lost; all work from it pushes one working day
   const [holidays, setHolidays] = useState(US_HOLIDAYS); // non-working holidays: { 'YYYY-MM-DD': label } — skipped when placing a run, greyed on the board
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
+  const [wkSpan, setWkSpan] = useState(1);               // look-ahead grid: how many weeks to stack (1..3) — the "3-week look-ahead"
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
@@ -786,6 +787,7 @@ function LookAhead(){
     if (opts && opts.skipView) return;
     if (s.wk) setWk(s.wk);
     if (s.cardStyle) setCardStyle(s.cardStyle); // per-device display pref (skipped on remote pulls)
+    if (s.wkSpan) setWkSpan(Math.max(1,Math.min(3,s.wkSpan))); // per-device: weeks stacked in the look-ahead grid
     if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
     if (typeof s.showEquip==="boolean") setShowEquip(s.showEquip);
   };
@@ -803,8 +805,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -816,7 +818,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -998,6 +1000,8 @@ function LookAhead(){
 
   /* derived */
   const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
+  // Look-ahead grid: the Monday of each stacked week (wk, wk+7, …). wkSpan is clamped 1..3.
+  const spanWeeks = useMemo(()=>Array.from({length:Math.max(1,Math.min(3,wkSpan))},(_,i)=>addDays(wk,i*7)),[wk,wkSpan]);
   const ctcOf = ci => ctc[(CATALOG[ci][CI.CC]||"").replace(/-/g,".")] || null;
   const loggedFor = ci => tasks.filter(t=>t.ci===ci).reduce((a,t)=>a+((logs[t.id]&&logs[t.id].qty)||0),0);
   // Installed baseline = CTC billed-to-date where the code is in the CTC export, else field/estimate baseline; session logging adds on top.
@@ -1077,13 +1081,13 @@ function LookAhead(){
   const toggleSel = id => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
   // Drop handler: a single card moves to the target day (+crew if given); a multi-
   // selection shifts every selected task by the same day delta, keeping each crew.
-  const rescheduleDrop = (draggedId,targetRes,targetDay)=>{
-    const clamp=v=>Math.max(0,Math.min(6,v));
+  const rescheduleDrop = (draggedId,targetRes,targetDay,targetWk)=>{
+    const tw = targetWk || wk;                              // which stacked week the card was dropped into
     const multi = sel.has(draggedId) && sel.size>1;
     pushUndo(multi?"Moved tasks":"Moved task");
     setTasks(ts=>{ const drag=ts.find(t=>t.id===draggedId); if(!drag) return ts;
-      if(multi){ const delta = targetDay - drag.day;
-        return ts.map(t=> sel.has(t.id) ? {...t, day:clamp(t.day+delta)} : t); }
+      if(multi){ const delta = wdi(tw,targetDay) - wdi(drag.wk,drag.day);   // shift the whole selection by the same working-day offset
+        return ts.map(t=> { if(!sel.has(t.id)) return t; const w=fromWdi(Math.max(0,wdi(t.wk,t.day)+delta)); return {...t, day:w.day, wk:w.wk}; }); }
       // Slip-cascade: a single card of a multi-day run moved within its crew re-packs this day and
       // every LATER day of the run into consecutive working days from the drop; earlier days hold and
       // the drop can't cross before the previous day. Keys on runKey/wdi → interleave-safe.
@@ -1091,12 +1095,12 @@ function LookAhead(){
       if(sameCrew && mem.length>1){
         const sorted=mem.slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
         const j=sorted.findIndex(x=>x.id===draggedId);
-        let targetWdi=wdi(wk,targetDay);
+        let targetWdi=wdi(tw,targetDay);
         if(j>0) targetWdi=Math.max(targetWdi, wdi(sorted[j-1].wk,sorted[j-1].day)+1);
         const move={}; for(let i=j;i<sorted.length;i++){ const w=fromWdi(targetWdi+(i-j)); move[sorted[i].id]={day:w.day,wk:w.wk}; }
         return ts.map(t=> move[t.id] ? {...t, ...move[t.id]} : t);
       }
-      return ts.map(t=> t.id===draggedId ? {...t, day:targetDay, ...(targetRes!=null?{res:targetRes}:{})} : t);
+      return ts.map(t=> t.id===draggedId ? {...t, day:targetDay, wk:tw, ...(targetRes!=null?{res:targetRes}:{})} : t);
     });
     if(multi) setSel(new Set());
   };
@@ -1119,6 +1123,42 @@ function LookAhead(){
     const clones=src.map((x,i)=>{ const nw=fromWdi(start+i); const {id,rid:_r,...rest}=x; return {...rest, id:tid(), rid:newRid, wk:nw.wk, day:nw.day}; });
     setTasks(ts=>[...ts,...clones]); setModal(null);
     flash(`Duplicated ${N===1?"task":N+"-day run"} → ${clones[0].wk} · drag to reposition`);
+  };
+  // Shape the current look-ahead (all stacked weeks) into a plain model for the vector PDF builder.
+  const buildPdfModel = () => ({
+    job: "DPW547 · Job 2124013",
+    subtitle: (spanWeeks.length>1 ? spanWeeks.length+"-Week" : "Weekly")+" Look-Ahead",
+    generated: new Date().toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}),
+    legend: Object.keys(SCOPES).filter(k=>k!=="gen").map(k=>({code:SCOPES[k].code,name:SCOPES[k].name,hex:SCOPES[k].bg})),
+    weeks: spanWeeks.map(w=>{
+      const rows=[...crewsOnly.map(c=>({res:c,kind:"crew"})), ...subsOnly.map(c=>({res:c,kind:"sub"}))].map(({res,kind})=>({
+        name:res.name, kind,
+        cells:[0,1,2,3,4].map(d=> tasks.filter(t=>t.wk===w && t.res===res.id && t.day===d).map(t=>{
+          const c=taskCalc(t), it=c.it, sc=SCOPES[scopeOf(t,crews)]||SCOPES.gen;
+          const trucks=(t.trucks!=null&&t.trucks!=="")?String(t.trucks):(c.trucks!=null?c.trucks+" trk":(c.loads>=0.05?fmtN(c.loads,1)+" lds":""));
+          return { code:sc.code, hex:sc.bg, tx:sc.tx, name:it[CI.TASK], done:c.done,
+            stat: fmtN(t.qty,t.qty%1?1:0)+" "+it[CI.UM]+" · "+fmtN(c.planMH,c.planMH%1?1:0)+"MH"+(trucks?" · "+trucks:"") };
+        }))
+      })).filter(r=>r.cells.some(c=>c.length));
+      return { title: wkTitle(w), dayLabels:[0,1,2,3,4].map(i=>dLabel(w,i)), rows };
+    })
+  });
+  const [pdfBusy,setPdfBusy]=useState(false);
+  const shareLookaheadPdf = async () => {
+    if(pdfBusy) return; setPdfBusy(true); flash("Building look-ahead PDF…");
+    try{
+      const JsPDF = await ensureJsPDF();
+      const doc = drawLookaheadPdf(JsPDF, buildPdfModel());
+      const fname = "RNGD_LookAhead_"+wk+".pdf";
+      const blob = doc.output("blob"), file = new File([blob], fname, {type:"application/pdf"});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:"RNGD Look-Ahead", text:"Look-ahead — "+wkTitle(wk)});
+      } else {
+        const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=fname; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(a.href),4000); flash("Look-ahead PDF downloaded");
+      }
+    }catch(e){ if(!e || e.name!=="AbortError") flash("PDF: "+((e&&e.message)||"failed")); }
+    finally{ setPdfBusy(false); }
   };
   const addDep = (depKey,predKey)=> { pushUndo("Added link"); setDeps(d=>{ if(depKey===predKey) return d; const cur=d[depKey]||[]; return cur.includes(predKey)?d:{...d,[depKey]:[...cur,predKey]}; }); };
   const rmDep  = (depKey,predKey)=> { pushUndo("Removed link"); setDeps(d=>{ const cur=(d[depKey]||[]).filter(p=>p!==predKey); const c={...d}; if(cur.length) c[depKey]=cur; else delete c[depKey]; return c; }); };
@@ -1415,6 +1455,9 @@ function LookAhead(){
             </button>
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
+          {effTab==="board" && !isMobile && <span className="spanseg no-print" title="Stack this many weeks into one look-ahead grid — cards and dependency arrows carry across the week boundary">
+            {[1,2,3].map(n=><button key={n} className={wkSpan===n?"on":""} onClick={()=>setWkSpan(n)} aria-label={n+"-week look-ahead"}>{n}<em>wk</em></button>)}
+          </span>}
         </div>
         <div className="actions no-print">
           {effTab==="board" && <>
@@ -1422,6 +1465,7 @@ function LookAhead(){
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
           <button onClick={()=>{ document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },60); }} title="Print the live color board — Procore snapshot / trailer wall (landscape)">🖨 Board</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
+          <button onClick={shareLookaheadPdf} disabled={pdfBusy} title="Build a crisp look-ahead PDF from the schedule and share it (or download) — one page per stacked week, works on the phone">{pdfBusy?"⏳ PDF…":"📄 Share PDF"}</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
           <button onClick={()=>setModal({type:"trucking"})}>Trucking</button>
@@ -1495,38 +1539,13 @@ function LookAhead(){
       {/* ============ BOARD GRID ============ */}
       {effTab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
       <div className="boardmain">
-      <div className="boardwrap">
-        <table className="board">
-          <thead>
-            <tr>
-              <th className="rescol">Resource</th>
-              {DAYS.map((d,i)=>{
-                const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
-                const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
-                const w = wxForDate(date);
-                return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(hol?"holiday":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
-                  {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
-                  {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
-                  {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
-                  {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />
-            {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
-            {crewsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="crew" idx={idx} {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
-
-            <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />
-            {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
-            {subsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="sub" idx={idx} {...{wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd}}/>)}
-
-            <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />
-            {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
-            {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
-          </tbody>
-        </table>
-        <DepLayer {...{deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef:depLayerRef}}/>
+      <div className={"boardwrap"+(spanWeeks.length>1?" multiweek":"")}>
+        {spanWeeks.map((w,wi)=>
+          <React.Fragment key={w}>
+            {wi>0 && <div className="weekband no-print"><span>Look-ahead week {wi+1}</span><em>{wkTitle(w)}</em></div>}
+            <WeekTable wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>
+          </React.Fragment>)}
+        <DepLayer {...{deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef:depLayerRef}}/>
       </div>
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
       </div>)}
@@ -1542,7 +1561,7 @@ function LookAhead(){
       {/* ============ MODALS ============ */}
       {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
-      {modal?.type==="sched"   && <SchedModal {...{wk,crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
+      {modal?.type==="sched"   && <SchedModal {...{wk:(modal.wk||wk),crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
       {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
@@ -1606,11 +1625,52 @@ function CrewRail({crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModa
     {subCards.length>0 && <><div className="rldiv">Subcontractors</div>{subCards}</>}
   </aside>;
 }
+/* One week of the look-ahead grid: its own day-header row + Crews/Subcontractors (and, on the
+   primary week, Site + add-resource affordances). Several WeekTables stack inside one .boardwrap so
+   the single DepLayer overlay can draw finish-to-start and run-chain arrows across week boundaries. */
+function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,
+  logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,
+  linkApi,resizeApi,milestones,rainDays,holidays,wxForDate}){
+  const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
+  const shared = {wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi};
+  return (
+    <table className="board">
+      <thead>
+        <tr>
+          <th className="rescol">Resource</th>
+          {DAYS.map((d,i)=>{
+            const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
+            const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
+            const w = wxForDate(date);
+            return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(hol?"holiday":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
+              {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
+              {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
+              {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
+              {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
+          })}
+        </tr>
+      </thead>
+      <tbody>
+        {primary && <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} />}
+        {primary && addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} />}
+        {crewsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="crew" idx={idx} {...shared}/>)}
+
+        {primary && <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} />}
+        {primary && addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} />}
+        {subsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="sub" idx={idx} {...shared}/>)}
+
+        {primary && <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />}
+        {primary && addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
+        {primary && siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
+      </tbody>
+    </table>
+  );
+}
 function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
-  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d); };
+  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d,wk); };
   return (
     <>
     <tr className={idx%2?"altrow":""}>
@@ -1625,7 +1685,7 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
         const list = mine(d);
         return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
-          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
+          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d,wk}); }}>
           {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
         </td>;
       })}
@@ -1935,7 +1995,7 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
    both have cards on the visible week, draws a bezier from the predecessor's latest-day
    card (right edge) to the successor's earliest-day card (left edge) — red on conflict.
    apiRef exposes an imperative rubber-band used while dragging a corner link handle. */
-function DepLayer({deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef}){
+function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef}){
   const svgRef=useRef(null), rubberRef=useRef(null);
   const [st,setSt]=useState({W:0,H:0,paths:[]});
   const compute=React.useCallback(()=>{
@@ -1977,7 +2037,7 @@ function DepLayer({deps,depMap,weekTasks,wk,cardStyle,reflowOn,apiRef}){
     });
     setSt({W:wrap.scrollWidth, H:wrap.scrollHeight, paths:arr});
   },[deps,depMap]);
-  React.useLayoutEffect(()=>{ compute(); },[compute,weekTasks,wk,cardStyle,reflowOn]);
+  React.useLayoutEffect(()=>{ compute(); },[compute,tasks,wk,wkSpan,cardStyle,reflowOn]);
   useEffect(()=>{
     const svg=svgRef.current; if(!svg) return; const wrap=svg.parentNode;
     const ro=new ResizeObserver(()=>compute());
@@ -3526,6 +3586,93 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
     </Modal>
   );
 }
+/* Lazy-load jsPDF on demand (cached offline by the service worker after first online use).
+   We draw a VECTOR PDF from the schedule data — no html2canvas rasterizing of the dark board —
+   so the file is crisp, tiny, prints clean, and never trips on CSS variables or sticky headers. */
+const ensureJsPDF = () => new Promise((res,rej)=>{
+  if(window.jspdf && window.jspdf.jsPDF) return res(window.jspdf.jsPDF);
+  const el=document.createElement("script");
+  el.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+  el.onload=()=> (window.jspdf && window.jspdf.jsPDF) ? res(window.jspdf.jsPDF) : rej(new Error("jsPDF failed to initialize"));
+  el.onerror=()=> rej(new Error("jsPDF unavailable (offline and not yet cached)"));
+  document.head.appendChild(el);
+});
+const _hexRgb = h => { const s=String(h||"#888").replace("#",""); const v=s.length===3?s.split("").map(c=>c+c).join(""):s; return [parseInt(v.slice(0,2),16)||0, parseInt(v.slice(2,4),16)||0, parseInt(v.slice(4,6),16)||0]; };
+/* Draw a landscape look-ahead PDF, one week per page, crews down the left and the five working
+   days across. Each scheduled item is a color-coded box (scope) with qty · MH · trucks. `model`
+   is a plain data object built by the app so this stays a pure, testable renderer. */
+function drawLookaheadPdf(JsPDF, model){
+  const doc = new JsPDF({orientation:"landscape", unit:"pt", format:"letter"});
+  const PW=doc.internal.pageSize.getWidth(), PH=doc.internal.pageSize.getHeight();
+  const M=26, RESW=92, DAYS5=["MON","TUE","WED","THU","FRI"];
+  const gridW=PW-M*2-RESW, colW=gridW/5;
+  const setFill=rgb=>doc.setFillColor(rgb[0],rgb[1],rgb[2]);
+  const setTx=rgb=>doc.setTextColor(rgb[0],rgb[1],rgb[2]);
+  const clip=(s,n)=> s.length>n ? s.slice(0,n-1)+"…" : s;
+  model.weeks.forEach((wk,wi)=>{
+    if(wi>0) doc.addPage();
+    // Header band
+    setFill([0,131,62]); doc.rect(0,0,PW,4,"F");
+    setTx([17,19,20]); doc.setFont("helvetica","bold"); doc.setFontSize(15);
+    doc.text(model.job, M, 30);
+    doc.setFont("helvetica","normal"); doc.setFontSize(11); setTx([90,95,98]);
+    doc.text(model.subtitle+"  ·  "+wk.title, M, 46);
+    if(model.generated){ doc.setFontSize(8.5); doc.text("Generated "+model.generated, PW-M, 30, {align:"right"}); }
+    // Legend
+    let lx=M, ly=60; doc.setFontSize(8);
+    model.legend.forEach(g=>{ const w=doc.getTextWidth(g.code+" "+g.name)+16;
+      if(lx+w>PW-M){ lx=M; ly+=13; }
+      setFill(_hexRgb(g.hex)); doc.roundedRect(lx,ly-7,9,9,1.5,1.5,"F");
+      setTx([90,95,98]); doc.text(g.code+" "+g.name, lx+12, ly); lx+=w; });
+    let y=ly+14;
+    const headerRow=()=>{
+      doc.setDrawColor(0,131,62); doc.setLineWidth(1.4);
+      doc.line(M,y+13,PW-M,y+13);
+      doc.setFont("helvetica","bold"); doc.setFontSize(9); setTx([17,19,20]);
+      doc.text("RESOURCE", M+2, y+9);
+      wk.dayLabels.forEach((lbl,i)=>{ const x=M+RESW+colW*i;
+        doc.text(DAYS5[i], x+4, y+9); doc.setFont("helvetica","normal"); setTx([90,95,98]);
+        doc.text(String(lbl), x+34, y+9); doc.setFont("helvetica","bold"); setTx([17,19,20]); });
+      y+=20;
+    };
+    headerRow();
+    if(!wk.rows.length){ doc.setFont("helvetica","italic"); doc.setFontSize(10); setTx([150,154,158]); doc.text("No work scheduled this week.", M+2, y+18); }
+    const IB=32; // per-item box height
+    wk.rows.forEach(r=>{
+      const maxItems=Math.max(1, ...r.cells.map(c=>c.length));
+      const rh=Math.max(30, maxItems*IB+6);
+      if(y+rh>PH-24){ doc.addPage(); y=M+8; headerRow(); }
+      // resource label
+      doc.setFont("helvetica","bold"); doc.setFontSize(9.5); setTx([17,19,20]);
+      doc.text(clip(r.name,14), M+2, y+13);
+      if(r.kind==="sub"){ doc.setFont("helvetica","normal"); doc.setFontSize(7); setTx([120,125,130]); doc.text("sub", M+2, y+23); }
+      // day cells
+      r.cells.forEach((items,i)=>{ const x=M+RESW+colW*i;
+        doc.setDrawColor(224,226,229); doc.setLineWidth(0.6); doc.line(x,y-4,x,y+rh-2);
+        items.forEach((it,j)=>{ const by=y+j*IB;
+          const rgb=_hexRgb(it.hex);
+          setFill(rgb); doc.roundedRect(x+3,by,colW-8,IB-4,2.5,2.5,"F");
+          const txc=_hexRgb(it.tx); setTx(txc);
+          doc.setFont("helvetica","bold"); doc.setFontSize(6.5);
+          doc.text(it.code, x+7, by+9);
+          if(it.done){ const cx=x+7+doc.getTextWidth(it.code)+3, cy=by+6; // vector ✓ (built-in font lacks the glyph)
+            doc.setDrawColor(txc[0],txc[1],txc[2]); doc.setLineWidth(0.9);
+            doc.line(cx,cy+1.2,cx+1.8,cy+3); doc.line(cx+1.8,cy+3,cx+5,cy-1.6); }
+          doc.setFont("helvetica","normal"); doc.setFontSize(7);
+          doc.text(clip(it.name, Math.floor((colW-14)/3.4)), x+7, by+18);
+          doc.setFontSize(6.4); doc.setFont("helvetica","bold");
+          doc.text(clip(it.stat, Math.floor((colW-14)/3.0)), x+7, by+26);
+        });
+      });
+      doc.setDrawColor(232,234,236); doc.setLineWidth(0.6); doc.line(M,y+rh-2,PW-M,y+rh-2);
+      y+=rh;
+    });
+    // footer
+    doc.setFont("helvetica","normal"); doc.setFontSize(7.5); setTx([150,154,158]);
+    doc.text("RNGD Look-Ahead  ·  page "+(wi+1)+" of "+model.weeks.length, PW/2, PH-12, {align:"center"});
+  });
+  return doc;
+}
 /* Lazy-load Leaflet (map library) on demand — mirrors ensureXLSX. Service worker caches it. */
 const ensureLeaflet = () => new Promise((res,rej)=>{
   if(window.L) return res(window.L);
@@ -4246,6 +4393,15 @@ const CSS = `
 .weeknav{display:flex;align-items:center;gap:8px;margin-left:auto}
 .weeknav span{font-family:"Saira Condensed";font-weight:600;font-size:17px;min-width:180px;text-align:center}
 .weeknav button{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:16px}
+.spanseg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--pn2);margin-left:2px}
+.spanseg button{background:transparent;border:0;border-left:1px solid var(--ln);color:var(--dm);border-radius:0;padding:5px 9px;font:700 15px "Saira Condensed";cursor:pointer;display:flex;align-items:baseline;gap:2px}
+.spanseg button:first-child{border-left:0}
+.spanseg button em{font-style:normal;font-size:10px;letter-spacing:.06em;opacity:.75}
+.spanseg button.on{background:var(--acc);color:#fff}
+.weekband{display:flex;align-items:baseline;gap:10px;margin:22px 0 6px;padding:5px 2px 6px;border-bottom:3px solid var(--brand)}
+.weekband span{font:700 13px "Saira Condensed";letter-spacing:.14em;text-transform:uppercase;color:var(--acc)}
+.weekband em{font-style:normal;font-family:"Saira Condensed";font-weight:600;font-size:16px;color:var(--dm)}
+.boardwrap.multiweek .board{margin-bottom:4px}
 .actions{display:flex;gap:9px;flex-wrap:wrap;min-width:0}
 .actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 15px;font-weight:600;font-size:15px;cursor:pointer;text-decoration:none;display:inline-block}
@@ -4871,6 +5027,10 @@ tr.altrow .cell:hover{background:var(--cellhov)}
  body.board-print .la-root{background:#fff;color:#111}
  body.board-print .board,body.board-print .card,body.board-print .cscope,body.board-print .msflag,body.board-print .msdiamond{print-color-adjust:exact;-webkit-print-color-adjust:exact}
  body.board-print .card{break-inside:avoid}
+ /* Multi-week look-ahead: one week per landscape page; the absolute arrow overlay can't paginate, so drop it. */
+ body.board-print .boardwrap.multiweek>table.board{break-before:page;page-break-before:always;break-inside:avoid}
+ body.board-print .boardwrap.multiweek>table.board:first-of-type{break-before:auto;page-break-before:auto}
+ body.board-print .boardwrap.multiweek .deparrows{display:none!important}
 }
 `;
 
