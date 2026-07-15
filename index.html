@@ -721,7 +721,7 @@ function LookAhead(){
   const [rainDays, setRainDays] = useState({});          // rain-outs: { 'YYYY-MM-DD': true } — the day is lost; all work from it pushes one working day
   const [holidays, setHolidays] = useState(US_HOLIDAYS); // non-working holidays: { 'YYYY-MM-DD': label } — skipped when placing a run, greyed on the board
   const [cardStyle, setCardStyle] = useState("bold");    // card tag treatment: bold | highlighter | flat
-  const [wkSpan, setWkSpan] = useState(1);               // look-ahead grid: how many weeks to stack (1..3) — the "3-week look-ahead"
+  const [wkSpan, setWkSpan] = useState(4);               // look-ahead grid: weeks stacked (1..4) — current week + 3 ahead is the basis
   const [lastUpdated, setLastUpdated] = useState(null);  // ms — last genuine local edit (weekly-rhythm banner)
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
@@ -785,9 +785,9 @@ function LookAhead(){
     if (s.savings) setSavings(s.savings);
     if (s.lastUpdated) setLastUpdated(s.lastUpdated); // shared fact — applies on remote pulls
     if (opts && opts.skipView) return;
-    if (s.wk) setWk(s.wk);
+    // NB: we intentionally do NOT restore s.wk — the board always opens on the current week.
     if (s.cardStyle) setCardStyle(s.cardStyle); // per-device display pref (skipped on remote pulls)
-    if (s.wkSpan) setWkSpan(Math.max(1,Math.min(3,s.wkSpan))); // per-device: weeks stacked in the look-ahead grid
+    // wkSpan is intentionally NOT restored — the board always opens on the current-week + 3 basis.
     if (typeof s.reflowOn==="boolean") setReflowOn(s.reflowOn);
     if (typeof s.showEquip==="boolean") setShowEquip(s.showEquip);
   };
@@ -805,8 +805,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -818,7 +818,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,wk,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,wkSpan,truckDay,savings,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -1001,7 +1001,7 @@ function LookAhead(){
   /* derived */
   const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
   // Look-ahead grid: the Monday of each stacked week (wk, wk+7, …). wkSpan is clamped 1..3.
-  const spanWeeks = useMemo(()=>Array.from({length:Math.max(1,Math.min(3,wkSpan))},(_,i)=>addDays(wk,i*7)),[wk,wkSpan]);
+  const spanWeeks = useMemo(()=>Array.from({length:Math.max(1,Math.min(4,wkSpan))},(_,i)=>addDays(wk,i*7)),[wk,wkSpan]);
   const ctcOf = ci => ctc[(CATALOG[ci][CI.CC]||"").replace(/-/g,".")] || null;
   const loggedFor = ci => tasks.filter(t=>t.ci===ci).reduce((a,t)=>a+((logs[t.id]&&logs[t.id].qty)||0),0);
   // Installed baseline = CTC billed-to-date where the code is in the CTC export, else field/estimate baseline; session logging adds on top.
@@ -1401,7 +1401,9 @@ function LookAhead(){
   const subsOnly  = crews.filter(c=>c.type==="sub").slice().sort(pinSort);
   const takeSnapshot = ()=>{ const byTask={}; tasks.forEach(t=>{ byTask[t.id]={qty:t.qty,day:t.day,wk:t.wk}; }); setBaseline({takenAt:new Date().toISOString().slice(0,10), byTask}); };
   const reflow = useMemo(()=> reflowOn ? computeReflow(tasks, logs, baseline, crews, cfg) : {byTask:{},byCrew:{}}, [reflowOn,tasks,logs,baseline,crews,cfg]);
-  const wx = useForecast((cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site);
+  // Forecast pulls from an explicit weather location if the user set one, else the job-site pin.
+  const wxLoc = (cfg.wxLoc && cfg.wxLoc.lat!=null) ? cfg.wxLoc : ((cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site);
+  const wx = useForecast(wxLoc);
   const wxForDate = date => { if(!wx) return null; const i=wx.time.indexOf(date); if(i<0) return null;
     return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
 
@@ -1455,8 +1457,8 @@ function LookAhead(){
             </button>
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
-          {effTab==="board" && !isMobile && <span className="spanseg no-print" title="Stack this many weeks into one look-ahead grid — cards and dependency arrows carry across the week boundary">
-            {[1,2,3].map(n=><button key={n} className={wkSpan===n?"on":""} onClick={()=>setWkSpan(n)} aria-label={n+"-week look-ahead"}>{n}<em>wk</em></button>)}
+          {effTab==="board" && !isMobile && <span className="spanseg no-print" title="Stack the current week plus this many ahead into one look-ahead grid — cards and dependency arrows carry across the week boundary">
+            {[1,2,3,4].map(n=><button key={n} className={wkSpan===n?"on":""} onClick={()=>setWkSpan(n)} aria-label={n+"-week look-ahead"}>{n}<em>wk</em></button>)}
           </span>}
         </div>
         <div className="actions no-print">
@@ -1517,6 +1519,7 @@ function LookAhead(){
         <button className="snapbtn" onClick={takeSnapshot} title="Freeze the current plan as the baseline">{baseline?("Baseline "+baseline.takenAt.slice(5)):"Take snapshot"}</button>
         <button className="snapbtn" title="Move every unlogged task in this week to the same day next week (finished work stays put)" onClick={()=>{ const open=tasks.filter(t=>t.wk===wk&&!logs[t.id]).length; if(open && window.confirm(`Roll ${open} unfinished task${open>1?"s":""} from this week into next week?`)){ const n=rollForward(); flash(`Rolled ${n} task${n>1?"s":""} into next week`); } else if(!open){ flash("Nothing unfinished to roll forward"); } }}>Roll forward ⤳</button>
         <button className="snapbtn" title="Mark a day rained out — every crew's work from that day pushes one working day, and the day's EOS records a rain-out" onClick={()=>setModal({type:"rainout"})}>⛈ Rain-out</button>
+        <button className="snapbtn" title="Set where the day-by-day forecast is pulled from" onClick={()=>setModal({type:"wxloc"})}>🌦 Weather loc</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
 
@@ -1542,7 +1545,7 @@ function LookAhead(){
       <div className={"boardwrap"+(spanWeeks.length>1?" multiweek":"")}>
         {spanWeeks.map((w,wi)=>
           <React.Fragment key={w}>
-            {wi>0 && <div className="weekband no-print"><span>Look-ahead week {wi+1}</span><em>{wkTitle(w)}</em></div>}
+            {wi>0 && <div className="weekband no-print"><span>Week {wi} ahead</span><em>{wkTitle(w)}</em></div>}
             <WeekTable wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>
           </React.Fragment>)}
         <DepLayer {...{deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef:depLayerRef}}/>
@@ -1565,6 +1568,7 @@ function LookAhead(){
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
       {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
+      {modal?.type==="wxloc"    && <WeatherLocModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
@@ -1632,7 +1636,9 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
   logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,
   linkApi,resizeApi,milestones,rainDays,holidays,wxForDate}){
   const weekTasks = useMemo(()=>tasks.filter(t=>t.wk===wk),[tasks,wk]);
-  const shared = {wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi};
+  // Days whose rain chance is ≥ 40% get the storm treatment (animated rain + lightning down the column).
+  const stormDays = DAYS.map((_,i)=>{ const w=wxForDate(addDays(wk,i)); return !!(w && w.rain!=null && w.rain>=40); });
+  const shared = {wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,stormDays};
   return (
     <table className="board">
       <thead>
@@ -1641,9 +1647,11 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
           {DAYS.map((d,i)=>{
             const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
             const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
-            const w = wxForDate(date);
-            return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(hol?"holiday":"")}><span>{d}</span><b>{dLabel(wk,i)}</b>
-              {w && <span className={"wxflag"+(w.rain>=60?" wet":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
+            const w = wxForDate(date); const storm = stormDays[i];
+            return <th key={d} className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(storm?"stormy ":"")+(hol?"holiday":"")}>
+              {storm && <span className="stormfx" aria-hidden="true"><i className="rainfx"/><i className="boltfx"/></span>}
+              <span>{d}</span><b>{dLabel(wk,i)}</b>
+              {w && <span className={"wxflag"+(w.rain>=60?" wet":w.rain>=40?" storm":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
               {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
               {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
               {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
@@ -1661,12 +1669,12 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
 
         {primary && <SectionRow label="Site" onAdd={()=>setAddingIn("site")} />}
         {primary && addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} />}
-        {primary && siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal}/>)}
+        {primary && siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal} stormDays={stormDays}/>)}
       </tbody>
     </table>
   );
 }
-function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi}){
+function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,stormDays}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
@@ -1683,7 +1691,7 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
       </td>
       {DAYS.map((_,d)=>{
         const list = mine(d);
-        return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
+        return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")+(stormDays&&stormDays[d]?" rainy":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d,wk}); }}>
           {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
@@ -1847,7 +1855,7 @@ function useForecast(site){
   const [wx,setWx]=useState(null);
   useEffect(()=>{ let dead=false; setWx(null);
     if(!site||site.lat==null) return;
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=7`;
+    const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=16`;
     fetch(url).then(r=>r.json()).then(j=>{ if(!dead && j&&j.daily&&j.daily.time) setWx(j.daily); }).catch(()=>{});
     return ()=>{dead=true;};
   },[site&&site.lat, site&&site.lng]);
@@ -2073,13 +2081,13 @@ function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef}){
     </svg>
   );
 }
-function SiteRow({row,notes,setNotes,setModal}){
+function SiteRow({row,notes,setNotes,setModal,stormDays}){
   const mine = d => notes.filter(n=>n.row===row.id && n.day===d);
   return (
     <tr>
       <td className="rescol"><span className="chip site">{row.name}</span></td>
       {DAYS.map((_,d)=>
-        <td key={d} className={"cell"+(d>4?" wknd":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:d}); }}>
+        <td key={d} className={"cell"+(d>4?" wknd":"")+(stormDays&&stormDays[d]?" rainy":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:d}); }}>
           {mine(d).map(n=>
             <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:d})}>
               {n.level==="crit"?"⚠ ":n.level==="warn"?"⚠ ":""}{n.text}
@@ -2768,6 +2776,55 @@ function HolidayModal({holidays,setHolidays,close}){
         <tbody>{list.length ? list.map(d=><tr key={d} className={d>=today?"":"dim2"}><td>{d}</td><td>{holidays[d]}</td><td className="r"><button className="ghost sm" title="Remove" onClick={()=>rm(d)}>✕</button></td></tr>)
           : <tr><td colSpan={3} className="empty">No holidays set — the crew works every weekday.</td></tr>}</tbody></table>
       <div className="btnrow"><button className="ghost" onClick={close}>Close</button></div>
+    </Modal>
+  );
+}
+/* Forecast location editor — search a place (Open-Meteo geocoding, no key) or type coordinates.
+   Sets cfg.wxLoc, which useForecast prefers over the haul-routing job-site pin. Synced (cfg). */
+function WeatherLocModal({cfg,setCfg,close}){
+  const siteLoc = (cfg.truck&&cfg.truck.sources&&cfg.truck.sources.site)||TRUCK_DEFAULTS.sources.site;
+  const usingOverride = !!(cfg.wxLoc && cfg.wxLoc.lat!=null);
+  const cur = usingOverride ? cfg.wxLoc : siteLoc;
+  const [q,setQ]=useState(""); const [busy,setBusy]=useState(false); const [results,setResults]=useState(null); const [err,setErr]=useState("");
+  const [lat,setLat]=useState(cur.lat!=null?String(cur.lat):""); const [lng,setLng]=useState(cur.lng!=null?String(cur.lng):"");
+  const search = async()=>{ const name=q.trim(); if(!name){ return; } setBusy(true); setErr(""); setResults(null);
+    try{
+      const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=6&language=en&format=json`);
+      const j=await r.json(); const res=(j&&j.results)||[];
+      setResults(res); if(!res.length) setErr("No match — try a city, ZIP, or place name, or enter coordinates below.");
+    }catch(e){ setErr("Search needs a connection. Enter coordinates below instead."); }
+    finally{ setBusy(false); }
+  };
+  const pick = (name,la,lo)=>{ setCfg(c=>({...c, wxLoc:{name, lat:+la, lng:+lo}})); flash("Forecast → "+name); close(); };
+  const applyCoords = ()=>{ const la=parseFloat(lat), lo=parseFloat(lng);
+    if(isNaN(la)||isNaN(lo)||la<-90||la>90||lo<-180||lo>180){ setErr("Enter a valid latitude (−90…90) and longitude (−180…180)."); return; }
+    setCfg(c=>({...c, wxLoc:{name:la.toFixed(3)+", "+lo.toFixed(3), lat:la, lng:lo}})); flash("Forecast location updated"); close();
+  };
+  const useSite = ()=>{ setCfg(c=>{ const n={...c}; delete n.wxLoc; return n; }); flash("Forecast → job-site pin"); close(); };
+  const fmtRes = r => [r.name, r.admin1, r.country_code].filter(Boolean).join(", ");
+  return (
+    <Modal close={close} w={520}>
+      <h3>🌦 Weather forecast location</h3>
+      <div className="ovnote">The board's day-by-day forecast (and the rain/lightning storm days) is pulled for this spot. Currently using <b>{cur.name||"job site"}</b> <span className="dim2">({(+cur.lat).toFixed(3)}, {(+cur.lng).toFixed(3)}{usingOverride?"":" · job-site pin"})</span>.</div>
+      <div className="logrow" style={{marginTop:10}}>
+        <label style={{flex:1}}>Search a place<input type="text" autoFocus placeholder="City, ZIP, or place name (e.g. New Orleans, LA)" value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}}/></label>
+        <button className="cta" disabled={busy||!q.trim()} onClick={search}>{busy?"…":"Search"}</button>
+      </div>
+      {results && results.length>0 && <table className="dt list" style={{marginTop:8}}><tbody>
+        {results.map((r,i)=><tr key={i}><td>{fmtRes(r)}</td><td className="dim2 r">{r.latitude.toFixed(2)}, {r.longitude.toFixed(2)}</td>
+          <td className="r"><button className="cta sm" onClick={()=>pick(fmtRes(r), r.latitude, r.longitude)}>Use</button></td></tr>)}
+      </tbody></table>}
+      {err && <div className="ovnote" style={{color:"var(--bad)"}}>{err}</div>}
+      <div className="loghdr" style={{marginTop:14}}>Or enter coordinates</div>
+      <div className="logrow">
+        <label>Latitude<input type="number" step="0.0001" placeholder="29.9550" value={lat} onChange={e=>setLat(e.target.value)}/></label>
+        <label>Longitude<input type="number" step="0.0001" placeholder="-90.0750" value={lng} onChange={e=>setLng(e.target.value)}/></label>
+        <button className="cta" onClick={applyCoords}>Set</button>
+      </div>
+      <div className="btnrow" style={{marginTop:12}}>
+        {usingOverride && <button className="ghost" onClick={useSite}>Reset to job-site pin</button>}
+        <button className="ghost" onClick={close}>Close</button>
+      </div>
     </Modal>
   );
 }
@@ -4207,6 +4264,7 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
     {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
     {label:"Holidays / non-working days",hint:"action",run:()=>setModal({type:"holidays"})},
+    {label:"Weather forecast location",hint:"action",run:()=>setModal({type:"wxloc"})},
     {label:"KPI summary",hint:"action",run:()=>setModal({type:"kpisummary"})},
     {label:"Toggle re-flow forecast",hint:"action",run:()=>{setReflowOn(v=>!v); setTab("board");}},
   ].concat(crews.map(c=>({label:"Open "+c.name,hint:c.type==="sub"?"sub":"crew",run:()=>setModal({type:"crew",id:c.id})})));
@@ -4571,6 +4629,41 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .wxflag.wet{color:#bcd0ea}
 .wxrain{color:#7fa8d8}
 .wxflag.wet .wxrain{color:#bcd0ea}
+.wxflag.storm{color:#a9c6ef}
+.wxflag.storm .wxrain{color:#cfe0f8}
+/* Storm treatment — rain chance ≥ 40%: real falling raindrops down the whole day column,
+   with a periodic lightning flash + bolt at the head. Two parallax rain layers give depth;
+   background-position loops seamlessly on the tile size. */
+.board thead th.stormy{background:linear-gradient(rgba(38,66,116,.34),rgba(58,95,158,.20));position:relative;overflow:hidden;box-shadow:inset 0 -2px 0 rgba(120,170,235,.65)}
+.board thead th.stormy>:not(.stormfx){position:relative;z-index:2}
+.stormfx{position:absolute;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.stormfx .rainfx{position:absolute;inset:0;opacity:.85;animation:rainFall .5s linear infinite;
+  background-image:
+    repeating-linear-gradient(94deg, transparent 0 7px, rgba(198,224,255,.6) 7px 8px, transparent 8px 10px),
+    repeating-linear-gradient(94deg, transparent 0 13px, rgba(165,202,248,.42) 13px 14px, transparent 14px 17px);
+  background-size:20px 20px, 30px 30px}
+.stormfx .boltfx{position:absolute;inset:0;opacity:0;z-index:1;
+  background:radial-gradient(140% 120% at 50% 0%, rgba(236,246,255,1), rgba(198,222,255,.35) 48%, transparent 74%);
+  animation:lightning 4.2s ease-out infinite}
+.stormfx .boltfx::after{content:"";position:absolute;left:50%;top:8%;width:16px;height:80%;transform:translateX(-50%);
+  background:linear-gradient(#ffffff,#dcecff);
+  clip-path:polygon(58% 0, 22% 52%, 50% 52%, 28% 100%, 84% 40%, 52% 40%);
+  filter:drop-shadow(0 0 6px rgba(220,236,255,1)) drop-shadow(0 0 2px #fff)}
+.cell.rainy{background:linear-gradient(rgba(70,110,178,.18),rgba(70,110,178,.08))!important;position:relative;overflow:hidden}
+.cell.rainy::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;opacity:.62;
+  background-image:
+    repeating-linear-gradient(94deg, transparent 0 7px, rgba(198,224,255,.5) 7px 8px, transparent 8px 10px),
+    repeating-linear-gradient(94deg, transparent 0 13px, rgba(165,202,248,.34) 13px 14px, transparent 14px 17px);
+  background-size:20px 20px, 30px 30px;
+  animation:rainFall .55s linear infinite}
+/* Lightning flashes the WHOLE column: header bolt + a synced white flash over every cell below. */
+.cell.rainy::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:2;opacity:0;
+  background:linear-gradient(rgba(226,240,255,.9),rgba(200,224,255,.5));
+  animation:lightning 4.2s ease-out infinite}
+.cell.rainy>*{position:relative;z-index:3}
+@keyframes rainFall{from{background-position:0 0, 0 0}to{background-position:-5px 20px, -7px 30px}}
+@keyframes lightning{0%,84%,100%{opacity:0}85%{opacity:.95}86.5%{opacity:.12}88%{opacity:1}90%{opacity:.04}91%{opacity:.6}92.5%{opacity:0}}
+@media (prefers-reduced-motion: reduce){ .stormfx .rainfx,.stormfx .boltfx,.cell.rainy::before,.cell.rainy::after{animation:none} }
 .trenchwrap{display:flex;justify-content:center;margin:8px 0 0}
 .trenchsvg{max-width:100%;height:auto;border:1px solid var(--ln);border-radius:8px;background:#fbfaf7}
 .msdiamond{display:inline-block;width:7px;height:7px;background:#0c0d0c;transform:rotate(45deg);flex:none}
