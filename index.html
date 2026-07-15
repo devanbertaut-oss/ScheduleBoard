@@ -667,11 +667,14 @@ function autoDesc(name, ts, logs, calc, isSub){
     const cx=calc(x), lx=logs[x.id]; const qx=lx?cx.actQty:x.qty;
     s += ` They also ${verbs[cx.it[CI.CAT]]||"placed"} ${fmtN(qx)}${cx.it[CI.UM]==="EACH"?"":" "+cx.it[CI.UM]+" of"} ${cx.it[CI.TASK].toLowerCase()}.`;
   });
-  // trucking clause
-  const loads = ts.reduce((a,x)=>a+calc(x).loads,0);
-  if (loads>=0.5){
-    const trucks=Math.max(1,Math.ceil(loads/6));
-    s += ` The crew ran ${trucks} truck${trucks>1?"s":""}, moving ${Math.round(loads)} load${Math.round(loads)>1?"s":""} of material.`;
+  // trucking clause — from the physical truck model (actuals when logged), pooled per crew,
+  // so the EOS number agrees with the Trucking report instead of a flat loads/6 heuristic.
+  const tms = ts.map(x=>{ const cx=calc(x); return (cx.actTrk&&cx.actTrk.applicable)?cx.actTrk:(cx.trk&&cx.trk.applicable?cx.trk:null); }).filter(Boolean);
+  if (tms.length){
+    const merged=mergeTruckModels(tms);
+    const trucks=merged?Math.max(1,Math.ceil(merged.total)):0;   // whole trucks that ran (a truck showed up or it didn't)
+    const physLoads=tms.reduce((a,m)=>a+m.spoil.loads+m.stone.loads+m.sand.loads+(m.base?m.base.loads:0),0);
+    if(trucks>0 && physLoads>=0.5) s += ` The crew ran ${trucks} truck${trucks>1?"s":""}, moving ${Math.round(physLoads)} load${Math.round(physLoads)>1?"s":""} of material.`;
   }
   return s;
 }
@@ -2083,7 +2086,10 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,resliceRun,resliceRunCatchup,asa
   const hasOv = !!(t.ov && Object.keys(t.ov).length);
   const f=fcstFor(t);
   const inst=installedFor(t.ci), est=it[CI.EST]||0;
-  const dayRate = it[CI.MH]>0 ? (ecfg.crewSize*ecfg.shiftHrs)/it[CI.MH] : t.qty;
+  // Day-rate basis: a per-card crew-size override wins; else the crew's explicit daily MH cap (matches how
+  // the board grades this run); else the global crew×shift rate.
+  const mhPerDay = (t.ov&&t.ov.crewSize!=null) ? ecfg.crewSize*ecfg.shiftHrs : (crewOf&&crewOf.capMH>0 ? crewOf.capMH : ecfg.crewSize*ecfg.shiftHrs);
+  const dayRate = it[CI.MH]>0 ? mhPerDay/it[CI.MH] : t.qty;
   const loads = ecfg.truckRate>0 ? (t.qty*it[CI.UT])/ecfg.truckRate : 0;
   const setOv=(k,v)=>{ const o={...(t.ov||{})}; if(v==null||v==="") delete o[k]; else o[k]=v; upTask(t.id,{ov:Object.keys(o).length?o:null}); };
   const results = useMemo(()=>{
@@ -2460,7 +2466,11 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,addDep,close
     ? ((a!=null || (qty!=="" && +qty>0)) ? (+qty||1) : null)     // manual count; station is a callout
     : genQty;
   const useQty = mode==="sta" ? (staQty??0) : (+qty||0);
-  const dayRate = it && it[CI.MH]>0 ? (cfg.crewSize*cfg.shiftHrs)/it[CI.MH] : useQty||1;
+  // Size the day-count against the SELECTED crew's daily MH cap when it's explicitly set (the same
+  // number the board grades against), so a new run doesn't read over/under cap the instant it lands.
+  const crewCap = (crews.find(c=>c.id===res)||{}).capMH;
+  const mhPerDay = crewCap>0 ? crewCap : cfg.crewSize*cfg.shiftHrs;
+  const dayRate = it && it[CI.MH]>0 ? mhPerDay/it[CI.MH] : useQty||1;
   const nDays = daysOv!=="" ? Math.max(1,Math.round(+daysOv))
               : (prodOv!=="" && +prodOv>0) ? Math.max(1, Math.ceil(useQty/+prodOv))
               : Math.max(1, Math.ceil(useQty/Math.max(dayRate,0.0001)));
@@ -2673,11 +2683,13 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
 
   const truckLine = useMemo(()=>{
     const per = crews.map(c=>{
-      const loads = dayTasks(c.id).reduce((a,t)=>a+taskCalc(t).loads,0);
-      return {name:c.name, trucks:Math.ceil(loads/6)}; // ~6 loads per truck-day
+      // physical truck model (actuals when logged), pooled per crew — matches the Trucking report
+      const ms = dayTasks(c.id).map(t=>{ const cc=taskCalc(t); return (cc.actTrk&&cc.actTrk.applicable)?cc.actTrk:(cc.trk&&cc.trk.applicable?cc.trk:null); }).filter(Boolean);
+      const merged = ms.length ? mergeTruckModels(ms) : null;
+      return {name:c.name, trucks: merged ? Math.ceil(merged.total) : 0};   // whole trucks to dispatch per crew
     }).filter(x=>x.trucks>0);
     const total = per.reduce((a,x)=>a+x.trucks,0);
-    return total? `${total} trucks requested for today's operation (${per.map(x=>`${x.name} - ${x.trucks}`).join(", ")}).` : "No trucking requested for today's operation.";
+    return total? `${total} truck${total>1?"s":""} requested for today's operation (${per.map(x=>`${x.name} - ${x.trucks}`).join(", ")}).` : "No trucking requested for today's operation.";
   },[weekTasks,day,crews,cfg]);
 
   const text = useMemo(()=>{
@@ -2709,7 +2721,7 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
         L.push(`Planned - ${cc.it[CI.CC]} ${cc.it[CI.TASK]}`);
         L.push(`Planned Production: ${fmtN(t.qty)} ${cc.it[CI.UM]}`);
         L.push(`Actual Production: ${lg?fmtN(cc.actQty):"0"} ${cc.it[CI.UM]}`);
-        L.push(`PPC: ${lg&&t.qty?Math.round(cc.actQty/t.qty*100):0}%`);
+        L.push(`% of Plan: ${lg&&t.qty?Math.round(cc.actQty/t.qty*100):0}%`);
       });
       L.push("Description:");
       L.push(crewDesc(c.id, autoDesc(c.name, ts, logs, taskCalc, false)));
