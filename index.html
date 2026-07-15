@@ -3552,17 +3552,24 @@ function PCard({cd}){
 }
 /* Sheet renderer, used twice: hidden print copy (body-level) + zoomed on-screen preview. */
 function CardSheets({pages,paper,paperBg,preview}){
-  const rows = paper==="tabloid"?4:2;
+  const cols = 2;
   return (
     <div className={"cardsheets"+(preview?" prev":"")}>
-      {pages.map((pg,pi)=>
+      {pages.map((pg,pi)=>{
+        const filledRows = Math.ceil(pg.length/cols) || 1;
+        return (
         <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")} style={preview&&paperBg?{background:paperBg}:undefined}>
-          <div className="pgrid" style={{gridTemplateRows:"repeat("+rows+",4in)"}}>
+          <div className="pgrid" style={{gridTemplateRows:"repeat("+filledRows+",4in)"}}>
             {pg.map(cd=><PCard key={cd.t.id} cd={cd}/>)}
-            {Array.from({length:3},(_,i)=><i key={"v"+i} className="cut v" style={{left:(i*4)+"in"}}/>)}
-            {Array.from({length:rows+1},(_,j)=><i key={"h"+j} className="cut h" style={{top:(j*4)+"in"}}/>)}
+            {/* Vertical cut: only between two cells that are BOTH filled, scoped to that row's own height —
+                a partial row (e.g. col0 filled, col1 blank) gets no cut, so the blank cell stays attached scrap. */}
+            {Array.from({length:filledRows},(_,r)=> r*cols+1<pg.length
+              ? <i key={"v"+r} className="cut v" style={{top:(r*4)+"in",height:"4in",left:"4in"}}/>
+              : null)}
+            {/* Horizontal cut: only between two rows that both hold at least one card — none below the last filled row. */}
+            {Array.from({length:filledRows-1},(_,j)=><i key={"h"+j} className="cut h" style={{top:((j+1)*4)+"in"}}/>)}
           </div>
-        </div>)}
+        </div>);})}
     </div>
   );
 }
