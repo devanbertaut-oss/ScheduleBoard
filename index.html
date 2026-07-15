@@ -51,6 +51,12 @@ const store = {
 };
 /* ---- Netlify Blobs sync (shared board) — endpoint + tiny persisted sync metadata ---- */
 const SYNC_URL = "/api/state";
+/* Shared-content keys, in the save effect's serialization order — used by the
+   pull-echo fingerprint so a local edit inside the post-pull debounce window
+   can never be mistaken for the pull's own re-serialization. */
+const SYNC_CORE_KEYS = ["crews","siteRows","tasks","logs","notes","cfg","eosMeta","umOverrides","showEquip",
+  "ctc","baseline","milestones","deps","rainDays","holidays","reflowOn","cardStyle","truckDay","savings",
+  "progress","invAlloc"];
 const syncLS = {
   meta(){ try{ return JSON.parse(localStorage.getItem("lafable-sync")||"{}"); }catch(e){ return {}; } },
   setMeta(p){ try{ localStorage.setItem("lafable-sync", JSON.stringify({...syncLS.meta(),...p})); }catch(e){} },
@@ -859,6 +865,25 @@ function dpwSelftest(){
   eq([p1.code, Math.abs(p1.share-0.7)<1e-9], ["33.30.19.13", true], "prior-blend-flip");
   const a5 = dpwAllocateLine(mkl({dOff:null,tk:"3C15",flags:DPW_FLAG.UNDATED}), tdc, prior0, {});
   eq([a5.method, a5.status], [DPW_METHOD.PRIOR, DPW_ST.SUG], "alloc-prior-undated-capped");
+  // invAlloc merge: newer decision wins, local wins ties, orphans survive re-import
+  const mkL2=(k,st,ov,at)=>{ const L=new Array(23).fill(null); L[ILI.K]=k; L[ILI.ST]=st; L[ILI.OV]=ov;
+    L[ILI.AT]=at; L[ILI.SUG]=[[0,1]]; L[ILI.FL]=0; return L; };
+  const mkA=(lines,orphans,impAt)=>({ v:1, cfg:{at:0}, src:{importedAt:impAt},
+    pool:{codes:["C1","C2"],tk:[],items:[]}, lines, orphans:orphans||[] });
+  const mLoc=mergeInvAlloc(mkA([mkL2("kk",DPW_ST.CONFIRMED,null,100)],[],1000),
+                           mkA([mkL2("kk",DPW_ST.OVERRIDDEN,[[1,1]],200)],[],1000));
+  eq(mLoc.lines[0][ILI.ST], DPW_ST.OVERRIDDEN, "merge-remote-newer-wins");
+  eq(mLoc.pool.codes[mLoc.lines[0][ILI.OV][0][0]], "C2", "merge-ov-code-remapped");
+  const mTie=mergeInvAlloc(mkA([mkL2("kk",DPW_ST.CONFIRMED,null,100)],[],1000),
+                           mkA([mkL2("kk",DPW_ST.OVERRIDDEN,[[1,1]],100)],[],1000));
+  eq(mTie.lines[0][ILI.ST], DPW_ST.CONFIRMED, "merge-local-wins-ties");
+  const mOrph=mergeInvAlloc(mkA([mkL2("kk",DPW_ST.SUG,null,null)],[],2000),          // newer import lacks "gone"
+                            mkA([mkL2("gone",DPW_ST.CONFIRMED,null,50)],[],1000));   // older side had decided it
+  eq(mOrph.orphans.length, 1, "merge-orphan-preserved");
+  eq(mOrph.orphans[0][0], "gone", "merge-orphan-key");
+  const mBack=mergeInvAlloc(mOrph, mkA([mkL2("gone",DPW_ST.SUG,null,null)],[],3000)); // line content returns
+  const back=mBack.lines.find(L=>L[ILI.K]==="gone");
+  eq([back&&back[ILI.ST], mBack.orphans.length], [DPW_ST.OVERRIDDEN, 0], "merge-orphan-reattaches");
   return { pass, fail, details: D };
 }
 if(/[?&]selftest=1\b/.test(location.search)){
@@ -1554,7 +1579,16 @@ function LookAhead(){
       S.latestJson = json;
       syncLS.setMeta({localSavedAt: Date.now()});
       const coreChanged = core !== S.lastCore; S.lastCore = core;
-      if (S.appliedRemote){ S.appliedRemote = false; S.lastSyncedJson = json; } // this run only re-serialized a pull — no echo push/stamp
+      if (S.appliedRemote){
+        S.appliedRemote = false;
+        // Pure pull echo only if this serialization matches what the pull delivered.
+        // A local edit inside the same debounce window (or local rows a merge kept)
+        // makes the content differ — that's a real change and must stamp + push.
+        const stateMap = {crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,progress,invAlloc};
+        const echo = !S.remoteEchoKeys || JSON.stringify(S.remoteEchoKeys.map(k=>stateMap[k])) === S.remoteEchoJson;
+        if (echo){ S.lastSyncedJson = json; }
+        else if (S.bootPulled){ setLastUpdated(Date.now()); pushNow(); }
+      }
       else {
         if (coreChanged && S.bootPulled) setLastUpdated(Date.now()); // genuine local edit → stamp (won't re-stamp: core unchanged next run)
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
@@ -1630,6 +1664,13 @@ function LookAhead(){
     try{ if(_LS && !localStorage.getItem("lafable-v3-preSync") && localStorage.getItem("lafable-v3"))
       localStorage.setItem("lafable-v3-preSync", localStorage.getItem("lafable-v3")); }catch(e){} // one-time backup before the first remote apply
     S.appliedRemote = true; S.rev = env.rev;
+    // Echo fingerprint: which core keys the envelope carried and their exact
+    // content. The save effect compares against this instead of trusting the
+    // appliedRemote flag alone — a local edit that lands inside the same
+    // debounce window (or local data blended in by a merge) must still push,
+    // not be swallowed as a pull echo.
+    const ek = SYNC_CORE_KEYS.filter(k=>k in env.state);
+    S.remoteEchoKeys = ek; S.remoteEchoJson = JSON.stringify(ek.map(k=>env.state[k]));
     applyState(env.state, {skipView:true, mergeLogs:true});
     syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt});
     setSyncStatus("synced");
@@ -2306,7 +2347,7 @@ function LookAhead(){
         : <CatalogGate onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       {effTab==="progress" && <ProgressView {...{progress,setProgress,docs,tasks,logs,taskCalc,ctcOf,installedFor,contractQtyFor,remainingFor,setModal}}/>}
       {effTab==="invoices" && (catalogOK
-        ? <InvoicesView {...{invAlloc,setInvAlloc,docs,ctcOf,setModal}}/>
+        ? <InvoicesView {...{invAlloc,setInvAlloc,docs,ctc,setModal}}/>
         : <CatalogGate label="Invoices / Allocation" onUnlock={()=>{ setCatalogOK(true); try{sessionStorage.setItem("catUnlock","1");}catch(e){} }}/>)}
       </div>
 
@@ -4687,9 +4728,71 @@ function DrillDownModal({docs,dOff,code,close}){
    history; new lines carry a suggested cost-code allocation (truck-day join >
    allocation history > rate rules) with confidence, and every confirm/override
    sharpens the prior for the rest. Gated behind the billing access code. */
-function InvoicesView({invAlloc,setInvAlloc,docs,ctcOf,setModal}){
+function InvoicesView({invAlloc,setInvAlloc,docs,ctc,setModal}){
   const A=invAlloc;
   const decoded = useMemo(()=> A ? A.lines.map(L=>dpwDecodeLine(A,L)) : [], [invAlloc]);
+  const ciByCode = useMemo(()=>{ const m={};
+    CATALOG.forEach((row,i)=>{ const c=(row[CI.CC]||"").replace(/-/g,"."); if(c && m[c]==null) m[c]=i; });
+    return m; },[]);
+  /* rollup + era-isolated anomaly flags over the CURRENT allocation picture
+     (auto + suggested + decided) — derived every render, never stored */
+  const rollup = useMemo(()=>{
+    const byCode=new Map(); const anomalyRows=[];
+    for(const d of decoded){
+      const eff=(d.ov&&d.ov.length)?d.ov:d.sug; if(!eff||!eff.length) continue;
+      const parts=dpwSplitAmounts(d.amtC, eff);
+      eff.forEach(([code],i)=>{
+        let e=byCode.get(code); if(!e){ e={code,totalC:0,eras:{}}; byCode.set(code,e); }
+        e.totalC+=parts[i];
+        if(d.era!=null){ e.eras[d.era]=(e.eras[d.era]||0)+parts[i];
+          anomalyRows.push({era:d.era, inv:d.inv, code, amtC:parts[i]}); }
+      });
+    }
+    const flagged=dpwAnomalyFlags(anomalyRows).filter(r=>r.flag);
+    const flagsByCode={}; flagged.forEach(f=>{ (flagsByCode[f.code]=flagsByCode[f.code]||[]).push(f); });
+    const unallocC=decoded.reduce((s,d)=>{ const eff=(d.ov&&d.ov.length)?d.ov:d.sug; return s+((eff&&eff.length)?0:(d.amtC||0)); },0);
+    return { rows:[...byCode.values()].sort((a,b)=>b.totalC-a.totalC), flagsByCode, nFlags:flagged.length, unallocC };
+  },[decoded]);
+  const archRows = useMemo(()=> decoded.filter(d=>{
+    const eff=(d.ov&&d.ov.length)?d.ov:d.sug;
+    return (d.flags&DPW_FLAG.ARCH) || (eff||[]).some(([c])=>String(c).startsWith(DPW_ARCH_PREFIX));
+  }).sort((x,y)=>(y.inv??0)-(x.inv??0) || x.rowId-y.rowId), [decoded]);
+  const auditRows = useMemo(()=> decoded.filter(d=>d.flags&(DPW_FLAG.NEWRATE|DPW_FLAG.KNOWNEXC|DPW_FLAG.MISMATCH))
+    .map(d=>({...d, verdict:(d.flags&DPW_FLAG.MISMATCH)?"MISMATCH":(d.flags&DPW_FLAG.NEWRATE)?"NEW_RATE_ALERT":"KNOWN_EXCEPTION"}))
+    .sort((x,y)=>(x.inv??0)-(y.inv??0) || x.rowId-y.rowId), [decoded]);
+  const DPW_ST_LABEL=["auto","suggested","needs-manual","confirmed","overridden"];
+  const allocExportRows = () => decoded.map(d=>{
+    const eff=(d.ov&&d.ov.length)?d.ov:d.sug;
+    return { row_key:d.k, inv:d.inv??"", era:d.era??"", date:d.dOff!=null?dpwDIso(d.dOff):"", truck:d.tk,
+      cc_flag:d.cc, item:d.item, qty:d.qty??"", unit:d.unit||"", rate:d.rateC!=null?dpwC2S(d.rateC):"",
+      amount_wtax:(d.amtC/100).toFixed(2),
+      material:d.material||"", source_pit:d.pit||"", loads:d.loads||0,
+      allocation:(eff||[]).map(([c,w])=>c+":"+(Math.round(w*1e4)/1e4)).join(";"),
+      method:DPW_METHOD_LABEL[d.method]||"", confidence:d.conf??"", status:DPW_ST_LABEL[d.status]||"",
+      decided_by:d.by||"", decided_at:d.at?new Date(d.at).toISOString():"" };
+  });
+  const rollupExportRows = () => rollup.rows.map(e=>{
+    const c=ctc&&ctc[e.code];
+    return { code:e.code, item:ciByCode[e.code]!=null?CATALOG[ciByCode[e.code]][CI.TASK]:"",
+      allocated:(e.totalC/100).toFixed(2),
+      ...Object.fromEntries(Object.entries(e.eras).map(([era,v])=>["era_"+era,(v/100).toFixed(2)])),
+      ctc_cost_to_date:c&&c.cd!=null?c.cd.toFixed(2):"",
+      flagged_invoices:(rollup.flagsByCode[e.code]||[]).map(f=>f.inv+" (z "+f.z+")").join("; ") };
+  });
+  const dl=(name,mime,content)=>{ const blob=new Blob([content],{type:mime}); const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1500); };
+  const exportCsv=()=>dl("DPW547_Invoice_Allocation.csv","text/csv",
+    dpwToCsv(allocExportRows(),["row_key","inv","era","date","truck","cc_flag","item","qty","unit","rate","amount_wtax","material","source_pit","loads","allocation","method","confidence","status","decided_by","decided_at"]));
+  const exportXlsx=async()=>{
+    try{
+      const XLSX=await ensureXLSX(); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allocExportRows()), "Allocations");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rollupExportRows()), "Rollup");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(auditRows.map(d=>({inv:d.inv??"",row:d.rowId,item:d.item,rate:d.rateC!=null?dpwC2S(d.rateC):"",verdict:d.verdict,desc:d.desc}))), "Rate audit");
+      XLSX.writeFile(wb, "DPW547_Invoice_Allocation.xlsx");
+    }catch(e){ flash("xlsx export failed: "+e.message); }
+  };
   const buckets = useMemo(()=>{
     const b={manual:[],sug:[],auto:[],decided:[]};
     for(const d of decoded){
@@ -4831,6 +4934,76 @@ function InvoicesView({invAlloc,setInvAlloc,docs,ctcOf,setModal}){
           </tbody>
         </table>
         {rows.length>400 && <p className="dim2">Showing the first 400 lines.</p>}
+        </div>}
+      </div>
+      <div className="panel" style={{marginTop:10}}>
+        <div className="ph" style={{display:"flex",alignItems:"center",gap:8}}>
+          <span>Cost rollup — allocated $ per code</span>
+          <em className="dim2" style={{textTransform:"none",letterSpacing:0}}>
+            {rollup.nFlags?` ${rollup.nFlags} ▲>2σ spike${rollup.nFlags>1?"s":""}`:" no spend spikes"}
+            {rollup.unallocC?` · ${fmt$(rollup.unallocC/100,2)} still unallocated`:""}
+          </em>
+          <span style={{marginLeft:"auto",display:"inline-flex",gap:4}}>
+            <button className="ghost sm" onClick={exportCsv}>Export CSV</button>
+            <button className="ghost sm" onClick={exportXlsx}>Export xlsx</button>
+          </span>
+        </div>
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>CC</th><th>Item</th><th className="r">Allocated $</th>{A.cfg.eras.map((e,i)=><th key={i} className="r">Era {i+1}</th>)}<th className="r">CTC cost-to-date</th><th>▲&gt;2σ invoices</th></tr></thead>
+          <tbody>{rollup.rows.map(e=>{
+            const ci=ciByCode[e.code]; const c=ctc&&ctc[e.code];
+            const fl=rollup.flagsByCode[e.code]||[];
+            return <tr key={e.code}>
+              <td className="mono">{e.code}</td>
+              <td>{ci!=null?CATALOG[ci][CI.TASK].slice(0,36):<em className="dim2">not in catalog</em>}</td>
+              <td className="r">{fmt$(e.totalC/100,2)}</td>
+              {A.cfg.eras.map((_,i)=><td key={i} className="r">{e.eras[i+1]?fmt$(e.eras[i+1]/100):"—"}</td>)}
+              <td className="r">{c&&c.cd!=null?fmt$(c.cd):"—"}</td>
+              <td>{fl.length?fl.map((f,i)=><span key={i} className="dchip" style={{borderColor:"var(--warn,#c90)"}} title={"z = "+f.z}>▲ {f.inv}</span>):<span className="dim2">—</span>}</td>
+            </tr>;})}
+          </tbody>
+        </table>
+        </div>
+      </div>
+      <div className="panel" style={{marginTop:10}}>
+        <div className="ph">Arch pipe 33.40.19.x — every assignment listed individually</div>
+        {archRows.length===0 ? <p className="dim2">No allocations touch the arch-pipe family.</p> :
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>Inv</th><th>Date</th><th>Truck</th><th>Item / desc</th><th className="r">Amount</th><th>Allocation</th><th>Status</th></tr></thead>
+          <tbody>{archRows.map(d=>{
+            const eff=(d.ov&&d.ov.length)?d.ov:d.sug;
+            return <tr key={d.k}>
+              <td className="mono">{d.inv??"—"}</td>
+              <td className="mono">{d.dOff!=null?dpwDIso(d.dOff).slice(5):"—"}</td>
+              <td className="mono">{d.tk||"—"}</td>
+              <td title={d.desc}>{d.item}{d.desc?<em className="dim2"> — {d.desc.slice(0,42)}</em>:null}</td>
+              <td className="r">{fmt$(d.amtC/100,2)}</td>
+              <td><div className="dpwcell">{(eff||[]).map(([c,w],i)=><span key={i} className="dchip">{c}{w<0.999?` ${Math.round(w*100)}%`:""}</span>)}</div></td>
+              <td><span className="dchip dim2">{DPW_ST_LABEL[d.status]}</span></td>
+            </tr>;})}
+          </tbody>
+        </table>
+        </div>}
+      </div>
+      <div className="panel" style={{marginTop:10}}>
+        <div className="ph">Rate audit — rates not explained by the authoritative tables</div>
+        {auditRows.length===0 ? <p className="dim2">Every rate matches the rate sheet.</p> :
+        <div style={{overflowX:"auto"}}>
+        <table className="dt list">
+          <thead><tr><th>Inv</th><th>Row</th><th>Item</th><th className="r">Rate</th><th>Verdict</th><th>Desc</th></tr></thead>
+          <tbody>{auditRows.map(d=>
+            <tr key={d.k}>
+              <td className="mono">{d.inv??"—"}</td>
+              <td className="mono">{d.rowId}</td>
+              <td>{d.item}</td>
+              <td className="r mono">{d.rateC!=null?dpwC2S(d.rateC):"—"}</td>
+              <td><span className="dchip" style={{borderColor:d.verdict==="KNOWN_EXCEPTION"?undefined:"var(--warn,#c90)"}}>{d.verdict}</span></td>
+              <td className="dim2" style={{maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={d.desc}>{d.desc||"—"}</td>
+            </tr>)}
+          </tbody>
+        </table>
         </div>}
       </div>
     </div>

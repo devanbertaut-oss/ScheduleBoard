@@ -74,7 +74,8 @@ const browser = await chromium.launch({
   executablePath: process.env.PW_CHROMIUM || "/opt/pw-browsers/chromium",
 });
 const pageErrors = [];
-const newPage = async (ctx) => {
+const syncTrace = []; // {tag, method, status} for every /api/state response
+const newPage = async (ctx, tag = "A") => {
   await ctx.route("**/*", (route) => {
     const url = route.request().url();
     if (url.startsWith(BASE)) return route.continue();
@@ -84,6 +85,7 @@ const newPage = async (ctx) => {
   });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => pageErrors.push(String(e)));
+  page.on("response", (r) => { if (r.url().includes("/api/state")) syncTrace.push({ tag, method: r.request().method(), status: r.status() }); });
   return page;
 };
 
@@ -195,7 +197,68 @@ try {
     "sibling sand line re-suggests to the overridden code (prior feedback)");
   await page.screenshot({ path: join(OUTDIR, "31-queue.png"), fullPage: true });
 
-  // Phase 5 appends: rollup/anomaly/rate-audit panels, CSV/xlsx export, two-device merge
+  step("invoices: rollup + anomaly + arch + rate audit panels");
+  const rollPanel = page.locator(".panel", { hasText: "Cost rollup" });
+  await rollPanel.waitFor({ timeout: 10_000 });
+  const spikeRow = rollPanel.locator("tbody tr", { hasText: "33.30.19.13" });
+  ok((await spikeRow.locator(".dchip", { hasText: "▲" }).count()) >= 1, "era-3 sewer spend spike flagged ▲>2σ");
+  const archPanel = page.locator(".panel", { hasText: "Arch pipe 33.40.19.x" });
+  ok((await archPanel.locator("tbody tr").count()) >= 3, "arch-pipe assignments listed individually");
+  const auditPanel = page.locator(".panel", { hasText: "Rate audit" });
+  ok((await auditPanel.locator("tbody tr").count()) === 3, "rate audit: KNOWN_EXCEPTION + NEW_RATE_ALERT + MISMATCH");
+  await page.screenshot({ path: join(OUTDIR, "40-rollup.png"), fullPage: true });
+
+  step("invoices: CSV + xlsx exports");
+  const [csvDl] = await Promise.all([page.waitForEvent("download"), rollPanel.locator("button", { hasText: "Export CSV" }).click()]);
+  const csvPath = join(OUTDIR, "export.csv");
+  await csvDl.saveAs(csvPath);
+  const csv = readFileSync(csvPath, "utf8").trim().split("\n");
+  ok(csv[0].startsWith("row_key,inv,era,date,truck"), "csv header");
+  ok(csv.length - 1 === expected.invoice.rows, `csv has ${expected.invoice.rows} data rows`);
+  const [xlsxDl] = await Promise.all([page.waitForEvent("download"), rollPanel.locator("button", { hasText: "Export xlsx" }).click()]);
+  const xlsxPath = join(OUTDIR, "export.xlsx");
+  await xlsxDl.saveAs(xlsxPath);
+  const XLSX = (await import("xlsx")).default;
+  const wb = XLSX.readFile(xlsxPath);
+  ok(JSON.stringify(wb.SheetNames) === JSON.stringify(["Allocations", "Rollup", "Rate audit"]), "xlsx sheets");
+  ok(XLSX.utils.sheet_to_json(wb.Sheets.Allocations).length === expected.invoice.rows, "xlsx allocation rows");
+
+  step("two devices: decision round-trip through the sync endpoint");
+  await page.waitForTimeout(1800); // let device A's decisions push
+  const ctxB = await browser.newContext({ viewport: { width: 1600, height: 1000 }, serviceWorkers: "block" });
+  const pageB = await newPage(ctxB, "B");
+  await pageB.bringToFront(); // hidden pages get their timers throttled — B must be the active device
+  await pageB.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await pageB.waitForSelector("nav.tabs button", { timeout: 45_000 });
+  await pageB.locator('nav.tabs button', { hasText: "Invoices" }).click();
+  await pageB.locator(".gatebox input").fill("42069");
+  await pageB.locator(".gatebox button", { hasText: "Unlock" }).click();
+  const bCountB = async (label) => parseInt((await pageB.locator(".panel .ph button", { hasText: label }).textContent()).replace(/\D+/g, ""), 10);
+  await pageB.locator(".panel .ph button", { hasText: "Decided" }).waitFor({ timeout: 15_000 });
+  ok((await bCountB("Decided")) === bx.decided + 2, "device B pulled A's confirm + override");
+  await pageB.locator(".panel .ph button", { hasText: "Auto" }).click();
+  await pageB.locator("tbody tr").first().locator("button", { hasText: "Confirm" }).click();
+  ok((await bCountB("Decided")) === bx.decided + 3, "device B adds its own decision");
+  await pageB.waitForTimeout(1800); // let B push
+  await page.bringToFront();        // A becomes the active device again
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("nav.tabs button", { timeout: 45_000 });
+  await page.locator('nav.tabs button', { hasText: "Invoices" }).click();
+  await page.locator(".panel .ph button", { hasText: "Decided" }).waitFor({ timeout: 15_000 });
+  let aDecided = 0; // the boot pull applies asynchronously — poll until it lands
+  for (let i = 0; i < 30 && aDecided !== bx.decided + 3; i++) { aDecided = await bCount("Decided"); if (aDecided !== bx.decided + 3) await page.waitForTimeout(500); }
+  ok(aDecided === bx.decided + 3, "device A sees all three decisions after pull");
+  ok(syncTrace.some((t) => t.tag === "B" && t.method === "PUT" && t.status === 200), "device B's decision actually pushed (post-pull debounce-window edits must sync)");
+  await ctxB.close();
+
+  step("BOARD_KEY auth path untouched");
+  const keyed = spawn("node", [join(TOOLS, "dev-server.mjs"), "--port", "8898"], { stdio: "pipe", env: { ...process.env, BOARD_KEY: "sekret" } });
+  const up2 = async () => { for (let i = 0; i < 40; i++) { try { const r = await fetch("http://127.0.0.1:8898/api/state"); return r; } catch {} await new Promise((r) => setTimeout(r, 200)); } return null; };
+  const r401 = await up2();
+  ok(r401 && r401.status === 401, "no key -> 401");
+  const rOk = await fetch("http://127.0.0.1:8898/api/state", { headers: { "x-board-key": "sekret" } });
+  ok(rOk.status === 200 || rOk.status === 204, "correct key accepted");
+  keyed.kill();
 
   step("summary");
   ok(pageErrors.length === 0, `no page errors (${pageErrors.length ? pageErrors.join(" | ").slice(0, 400) : "clean"})`);
