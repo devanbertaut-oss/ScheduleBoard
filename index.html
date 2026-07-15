@@ -1221,6 +1221,9 @@ function LookAhead(){
      A top-left handle picks a predecessor for this run; a bottom-right handle picks a
      successor. linkRef holds the in-flight drag; depLayerRef draws the rubber imperatively. */
   const linkRef = useRef(null), depLayerRef = useRef(null);
+  const boardWrapRef = useRef(null);                       // horizontal strip scroller
+  const [boardPrint, setBoardPrint] = useState(false);     // 🖨 Board: render stacked weeks (paginates) instead of the strip
+  useEffect(()=>{ if(boardWrapRef.current) boardWrapRef.current.scrollLeft=0; },[wk,effTab]);  // snap back to the current week
   const depReaches = (from,to,seen)=>{ if(from===to) return true; if(seen.has(from)) return false; seen.add(from); return (deps[from]||[]).some(p=>depReaches(p,to,seen)); };
   const linkApi = {
     active: ()=> !!linkRef.current,
@@ -1522,7 +1525,7 @@ function LookAhead(){
           {effTab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
-          <button onClick={()=>{ document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },60); }} title="Print the live color board — Procore snapshot / trailer wall (landscape)">🖨 Board</button>
+          <button onClick={()=>{ setBoardPrint(true); document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); setBoardPrint(false); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },150); }} title="Print the live color board — Procore snapshot / trailer wall (landscape, one week per page)">🖨 Board</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={shareLookaheadPdf} disabled={pdfBusy} title="Build a crisp look-ahead PDF from the schedule and share it (or download) — one page per stacked week, works on the phone">{pdfBusy?"⏳ PDF…":"📄 Share PDF"}</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
@@ -1595,18 +1598,19 @@ function LookAhead(){
       </>}
       </div>
 
-      <div className="bodyzone">
+      <div className={"bodyzone"+(effTab==="board"&&!isMobile?" stripzone":"")}>
       {/* ============ BOARD GRID ============ */}
       {effTab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
       <div className="boardmain">
-      <div className={"boardwrap"+(spanWeeks.length>1?" multiweek":"")}>
-        {spanWeeks.map((w,wi)=>
-          <React.Fragment key={w}>
-            {wi>0 && <div className="weekband no-print"><span>Week {wi} ahead</span><em>{wkTitle(w)}</em></div>}
-            <WeekTable wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>
-          </React.Fragment>)}
-        <StormLayer {...{stormSig,wk,wkSpan,cardStyle,reflowOn,tasks}}/>
-        <DepLayer {...{deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef:depLayerRef}}/>
+      <div className={"boardwrap"+(spanWeeks.length>1?" multiweek":"")} ref={boardWrapRef}>
+        {boardPrint
+          /* print-only: the strip can't paginate horizontally, so 🖨 Board falls back to the stacked
+             one-table-per-week rendering the print CSS already breaks one week per landscape page */
+          ? spanWeeks.map((w,wi)=>
+              <WeekTable key={w} wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>)
+          : <BoardStrip {...{spanWeeks,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>}
+        <StormLayer {...{stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint}}/>
+        <DepLayer {...{deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,boardPrint,apiRef:depLayerRef}}/>
       </div>
       <CrewRail {...{crewsOnly,subsOnly,weekTasks,taskCalc,reflow,reflowOn,setModal,showEquip}}/>
       </div>)}
@@ -1647,12 +1651,12 @@ function LookAhead(){
 }
 
 /* ============ BOARD PIECES ============ */
-function SectionRow({label,onAdd}){
-  return <tr className="secrow"><td colSpan={8}><span>{label}</span><button className="addbtn no-print" onClick={onAdd}>+ Add</button></td></tr>;
+function SectionRow({label,onAdd,span=8}){
+  return <tr className="secrow"><td colSpan={span}><span>{label}</span><button className="addbtn no-print" onClick={onAdd}>+ Add</button></td></tr>;
 }
-function AddRow({ph,onAdd,onX}){
+function AddRow({ph,onAdd,onX,span=8}){
   const [v,setV]=useState("");
-  return <tr className="addrow no-print"><td colSpan={8}>
+  return <tr className="addrow no-print"><td colSpan={span}>
     <input autoFocus placeholder={ph} value={v} onChange={e=>setV(e.target.value)}
       onKeyDown={e=>{ if(e.key==="Enter"&&v.trim()) onAdd(v.trim()); if(e.key==="Escape") onX(); }}/>
     <button className="cta sm" disabled={!v.trim()} onClick={()=>onAdd(v.trim())}>Add</button>
@@ -1731,11 +1735,73 @@ function WeekTable({wk,primary,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
     </table>
   );
 }
-function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,stormDays}){
+/* One day-header cell — shared shape with WeekTable's header (date, weather, holiday, rain-out,
+   milestones, storm marking) for the strip's continuous day row. */
+function DayTh({wk,i,wkstart,milestones,rainDays,holidays,wxForDate}){
+  const date=addDays(wk,i); const today = date===new Date().toISOString().slice(0,10);
+  const ms = milestones.filter(m=>m.date===date); const rain = !!rainDays[date]; const hol = i<=4 && holidays[date];
+  const w = wxForDate(date); const storm = !!(w && w.rain!=null && w.rain>=40);
+  return <th className={(i>4?"wknd ":"")+(today?"today ":"")+(rain?"rain ":"")+(storm?"stormy ":"")+(hol?"holiday ":"")+(wkstart?"wkstart":"")}>
+    <span>{DAYS[i]}</span><b>{dLabel(wk,i)}</b>
+    {w && <span className={"wxflag"+(w.rain>=60?" wet":w.rain>=40?" storm":"")} title={w.rain!=null?`${w.rain}% chance of rain`:""}>{wxIcon(w.code)} {Math.round(w.tmax)}°/{Math.round(w.tmin)}°{w.rain!=null && <span className="wxrain"> 💧{w.rain}%</span>}</span>}
+    {hol && <span className="holflag" title={hol+" — non-working holiday"}>🗓 {hol.length>16?hol.slice(0,15)+"…":hol}</span>}
+    {rain && <span className="rainflag" title="Rained out — no work this day">⛈ Rain-out</span>}
+    {ms.map(m=><span key={m.id} className="msflag" title={m.label}><i className="msdiamond"/>{m.label.length>16?m.label.slice(0,15)+"…":m.label}</span>)}</th>;
+}
+/* The horizontal look-ahead strip: ONE grid, each crew a single row running left→right across every
+   spanned week (7×N day columns) — scroll sideways to move week-to-week. Crew names pin left
+   (sticky rescol) and the two header rows pin top. DepLayer/StormLayer overlay it unchanged
+   (both position from the DOM). 🖨 Board still prints the stacked per-week tables. */
+function BoardStrip({spanWeeks,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,
+  logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,
+  linkApi,resizeApi,milestones,rainDays,holidays,wxForDate}){
+  const nCols = 1 + 7*spanWeeks.length;
+  // flat (week, day) column list; Mondays of later weeks carry the week-separator border
+  const cols = useMemo(()=> spanWeeks.flatMap((w,wi)=> DAYS.map((_,d)=>{
+    const f=wxForDate(addDays(w,d));
+    return { w, d, storm:!!(f&&f.rain!=null&&f.rain>=40), wkstart:d===0&&wi>0 };
+  })), [spanWeeks, wxForDate]);
+  const shared = {logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,tasks,cols};
+  // Fixed geometry — day columns hold their width no matter how wordy a card is; weekends run slim.
+  const DAYW=150, WKNDW=96, RESW=92;
+  const tblW = RESW + cols.reduce((a,cl)=>a+(cl.d>4?WKNDW:DAYW),0);
+  return (
+    <table className="board strip" style={{width:tblW}}>
+      <colgroup>
+        <col style={{width:RESW}}/>
+        {cols.map(cl=><col key={cl.w+"_"+cl.d} style={{width:cl.d>4?WKNDW:DAYW}}/>)}
+      </colgroup>
+      <thead>
+        <tr className="bands">
+          <th className="rescol" rowSpan={2}>Resource</th>
+          {spanWeeks.map((w,wi)=><th key={w} colSpan={7} className={"wkband"+(wi>0?" wkstart":"")}>
+            <span>{wkTitle(w)}</span><em>{wi===0?"current week":"+"+wi+" wk"}</em></th>)}
+        </tr>
+        <tr className="days">
+          {cols.map(cl=><DayTh key={cl.w+"_"+cl.d} wk={cl.w} i={cl.d} wkstart={cl.wkstart} {...{milestones,rainDays,holidays,wxForDate}}/>)}
+        </tr>
+      </thead>
+      <tbody>
+        <SectionRow label="Crews" onAdd={()=>setAddingIn("crew")} span={nCols}/>
+        {addingIn==="crew" && <AddRow ph="Foreman / crew name" onAdd={n=>addResource("crew",n)} onX={()=>setAddingIn(null)} span={nCols}/>}
+        {crewsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="crew" idx={idx} {...shared}/>)}
+
+        <SectionRow label="Subcontractors" onAdd={()=>setAddingIn("sub")} span={nCols}/>
+        {addingIn==="sub" && <AddRow ph="Subcontractor name" onAdd={n=>addResource("sub",n)} onX={()=>setAddingIn(null)} span={nCols}/>}
+        {subsOnly.map((c,idx)=><ResRow key={c.id} res={c} kind="sub" idx={idx} {...shared}/>)}
+
+        <SectionRow label="Site" onAdd={()=>setAddingIn("site")} span={nCols}/>
+        {addingIn==="site" && <AddRow ph="New site row (e.g. Deliveries, Inspections)" onAdd={n=>addResource("site",n)} onX={()=>setAddingIn(null)} span={nCols}/>}
+        {siteRows.map(r=><SiteRow key={r.id} row={r} notes={notes} setNotes={setNotes} setModal={setModal} cols={cols} primaryWk={spanWeeks[0]}/>)}
+      </tbody>
+    </table>
+  );
+}
+function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,stormDays,cols,tasks}){
   const mine = d => weekTasks.filter(t=>t.res===res.id && t.day===d);
   const over = e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; e.currentTarget.classList.add("drop"); };
   const leave = e=>{ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop"); };
-  const drop = (e,d)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d,wk); };
+  const drop = (e,d,w)=>{ e.preventDefault(); e.currentTarget.classList.remove("drop"); const id=e.dataTransfer.getData("text/plain"); if(id) rescheduleDrop(id,res.id,d,w||wk); };
   return (
     <>
     <tr className={idx%2?"altrow":""}>
@@ -1746,14 +1812,16 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
           return <span key="st" className={"cstat "+st.status} title={(st.behindMH>0.5?(fmtN(st.behindMH)+" MH short at cap. "):"within daily capacity. ")+(st.trucksNeeded?("Peak "+st.trucksNeeded+" trucks/day"+(st.trucksAvail?" (have "+st.trucksAvail+")":"")):"")}>{lbl}{st.truckShort?" 🚚":""}</span>;
         })()}
       </td>
-      {DAYS.map((_,d)=>{
-        const list = mine(d);
-        return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")+(stormDays&&stormDays[d]?" rainy":"")}
-          onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
-          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d,wk}); }}>
-          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
-        </td>;
-      })}
+      {(cols
+        ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, w:cl.w, storm:cl.storm, wkstart:cl.wkstart,
+            list: tasks.filter(t=>t.wk===cl.w && t.res===res.id && t.day===cl.d)}))
+        : DAYS.map((_,d)=>({key:String(d), d, w:wk, storm:!!(stormDays&&stormDays[d]), wkstart:false, list:mine(d)}))
+      ).map(cl=>
+        <td key={cl.key} data-day={cl.d} data-wk={cl.w} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")}
+          onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,cl.d,cl.w)}
+          onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:cl.d,wk:cl.w}); }}>
+          {cl.list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={cl.w} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
+        </td>)}
     </tr>
     </>
   );
@@ -2015,7 +2083,9 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
         onPointerDown={e=>{ e.stopPropagation(); e.preventDefault(); setResizing(true); try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){} }}
         onPointerUp={e=>{ e.stopPropagation(); setResizing(false);
           const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
-          if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
+          if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4;
+            const cw=cell.getAttribute("data-wk")||wk;   // strip: the cell under the pointer may sit in a later week
+            resizeApi(t, wdi(cw,d)); } }}
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
       {onLog && <span className={"clog"+(c.done?" done":"")} title={c.done?"Logged ✓ — tap to edit actuals":"Quick-log actuals"} draggable={false}
         onPointerDown={e=>e.stopPropagation()}
@@ -2060,7 +2130,7 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
    both have cards on the visible week, draws a bezier from the predecessor's latest-day
    card (right edge) to the successor's earliest-day card (left edge) — red on conflict.
    apiRef exposes an imperative rubber-band used while dragging a corner link handle. */
-function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef}){
+function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,boardPrint,apiRef}){
   const svgRef=useRef(null), rubberRef=useRef(null);
   const [st,setSt]=useState({W:0,H:0,paths:[]});
   const compute=React.useCallback(()=>{
@@ -2102,7 +2172,7 @@ function DepLayer({deps,depMap,tasks,wk,wkSpan,cardStyle,reflowOn,apiRef}){
     });
     setSt({W:wrap.scrollWidth, H:wrap.scrollHeight, paths:arr});
   },[deps,depMap]);
-  React.useLayoutEffect(()=>{ compute(); },[compute,tasks,wk,wkSpan,cardStyle,reflowOn]);
+  React.useLayoutEffect(()=>{ compute(); },[compute,tasks,wk,wkSpan,cardStyle,reflowOn,boardPrint]);
   useEffect(()=>{
     const svg=svgRef.current; if(!svg) return; const wrap=svg.parentNode;
     const ro=new ResizeObserver(()=>compute());
@@ -2166,7 +2236,7 @@ function _drawBolt(ctx,b){
   ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y); for(let i=1;i<p.length;i++) ctx.lineTo(p[i].x,p[i].y); ctx.stroke();
   ctx.restore();
 }
-function StormLayer({stormSig,wk,wkSpan,cardStyle,reflowOn,tasks}){
+function StormLayer({stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint}){
   const ref = useRef(null);
   const S = useRef({regions:[],drops:[],bolts:[],flashes:[]});
   const raf = useRef(0);
@@ -2235,18 +2305,24 @@ function StormLayer({stormSig,wk,wkSpan,cardStyle,reflowOn,tasks}){
     document.addEventListener("visibilitychange", onVis);
     if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(live) rebuild(); });
     return ()=>{ live=false; stop(); ro.disconnect(); document.removeEventListener("visibilitychange", onVis); };
-  },[stormSig,wk,wkSpan,cardStyle,reflowOn,tasks]);
+  },[stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint]);
   return <canvas ref={ref} className="stormcanvas" aria-hidden="true"/>;
 }
-function SiteRow({row,notes,setNotes,setModal,stormDays}){
+function SiteRow({row,notes,setNotes,setModal,stormDays,cols,primaryWk}){
   const mine = d => notes.filter(n=>n.row===row.id && n.day===d);
+  // Notes are day-of-week scoped (no week key) — in the strip they live under the CURRENT week's
+  // columns only; later weeks' site cells are non-interactive placeholders.
+  const cells = cols
+    ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, storm:cl.storm, wkstart:cl.wkstart, live:cl.w===primaryWk}))
+    : DAYS.map((_,d)=>({key:String(d), d, storm:!!(stormDays&&stormDays[d]), wkstart:false, live:true}));
   return (
     <tr>
       <td className="rescol"><span className="chip site">{row.name}</span></td>
-      {DAYS.map((_,d)=>
-        <td key={d} className={"cell"+(d>4?" wknd":"")+(stormDays&&stormDays[d]?" rainy":"")} onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:d}); }}>
-          {mine(d).map(n=>
-            <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:d})}>
+      {cells.map(cl=>
+        <td key={cl.key} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")}
+          onClick={cl.live ? (e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:cl.d}); }) : undefined}>
+          {cl.live && mine(cl.d).map(n=>
+            <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:cl.d})}>
               {n.level==="crit"?"⚠ ":n.level==="warn"?"⚠ ":""}{n.text}
             </button>)}
         </td>)}
@@ -4583,6 +4659,13 @@ const CSS = `
  display:flex;flex-direction:column;overflow:hidden}
 .topzone{flex:0 0 auto}
 .bodyzone{flex:1 1 auto;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding-bottom:40px}
+/* Desktop board: the STRIP layout — bodyzone stops scrolling and the boardwrap becomes the one
+   scroller (both axes), so the sticky day headers pin to its top and crew names pin to its left
+   while the weeks run off to the right. The crew rail stays in view and scrolls itself. */
+.bodyzone.stripzone{overflow:hidden;padding-bottom:0;display:flex;flex-direction:column}
+.stripzone .boardmain{flex:1 1 auto;min-height:0;align-items:stretch}
+.stripzone .boardwrap{overflow:auto;-webkit-overflow-scrolling:touch;min-height:0;max-height:100%}
+.stripzone .crewrail{align-self:flex-start;max-height:100%;overflow-y:auto}
 .la-root[data-theme="dark"]{color-scheme:dark}
 .la-root[data-theme="light"]{--bg:#f4f5f6;--pn:#ffffff;--pn2:#eef0f1;--ln:#d7dadd;--tx:#111314;--dm:#434449;--dm2:#6c7178;--brand:#00833e;--lime:#aeb800;--acc:#00833e;--good:#00833e;--bad:#dc2626;--warn:#8a7a00;
  --tabon:#00833e;--cellln:#e4e7ea;--cellhov:#eef1f4;--mdln:#cdd3d8;--ovl:rgba(17,19,20,.44);--barfill:#00833e;--pillGoodBg:#dcf3e6;--pillBadBg:#fde4e4;
@@ -4638,10 +4721,16 @@ const CSS = `
 .spanseg button:first-child{border-left:0}
 .spanseg button em{font-style:normal;font-size:10px;letter-spacing:.06em;opacity:.75}
 .spanseg button.on{background:var(--acc);color:#fff}
-.weekband{display:flex;align-items:baseline;gap:10px;margin:22px 0 6px;padding:5px 2px 6px;border-bottom:3px solid var(--brand)}
-.weekband span{font:700 13px "Saira Condensed";letter-spacing:.14em;text-transform:uppercase;color:var(--acc)}
-.weekband em{font-style:normal;font-family:"Saira Condensed";font-weight:600;font-size:16px;color:var(--dm)}
 .boardwrap.multiweek .board{margin-bottom:4px}
+/* Horizontal week strip: one continuous grid, 7×N day columns wide. Two pinned header rows —
+   week bands on top, days beneath (top offset MUST equal the bands row height). */
+.board.strip{table-layout:fixed;min-width:100%}   /* width + per-column widths set inline (fixed geometry) */
+.board.strip .cell{overflow:hidden}
+.board.strip thead tr.bands th{height:34px;text-align:left;padding:5px 10px 4px;border-bottom:2px solid var(--brand)}
+.board.strip thead tr.bands th.wkband span{font:700 13px "Saira Condensed";letter-spacing:.12em;text-transform:uppercase;color:var(--acc)}
+.board.strip thead tr.bands th.wkband em{font-style:normal;font-family:"Saira Condensed";font-weight:600;font-size:12px;color:var(--dm);margin-left:8px}
+.board.strip thead tr.days th{top:34px}
+.board.strip th.wkstart,.board.strip td.wkstart{border-left:3px solid var(--brand)}
 .actions{display:flex;gap:9px;flex-wrap:wrap;min-width:0}
 .actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 15px;font-weight:600;font-size:15px;cursor:pointer;text-decoration:none;display:inline-block}
@@ -5254,6 +5343,7 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
     (rows spill onto one sheet and get cut). */
  .la-root{display:block!important;overflow:visible!important;height:auto!important;max-height:none!important}
  .bodyzone{overflow:visible!important;height:auto!important;max-height:none!important;padding-bottom:0!important}
+ .boardwrap{overflow:visible!important;height:auto!important;max-height:none!important}   /* the strip scroller would suppress page breaks */
  /* MODE 1 — report / legend modal (Print / PDF, Scope legend): print the open modal */
  body:not(.print-cards):not(.board-print) *{visibility:hidden}
  body:not(.print-cards):not(.board-print) .ovl,body:not(.print-cards):not(.board-print) .ovl *{visibility:visible}
