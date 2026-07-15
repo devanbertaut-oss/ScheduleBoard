@@ -1385,10 +1385,11 @@ function LookAhead(){
           </div>
           <button className="ghost" onClick={()=>setWk(mondayOf(new Date().toISOString().slice(0,10)))}>Today</button>
         </div>
-        <div className="actions">
+        <div className="actions no-print">
           {effTab==="board" && <>
           <button onClick={()=>setModal({type:"eos", day: Math.min(3,(new Date().getDay()+6)%7)})}>EOS Summary</button>
           <button onClick={()=>setModal({type:"cards"})}>Print Cards</button>
+          <button onClick={()=>{ document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },60); }} title="Print the live color board — Procore snapshot / trailer wall (landscape)">🖨 Board</button>
           <button onClick={()=>setModal({type:"print"})}>Print / PDF</button>
           <button onClick={()=>setModal({type:"cheat"})}>Cheat Sheet</button>
           <button onClick={()=>setModal({type:"truckreport"})} title="Daily & weekly trucking — trucks to order, back-haul routes, cost">🚚 Trucking</button>
@@ -1513,7 +1514,7 @@ function LookAhead(){
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
       {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
-      {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,setSavings,close:()=>setModal(null)}}/>}
+      {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
@@ -1592,7 +1593,7 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
         return <td key={d} data-day={d} className={"cell"+(d>4?" wknd":"")}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,d)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:d}); }}>
-          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})}/>; })}
+          {list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={wk} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
         </td>;
       })}
     </tr>
@@ -1691,7 +1692,8 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
-            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})}/>
+            <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>
+            <button className="mcardlog" onClick={()=>setModal({type:"qlog",id:t.id})}>{(taskCalc(t).done)?"✓ Logged — edit actuals":"✎ Log actuals"}</button>
           </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
       </div>
@@ -1811,7 +1813,7 @@ function cardVisual(scope, style){
     return { css:{background:"color-mix(in srgb,"+bg+" 20%, #0f1214)",color:"#e9ebec",border:"1px solid color-mix(in srgb,"+bg+" 42%, #23282a)",borderLeft:"4px solid "+bg}, titleColor:bg, subColor:"#9aa0a3", subOpacity:1, chipBg:bg, chipTx:s.tx };
   return { css:{background:bg,color:s.tx,borderTop:"2px solid color-mix(in srgb,"+bg+" 72%, #000)",boxShadow:"0 1px 0 rgba(0,0,0,.18), 0 4px 9px rgba(0,0,0,.32)"}, titleColor:s.tx, subColor:s.tx, subOpacity:.72, chipBg:"rgba(0,0,0,.16)", chipTx:s.tx };
 }
-function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
+function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,resKind,cardStyle,dep,linkApi,resizeApi,wk}){
   const it=c.it;
   const [resizing,setResizing]=useState(false);
   const linked = !!(dep && dep.active);   // dependent run: auto-positioned after its predecessor(s)
@@ -1857,6 +1859,9 @@ function Card({t,c,onOpen,canDrag,selected,onSelect,rf,reflowOn,showEquip,run,re
           const el=document.elementFromPoint(e.clientX,e.clientY); const cell=el&&el.closest?el.closest("td.cell[data-day]"):null;
           if(cell){ let d=+cell.getAttribute("data-day"); if(d>4)d=4; resizeApi(t, wdi(wk,d)); } }}
         onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>}
+      {onLog && <span className={"clog"+(c.done?" done":"")} title={c.done?"Logged ✓ — tap to edit actuals":"Quick-log actuals"} draggable={false}
+        onPointerDown={e=>e.stopPropagation()}
+        onClick={e=>{ e.stopPropagation(); e.preventDefault(); onLog(); }}>{c.done?"✓ Logged":"✎ Log"}</span>}
       {!minimal && <div className="hqcorners">
         <span className="hqday">{chip}{multi?` Day ${run.idx}/${run.total}`:""}</span>
         <span className={"hqmh"+(useRf && rf.atCap?" cbad":"")}>{mhStr}{useRf && rf.atCap?" ▲":""}</span>
@@ -3276,7 +3281,7 @@ function DataModal({cfg,setCfg,ctc,setCtc,close}){
 /* Daily & weekly trucking report. Per crew/day it routes the pooled streams (back-haul), shows
    dedicated vs smart trucks, cross-crew fleet pooling, cost, and planned→actual from production;
    the weekly view is a per-day demand chart + a trucks-to-order sheet. Feeds the $-saved ticker. */
-function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setSavings,close}){
+function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,savings,setSavings,close}){
   const [view,setView]=useState("day"); const [copied,setCopied]=useState(false);
   const today=(()=>{ const t=new Date().toISOString().slice(0,10); for(let i=0;i<5;i++){ if(addDays(wk,i)===t) return i; } return 0; })();
   const [day,setDay]=useState(today);
@@ -3351,6 +3356,16 @@ function TruckReportModal({wk,weekTasks,crews,taskCalc,cfg,setSavings,close}){
         <button className="ghost" disabled={wkSaved$<1} onClick={()=>setSavings&&setSavings(v=>[...(v||[]),{id:"s"+Math.random().toString(36).slice(2,7),date:new Date().toISOString().slice(0,10),amount:Math.round(wkSaved$),note:"Back-haul routing — "+wkTitle(wk)}])}>Log {fmt$(wkSaved$)} saved</button>
         <span className="sp"/><em className="dim2">Sized on your source drive times; verify against the broker.</em>
       </div>
+      {(()=>{ const led=[...(savings||[])].sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+        const jtd=led.reduce((a,x)=>a+(+x.amount||0),0);
+        return <div style={{marginTop:12}}>
+          <div className="loghdr">Back-haul savings ledger <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>captured back-haul &amp; sign-out wins · job-to-date <b className="pos">{fmt$(jtd)}</b></em></div>
+          {led.length ? <table className="dt list"><thead><tr><th>Date</th><th>Source</th><th className="r">Saved</th><th aria-label="remove"/></tr></thead>
+            <tbody>{led.map(s=><tr key={s.id}><td>{s.date}</td><td>{s.note}</td><td className="r pos">{fmt$(s.amount)}</td>
+                <td className="r"><button className="ghost sm" title="Remove entry" onClick={()=>setSavings&&setSavings(v=>(v||[]).filter(x=>x.id!==s.id))}>✕</button></td></tr>)}
+              <tr className="cheattot"><td><b>Job-to-date</b></td><td/><td className="r"><b className="pos">{fmt$(jtd)}</b></td><td/></tr></tbody></table>
+            : <div className="ovnote">No savings logged yet — hit &ldquo;Log saved&rdquo; above (or in Trucking → sign-out) to start the job-to-date tally the owner sees.</div>}
+        </div>; })()}
     </Modal>
   );
 }
@@ -4365,6 +4380,17 @@ tr.altrow .cell:hover{background:var(--cellhov)}
 .hqmh{opacity:.9;transform:rotate(4deg);transform-origin:right}
 .hqwm{font:800 15px "Saira Condensed";letter-spacing:.06em;text-align:center;margin:-2px 0 2px}
 .hqbody{font-size:10.5px;line-height:1.28}
+/* Quick-log affordance on a board card — hover-reveal on desktop so it never clutters the dense grid;
+   always visible (via .mcardlog) on mobile where one-tap field logging is the point. */
+.clog{position:absolute;right:4px;bottom:3px;z-index:6;font:700 9px "Saira Condensed";letter-spacing:.03em;
+  padding:2px 6px;border-radius:6px;background:var(--brand);color:#fff;opacity:0;transition:opacity .12s;
+  cursor:pointer;pointer-events:none;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+.clog.done{background:var(--good)}
+.card:hover .clog,.card:focus-within .clog{opacity:.95;pointer-events:auto}
+.mcard .clog{display:none}   /* mobile uses the full-width .mcardlog button instead */
+.mcardlog{width:100%;margin-top:2px;background:var(--brand);border:0;color:#fff;border-radius:9px;
+  padding:9px 12px;font:700 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer;min-height:40px}
+.mcardlog:active{filter:brightness(.92)}
 .hqbody>div{display:flex;gap:5px}
 .hqbody label{flex:0 0 40px;font-weight:700;text-transform:uppercase;font-size:8.5px;letter-spacing:.05em;opacity:.7;padding-top:1px}
 .hqbody span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis}
