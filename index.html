@@ -1223,7 +1223,14 @@ function LookAhead(){
   const linkRef = useRef(null), depLayerRef = useRef(null);
   const boardWrapRef = useRef(null);                       // horizontal strip scroller
   const [boardPrint, setBoardPrint] = useState(false);     // 🖨 Board: render stacked weeks (paginates) instead of the strip
-  useEffect(()=>{ if(boardWrapRef.current) boardWrapRef.current.scrollLeft=0; },[wk,effTab]);  // snap back to the current week
+  // Snap the strip to TODAY's column when it's on the board (load / "Today" / week change);
+  // otherwise back to the anchor week's Monday.
+  useEffect(()=>{ const wrap=boardWrapRef.current; if(!wrap) return;
+    const th=wrap.querySelector(".board.strip tr.days th.today");
+    if(th){ const w=wrap.getBoundingClientRect(), r=th.getBoundingClientRect();
+      wrap.scrollLeft = Math.max(0, wrap.scrollLeft + (r.left - w.left) - 110); }   // park today just right of the pinned crew column
+    else wrap.scrollLeft=0;
+  },[wk,effTab,wkSpan]);
   const depReaches = (from,to,seen)=>{ if(from===to) return true; if(seen.has(from)) return false; seen.add(from); return (deps[from]||[]).some(p=>depReaches(p,to,seen)); };
   const linkApi = {
     active: ()=> !!linkRef.current,
@@ -1466,6 +1473,18 @@ function LookAhead(){
     return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
   // Which visible columns are storming (rain ≥ 40%) — drives the canvas StormLayer's rebuild.
   const stormSig = useMemo(()=> spanWeeks.map(w=>[0,1,2,3,4].map(i=>{ const f=wxForDate(addDays(w,i)); return (f && f.rain!=null && f.rain>=40)?"1":"0"; }).join("")).join("|"), [spanWeeks, wx]);
+  // Rain-out nudge: the nearest upcoming working day with ≥60% rain AND scheduled work that hasn't
+  // already been rained out — connects the forecast to the rain-out tool instead of just tinting a header.
+  const rainRisk = useMemo(()=>{
+    const today = new Date().toISOString().slice(0,10);
+    for(const w of spanWeeks) for(let d=0; d<5; d++){
+      const date=addDays(w,d); if(date<today || rainDays[date]) continue;
+      const f=wxForDate(date); if(!(f && f.rain!=null && f.rain>=60)) continue;
+      const n=tasks.filter(t=>t.wk===w && t.day===d).length;
+      if(n>0) return {date, day:d, rain:f.rain, n};
+    }
+    return null;
+  },[spanWeeks, wx, tasks, rainDays]);
 
   return (
     <div className="la-root" data-theme={theme}>
@@ -1582,6 +1601,11 @@ function LookAhead(){
         <button className="snapbtn" title="Set where the day-by-day forecast is pulled from" onClick={()=>setModal({type:"wxloc"})}>🌦 Weather loc</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
       </div>
+      {rainRisk && <div className="wxnudge no-print">
+        <span className="wxntag">⛈ {DAYS[rainRisk.day]} {dLabel(mondayOf(rainRisk.date),(new Date(rainRisk.date+"T12:00:00").getDay()+6)%7)}</span>
+        <span className="wxntxt"><b>{rainRisk.rain}% rain</b> forecast — {rainRisk.n} task{rainRisk.n>1?"s":""} scheduled that day.</span>
+        <button className="wxnbtn" onClick={()=>setModal({type:"rainout", date:rainRisk.date})}>Plan rain-out →</button>
+      </div>}
 
       {sel.size>0 && <div className="selbar no-print"><b>{sel.size}</b> task{sel.size>1?"s":""} selected — drag to move, or bulk-shift:
         <span className="shiftgrp">
@@ -1628,7 +1652,7 @@ function LookAhead(){
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk:(modal.wk||wk),crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
-      {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,close:()=>setModal(null)}}/>}
+      {modal?.type==="rainout" && <RainoutModal {...{wk,tasks,rainDays,applyRainout,clearRainout,preset:modal.date,close:()=>setModal(null)}}/>}
       {modal?.type==="holidays" && <HolidayModal {...{holidays,setHolidays,close:()=>setModal(null)}}/>}
       {modal?.type==="wxloc"    && <WeatherLocModal {...{cfg,setCfg,close:()=>setModal(null)}}/>}
       {modal?.type==="cheat"   && <CheatSheetModal {...{wk,weekTasks,taskCalc,crews,cfg,close:()=>setModal(null)}}/>}
@@ -1757,10 +1781,11 @@ function BoardStrip({spanWeeks,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,
   linkApi,resizeApi,milestones,rainDays,holidays,wxForDate}){
   const nCols = 1 + 7*spanWeeks.length;
   // flat (week, day) column list; Mondays of later weeks carry the week-separator border
+  const todayISO = new Date().toISOString().slice(0,10);
   const cols = useMemo(()=> spanWeeks.flatMap((w,wi)=> DAYS.map((_,d)=>{
-    const f=wxForDate(addDays(w,d));
-    return { w, d, storm:!!(f&&f.rain!=null&&f.rain>=40), wkstart:d===0&&wi>0 };
-  })), [spanWeeks, wxForDate]);
+    const date=addDays(w,d), f=wxForDate(date);
+    return { w, d, storm:!!(f&&f.rain!=null&&f.rain>=40), wkstart:d===0&&wi>0, today:date===todayISO };
+  })), [spanWeeks, wxForDate, todayISO]);
   const shared = {logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi,tasks,cols};
   // Fixed geometry — day columns hold their width no matter how wordy a card is; weekends run slim.
   const DAYW=150, WKNDW=96, RESW=92;
@@ -1813,15 +1838,21 @@ function ResRow({res,kind,idx,wk,weekTasks,logs,cfg,setModal,taskCalc,showEquip,
         })()}
       </td>
       {(cols
-        ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, w:cl.w, storm:cl.storm, wkstart:cl.wkstart,
+        ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, w:cl.w, storm:cl.storm, wkstart:cl.wkstart, today:cl.today,
             list: tasks.filter(t=>t.wk===cl.w && t.res===res.id && t.day===cl.d)}))
-        : DAYS.map((_,d)=>({key:String(d), d, w:wk, storm:!!(stormDays&&stormDays[d]), wkstart:false, list:mine(d)}))
-      ).map(cl=>
-        <td key={cl.key} data-day={cl.d} data-wk={cl.w} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")}
+        : DAYS.map((_,d)=>({key:String(d), d, w:wk, storm:!!(stormDays&&stormDays[d]), wkstart:false, today:false, list:mine(d)}))
+      ).map(cl=>{
+        const calcs = cl.list.map(t=>taskCalc(t));
+        // Always-on capacity check — a crew-day loaded past its MH cap gets flagged even with Re-flow off.
+        const cap = (+res.capMH>0) ? +res.capMH : (kind==="crew" ? 68 : 0);
+        const mh = calcs.reduce((a,c)=>a+c.planMH,0);
+        const over_ = cap>0 && mh>cap+0.5;
+        return <td key={cl.key} data-day={cl.d} data-wk={cl.w} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")+(cl.today?" today":"")+(over_?" overcap":"")}
+          title={over_?`${fmtN(mh)} MH planned vs ${fmtN(cap)} MH cap — over capacity`:undefined}
           onDragOver={over} onDragEnter={over} onDragLeave={leave} onDrop={e=>drop(e,cl.d,cl.w)}
           onClick={e=>{ if(e.target===e.currentTarget) setModal({type:"sched",res:res.id,day:cl.d,wk:cl.w}); }}>
-          {cl.list.map(t=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={taskCalc(t)} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={cl.w} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
-        </td>)}
+          {cl.list.map((t,i)=>{ const rdm=runDayMap&&runDayMap[t.id]; return <Card key={t.id} t={t} c={calcs[i]} canDrag selected={sel.has(t.id)} onSelect={toggleSel} rf={reflow.byTask[t.id]} reflowOn={reflowOn} showEquip={showEquip} cardStyle={cardStyle} resKind={kind} run={rdm} dep={depMap&&depMap[runKey(t)]} linkApi={linkApi} resizeApi={resizeApi} wk={cl.w} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>; })}
+        </td>;})}
     </tr>
     </>
   );
@@ -2079,6 +2110,7 @@ function Card({t,c,onOpen,onLog,canDrag,selected,onSelect,rf,reflowOn,showEquip,
           onPointerUp={e=>{ e.stopPropagation(); linkApi.end(e.clientX,e.clientY); }}
           onClick={e=>{ e.stopPropagation(); e.preventDefault(); }}/>
       </>}
+      {dep && dep.conflict && <span className="confbadge" title="Starts before a predecessor finishes — drag it later or fix the link">⚠</span>}
       {resizable && <span className={"rh"+(resizing?" on":"")} title="Drag to resize the run — add or drop days (holds the daily rate)" draggable={false}
         onPointerDown={e=>{ e.stopPropagation(); e.preventDefault(); setResizing(true); try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){} }}
         onPointerUp={e=>{ e.stopPropagation(); setResizing(false);
@@ -2313,13 +2345,13 @@ function SiteRow({row,notes,setNotes,setModal,stormDays,cols,primaryWk}){
   // Notes are day-of-week scoped (no week key) — in the strip they live under the CURRENT week's
   // columns only; later weeks' site cells are non-interactive placeholders.
   const cells = cols
-    ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, storm:cl.storm, wkstart:cl.wkstart, live:cl.w===primaryWk}))
-    : DAYS.map((_,d)=>({key:String(d), d, storm:!!(stormDays&&stormDays[d]), wkstart:false, live:true}));
+    ? cols.map(cl=>({key:cl.w+"_"+cl.d, d:cl.d, storm:cl.storm, wkstart:cl.wkstart, today:cl.today, live:cl.w===primaryWk}))
+    : DAYS.map((_,d)=>({key:String(d), d, storm:!!(stormDays&&stormDays[d]), wkstart:false, today:false, live:true}));
   return (
     <tr>
       <td className="rescol"><span className="chip site">{row.name}</span></td>
       {cells.map(cl=>
-        <td key={cl.key} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")}
+        <td key={cl.key} className={"cell"+(cl.d>4?" wknd":"")+(cl.storm?" rainy":"")+(cl.wkstart?" wkstart":"")+(cl.today?" today":"")}
           onClick={cl.live ? (e=>{ if(e.target===e.currentTarget) setModal({type:"note",row:row.id,day:cl.d}); }) : undefined}>
           {cl.live && mine(cl.d).map(n=>
             <button key={n.id} className={"note "+n.level} onClick={()=>setModal({type:"note",id:n.id,row:row.id,day:cl.d})}>
@@ -3061,8 +3093,8 @@ function WeatherLocModal({cfg,setCfg,close}){
     </Modal>
   );
 }
-function RainoutModal({wk,tasks,rainDays,applyRainout,clearRainout,close}){
-  const [date,setDate]=useState(()=>new Date().toISOString().slice(0,10));
+function RainoutModal({wk,tasks,rainDays,applyRainout,clearRainout,preset,close}){
+  const [date,setDate]=useState(()=>preset||new Date().toISOString().slice(0,10));   // preset = the forecast nudge's at-risk day
   const rw = d => { const mw=mondayOf(d); const off=Math.round((new Date(d+"T12:00:00")-new Date(mw+"T12:00:00"))/864e5); return wdi(mw,Math.min(Math.max(off,0),4)); };
   const affected = date ? tasks.filter(t=>wdi(t.wk,t.day)>=rw(date)).length : 0;
   const days = Object.keys(rainDays).filter(d=>rainDays[d]).sort();
@@ -4753,6 +4785,20 @@ const CSS = `
 .board.strip thead tr.bands th.wkband em{font-style:normal;font-family:"Saira Condensed";font-weight:600;font-size:12px;color:var(--dm);margin-left:8px}
 .board.strip thead tr.days th{top:34px}
 .board.strip th.wkstart,.board.strip td.wkstart{border-left:3px solid var(--brand)}
+/* TODAY: whole-column wash (subtle, sits under storm/rain tints) + stronger header */
+.board thead th.today{background:linear-gradient(color-mix(in srgb,var(--acc) 16%, var(--bg)), color-mix(in srgb,var(--acc) 7%, var(--bg)))}
+.cell.today{background:color-mix(in srgb,var(--acc) 6%, transparent)}
+tr.altrow .cell.today{background:color-mix(in srgb,var(--acc) 10%, var(--pn))}
+/* Over-capacity crew-day: always-on inset ring + corner tick (independent of the Re-flow toggle) */
+.cell.overcap{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--bad) 60%, transparent);position:relative}
+.cell.overcap::after{content:"MH";position:absolute;top:0;right:0;font:800 8px "Saira Condensed";letter-spacing:.06em;color:#fff;background:var(--bad);padding:1px 4px 2px;border-radius:0 0 0 6px;pointer-events:none;z-index:2}
+/* Dependency conflict badge — the run starts before its predecessor finishes */
+.confbadge{position:absolute;top:-6px;right:-6px;width:17px;height:17px;border-radius:50%;background:var(--bad);color:#fff;font-size:10px;line-height:17px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.4);z-index:6;pointer-events:none}
+/* Forecast → rain-out nudge banner */
+.wxnudge{display:flex;align-items:center;gap:10px;margin:6px 18px 0;padding:7px 12px;border:1px solid color-mix(in srgb,#5a8ccc 45%, var(--ln));border-left:3px solid #5a8ccc;border-radius:9px;background:color-mix(in srgb,#4a76b8 12%, var(--pn))}
+.wxnudge .wxntag{font:800 12px "Saira Condensed";letter-spacing:.1em;text-transform:uppercase;color:#9cc0f0;white-space:nowrap}
+.wxnudge .wxntxt{font-size:13px;color:var(--tx)}
+.wxnudge .wxnbtn{margin-left:auto;background:#4a76b8;border:0;color:#fff;border-radius:7px;padding:5px 12px;font-weight:700;font-size:12.5px;cursor:pointer;white-space:nowrap}
 .actions{display:flex;gap:9px;flex-wrap:wrap;min-width:0}
 .actions>button{flex:none;white-space:nowrap}
 .actions button,.btn{background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:8px 15px;font-weight:600;font-size:15px;cursor:pointer;text-decoration:none;display:inline-block}
