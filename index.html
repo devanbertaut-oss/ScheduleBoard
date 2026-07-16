@@ -2435,7 +2435,7 @@ function LookAhead(){
             {label:"❓ Help & shortcuts", run:()=>setModal({type:"help"})},
           ]}/>
           <MenuBtn label="Print / Share" items={[
-            {label:"🗂 Print field cards", run:()=>setModal({type:"cards"})},
+            {label:"🗂 Print cards — board + field", run:()=>setModal({type:"cards"})},
             {label:"🖨 Print board — trailer wall", run:()=>setModal({type:"boardprint"})},
             {label:"📑 Print / PDF reports", run:()=>setModal({type:"print"})},
             {label:pdfBusy?"⏳ Building PDF…":"📄 Share look-ahead PDF", run:()=>{ if(!pdfBusy) shareLookaheadPdf(); }},
@@ -4697,7 +4697,40 @@ function fieldCardModel(cd, crews){
     stas: lines.filter(ln=>ln.sta),
     staStrs: lines.filter(ln=>ln.sta).map(ln=>"STA "+staFmt(ln.sta[0])+(ln.sta[0]!==ln.sta[1]?" – "+staFmt(ln.sta[1]):"")),
     itemStrs: lines.map(ln=>ln.it[CI.TASK]+(merged?" — "+fmtN(ln.qty,ln.qty%1?1:0)+" "+ln.it[CI.UM]:"")),
+    nameStrs: lines.map(ln=>ln.it[CI.TASK]),                                    // pad card: plain names…
+    goalStrs: lines.map(ln=>fmtN(ln.qty,ln.qty%1?1:0)+" "+ln.it[CI.UM]),        // …with goals on their own line
+    runShort: cd.run && cd.run.total>1 ? "Day "+cd.run.idx+"/"+cd.run.total : "",
+    place: ((crew?crew.name:String(t.res||"")).replace(/[^A-Za-z0-9]/g,"").slice(0,3).toUpperCase()||"—")+" "+iso.slice(5,7)+"/"+iso.slice(8,10),
     runLbl: cd.run && cd.run.total>1 ? "Day "+cd.run.idx+" of "+cd.run.total : "" };
+}
+/* The BOARD TRAILER card — the original 4×4in pad design, black ink only, printed onto the
+   scope-COLORED PAPER loaded in the printer (one color batch at a time). Values in mono, the
+   RNGD stencil watermark, corner day-count + MH, placement stamp bottom-right. */
+function PCardPad({cd,crews}){
+  const M = fieldCardModel(cd,crews);
+  const {merged,lines} = M;
+  return (
+    <div className={"pcard pad"+(merged?" merged n"+Math.min(lines.length,3):"")}>
+      <div className="pcorners">
+        <span className="pcv pday">{M.runShort}</span>
+        <span className="pcv pmh">{fmtN(M.mh,M.mh%1?1:0)} MH</span>
+      </div>
+      <div className="pwm"><img src="assets/rngd-black.png" alt="RNGD"/></div>
+      <div className="ppadbody">
+        <div><label>Location:</label><span>{M.loc}</span></div>
+        <div><label>Job #:</label><span>{JOB_NO}</span></div>
+        <div className="ppaditem"><label>Item:</label><span>{M.nameStrs.map((s,i)=><span key={i} className="pline">{s}</span>)}</span></div>
+        <div><label>Goal:</label><span>{M.goalStrs.map((s,i)=><span key={i} className="pline">{s}</span>)}</span></div>
+        {M.staStrs.length>0 && <div className="psta"><label aria-hidden="true">Goal:</label><span>{M.staStrs.map((s,i)=><span key={i} className="pline">{s}</span>)}</span></div>}
+        <i className="psp"/>
+      </div>
+      <div className="pfoot">
+        <div><label>Equipt.:</label><span>{M.equip}</span></div>
+        <div><label>Trucks:</label><span>{M.trucksStr}</span></div>
+      </div>
+      <div className="pplace" aria-hidden="true">{M.place}</div>
+    </div>
+  );
 }
 function PCard({cd,crews}){
   const M = fieldCardModel(cd,crews);
@@ -4739,16 +4772,18 @@ function PCard({cd,crews}){
 /* Sheet renderer, used twice: hidden print copy (body-level) + zoomed on-screen preview.
    Cell height follows the paper: Letter runs 2×2 cards of 4×5.25in (fills the 8×10.5in content
    area exactly); 11×17 runs 2×4 of 4×4.125in with tightened type. */
-function CardSheets({pages,paper,preview,crews}){
-  const cols = 2, ch = paper==="tabloid" ? 4.125 : 5.25;
+function CardSheets({pages,paper,mode,paperBg,preview,crews}){
+  // Field cards fill the page height (5.25/4.125in); board pad cards are the classic 4×4in.
+  const cols = 2, ch = mode==="pad" ? 4 : (paper==="tabloid" ? 4.125 : 5.25);
   return (
     <div className={"cardsheets"+(preview?" prev":"")}>
       {pages.map((pg,pi)=>{
         const filledRows = Math.ceil(pg.length/cols) || 1;
         return (
-        <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")}>
+        <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")}
+          style={preview && mode==="pad" && paperBg ? {background:paperBg} : undefined}>
           <div className="pgrid" style={{gridTemplateRows:"repeat("+filledRows+","+ch+"in)"}}>
-            {pg.map(cd=><PCard key={cd.t.id} cd={cd} crews={crews}/>)}
+            {pg.map(cd=> mode==="pad" ? <PCardPad key={cd.t.id} cd={cd} crews={crews}/> : <PCard key={cd.t.id} cd={cd} crews={crews}/>)}
             {/* Vertical cut: only between two cells that are BOTH filled, scoped to that row's own height —
                 a partial row (e.g. col0 filled, col1 blank) gets no cut, so the blank cell stays attached scrap. */}
             {Array.from({length:filledRows},(_,r)=> r*cols+1<pg.length
@@ -4770,6 +4805,7 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
   const rangeTasks = useMemo(()=>tasks.filter(t=>{ const d=addDays(t.wk,t.day); return d>=lo && d<=hi; }),[tasks,lo,hi]);
   const countByScope = useMemo(()=>{ const m={}; rangeTasks.forEach(t=>{ const k=scopeOf(t,crews); m[k]=(m[k]||0)+1; }); return m; },[rangeTasks,crews]);
   const [sck,setSck]=useState(()=>{ const f=Object.keys(SCOPES).find(k=>countByScope[k]); return f||"drainage"; });
+  const [mode,setMode]=useState("pad");   // pad = board trailer cards, black ink on COLORED PAPER; field = Detailed white-paper cards
   const [paper,setPaper]=useState("letter");
   const [crewF,setCrewF]=useState("all");
   const [pdfBusy,setPdfBusy]=useState(false);
@@ -4811,12 +4847,13 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
     if(pdfBusy || !cards.length) return; setPdfBusy(true); setPdfErr("");
     try{
       const JsPDF = await ensureJsPDF();
-      const model = { paper, reasons: REASONS.filter(r=>r!=="On plan"), cards: cards.map(cd=>{ const m=fieldCardModel(cd,crews);
+      const model = { paper, mode, reasons: REASONS.filter(r=>r!=="On plan"), cards: cards.map(cd=>{ const m=fieldCardModel(cd,crews);
         return { scode:m.sc.code, sname:m.sc.name, bg:m.sc.bg, txc:m.sc.tx,
           crew:m.crewName, day:m.dayLbl, run:m.runLbl.toUpperCase(), cc:m.ccLbl,
           items:m.itemStrs, qty:m.merged?null:fmtN(m.t.qty,m.t.qty%1?1:0),
           um:m.merged?"":m.lines[0].it[CI.UM], mh:fmtN(m.mh,m.mh%1?1:0),
           trucks:m.trucksStr, umFill:m.umFill, stas:m.staStrs,
+          names:m.nameStrs, goals:m.goalStrs, equip:m.equip, place:m.place, runShort:m.runShort, rawLoc:m.loc,
           loc:[m.loc&&("Location: "+m.loc), m.equip&&("Equipt: "+m.equip)].filter(Boolean).join("  ·  ") };
       }) };
       const doc = drawFieldCardsPdf(JsPDF, model);
@@ -4833,10 +4870,16 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
   };
   return (
     <>
-      {pages.length>0 && <CardSheets pages={pages} paper={paper} crews={crews}/>}
+      {pages.length>0 && <CardSheets pages={pages} paper={paper} mode={mode} crews={crews}/>}
       <Modal close={close} w={760}>
-        <h3>Print field cards — daily crew cards</h3>
-        <div className="ovnote">One card per crew per day: the plan is printed (scope band, item, qty · MH · trucks), the foreman fills the actuals, delay reason, and notes on site. Prints on plain white paper — the scope color band prints on the card.</div>
+        <h3>Print cards — board trailer &amp; field</h3>
+        <div className="qmode sm" style={{margin:"6px 0 2px"}}>
+          <button className={mode==="pad"?"on":""} onClick={()=>setMode("pad")}>📌 Board cards — colored paper</button>
+          <button className={mode==="field"?"on":""} onClick={()=>setMode("field")}>🗂 Field cards — white paper</button>
+        </div>
+        {mode==="pad"
+          ? <div className="ovnote">The trailer-wall pin-up cards: pick a scope, <b>load that color paper</b>, print the batch — black ink only, exactly 4"×4" between the trim lines. Then swap paper and print the next color.</div>
+          : <div className="ovnote">One card per crew per day: the plan is printed (scope band, item, qty · MH · trucks), the foreman fills the actuals, delay reason, and notes on site. Prints on plain <b>white</b> paper — the scope color band prints on the card.</div>}
         <RangeBar R={R}/>
         <div className="swatchrow">
           {swatchKeys.map(k=>
@@ -4856,10 +4899,10 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
         <div className="loghdr">{cards.length} card{cards.length===1?"":"s"} · {rangeLbl} → {pages.length} sheet{pages.length===1?"":"s"} of {paperName}</div>
         <div className="cardprev">
           {pages.length
-            ? <CardSheets pages={pages} paper={paper} crews={crews} preview/>
+            ? <CardSheets pages={pages} paper={paper} mode={mode} paperBg={scope.bg} crews={crews} preview/>
             : <div className="ovnote" style={{padding:24,textAlign:"center"}}>No {scope.name} tasks between {rangeLbl}.</div>}
         </div>
-        <p className="ovnote deskonly" style={{marginTop:10}}>Plain white paper. In the print dialog: paper size = {paperName}, Scale 100%, default margins, headers/footers OFF.</p>
+        <p className="ovnote deskonly" style={{marginTop:10}}>{mode==="pad"?"Load "+scope.name+" paper.":"Plain white paper."} In the print dialog: paper size = {paperName}, Scale 100%, default margins, headers/footers OFF.</p>
         {pdfErr && <div className="ovnote" style={{color:"var(--bad)"}}>PDF: {pdfErr}</div>}
         <div className="btnrow">
           {isMobile
@@ -5920,6 +5963,7 @@ function CheatSheetModal({wk,weekTasks,taskCalc,crews,cfg,close}){
    trailer prints (window.print() is dead inside an installed iOS app). `model` =
    {paper, reasons, cards:[...]} built from the same fieldCardModel as the on-screen preview. */
 function drawFieldCardsPdf(JsPDF, model){
+  if(model.mode==="pad") return drawPadCardsPdf(JsPDF, model);
   const tab = model.paper==="tabloid";
   const doc = new JsPDF({orientation:"portrait", unit:"pt", format: tab?[792,1224]:"letter"});
   const M=18, CW=288, CH=tab?297:378, cols=2, per=tab?8:4;
@@ -6003,6 +6047,52 @@ function drawFieldCardsPdf(JsPDF, model){
     tx(INK); doc.setFontSize(8); doc.text("RNGD", x+w-32, sigY);
     doc.setDrawColor(11,138,70); doc.setLineWidth(1.4);
     doc.line(x+w-9, sigY-3, x+w-6, sigY); doc.line(x+w-6, sigY, x+w-1, sigY-7);
+  });
+  return doc;
+}
+/* Board trailer pad cards to PDF — the classic 4×4in black-ink layout, meant to be printed
+   onto the scope-colored paper (the PDF itself is ink only, no fills). 2×2 per Letter page,
+   2×4 per 11×17. Shares the model with the DOM PCardPad via fieldCardModel. */
+function drawPadCardsPdf(JsPDF, model){
+  const tab = model.paper==="tabloid";
+  const doc = new JsPDF({orientation:"portrait", unit:"pt", format: tab?[792,1224]:"letter"});
+  const M=18, CW=288, CH=288, cols=2, per=tab?8:4;
+  const clip=(s,n)=> s&&s.length>n ? s.slice(0,n-1)+"…" : (s||"");
+  model.cards.forEach((c,i)=>{
+    const p=i%per; if(i>0 && p===0) doc.addPage();
+    const cx=M+(p%cols)*CW, cy=M+Math.floor(p/cols)*CH;
+    doc.setLineDashPattern([],0); doc.setDrawColor(204,204,204); doc.setLineWidth(.6);
+    doc.rect(cx,cy,CW,CH);                                  // cut guide
+    const padX=20, x=cx+padX, w=CW-padX*2;
+    doc.setTextColor(0,0,0);
+    // corners: day count left, MH right
+    doc.setFont("courier","bold"); doc.setFontSize(11);
+    if(c.runShort) doc.text(c.runShort, x, cy+26);
+    doc.text(c.mh+" MH", x+w, cy+26, {align:"right"});
+    // stencil wordmark
+    doc.setFont("helvetica","bold"); doc.setFontSize(22);
+    doc.text("RNGD", cx+CW/2, cy+56, {align:"center"});
+    // labeled rows: bold label, mono value
+    let yy=cy+82;
+    const row=(lab,vals)=>{ doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.text(lab, x, yy);
+      doc.setFont("courier","normal"); doc.setFontSize(8.5);
+      (Array.isArray(vals)?vals:[vals]).forEach(v=>{ doc.text(clip(v,44), x+66, yy); yy+=11; });
+      if(!Array.isArray(vals)||!vals.length) yy+=0; yy+=4; };
+    row("Location:", c.rawLoc||" ");
+    row("Job #:", "2124013");
+    row("Item:", c.names&&c.names.length?c.names.map(s=>clip(s,44)):[" "]);
+    row("Goal:", c.goals&&c.goals.length?c.goals:[" "]);
+    if(c.stas&&c.stas.length) row(" ", c.stas);
+    // foot pinned to the bottom: equipment + trucks
+    const fy=cy+CH-26;
+    doc.setFont("helvetica","bold"); doc.setFontSize(11);
+    doc.text("Equipt.:", x, fy); doc.text("Trucks:", x+w/2, fy);
+    doc.setFont("courier","normal"); doc.setFontSize(8.5);
+    doc.text(clip(c.equip,16), x+44, fy); doc.text(clip(c.trucks,16), x+w/2+40, fy);
+    // faint placement stamp (crew tag + M/D) bottom-right
+    doc.setFont("courier","bold"); doc.setFontSize(7); doc.setTextColor(165,165,165);
+    doc.text(c.place||"", cx+CW-8, cy+CH-6, {align:"right"});
+    doc.setTextColor(0,0,0);
   });
   return doc;
 }
@@ -7637,6 +7727,41 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .cardpage.pt .prsns{gap:.01in .09in}
 .cardpage.pt .pck{font-size:7.2pt}
 .cardpage.pt .pact{gap:.04in;padding:.045in .07in}
+/* BOARD TRAILER pad card — the classic 4×4in, black ink only, printed on scope-COLORED paper
+   (background transparent so no ink is wasted tinting the stock; the preview page shows the
+   paper color instead). Overrides the field card's flex layout. */
+.pcard.pad{height:4in;padding:.2in .3in .34in;background:transparent;color:#000;
+  display:grid;grid-template-rows:auto auto minmax(0,1fr) auto}
+.cardpage.pl .pcard.pad,.cardpage.pt .pcard.pad{height:4in}
+.pcard.pad .pcorners{display:flex;justify-content:space-between;align-items:flex-start;min-height:.38in}
+.pcard.pad .pcv{font:600 11pt "IBM Plex Mono",monospace}
+.pcard.pad .pcv.pday{transform:rotate(-4deg);transform-origin:left top}
+.pcard.pad .pcv.pmh{transform:rotate(4deg);transform-origin:right top}
+.pcard.pad .pwm{text-align:center;margin:0 0 .22in}
+.pcard.pad .pwm img{height:.5in;width:auto;vertical-align:top}
+.ppadbody{min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:.12in}
+.ppadbody>div{display:flex;gap:.12in;align-items:baseline}
+.ppadbody>div.ppaditem{flex:1}
+.ppadbody label{font-weight:700;font-size:12.5pt;letter-spacing:.01em;flex:none}
+.ppadbody span{font:500 10.5pt "IBM Plex Mono",monospace;flex:1;min-width:0;overflow-wrap:anywhere}
+.ppadbody>div.psta{margin-top:-.05in}
+.ppadbody>div.psta label{visibility:hidden}   /* hidden "Goal:" spacer aligns STA under the Goal values */
+.pcard.pad .psp{flex:1.6}
+.pcard.pad .pfoot{display:flex;padding-top:.05in}
+.pcard.pad .pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
+.pcard.pad .pfoot label{font-weight:700;font-size:12.5pt}
+.pcard.pad .pfoot span{font:500 10.5pt "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.pcard.pad .pplace{position:absolute;right:.06in;bottom:.03in;font:600 8pt "IBM Plex Mono",monospace;color:#000;opacity:.18;white-space:nowrap;pointer-events:none}
+/* merged pad card: tighten so multiple item/goal/station lines fit the fixed 4×4 box */
+.pcard.pad.merged .ppadbody{gap:.07in}
+.pcard.pad.merged .ppadbody label{font-size:12pt}
+.pcard.pad.merged .ppadbody span{font-size:10pt}
+.pcard.pad.merged .ppadbody>div.ppaditem{flex:0 1 auto}
+.pcard.pad.merged .psp{flex:1}
+.pcard.pad.n3 .ppadbody{gap:.05in}
+.pcard.pad.n3 .ppadbody label{font-size:11pt}
+.pcard.pad.n3 .ppadbody span{font-size:9pt}
+.pcard.pad.n3 .pwm{margin-bottom:.14in}
 .swatchrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px}
 .swatch{border:2px solid transparent;border-radius:9px;padding:7px 12px;font:700 13px "Saira Condensed";cursor:pointer;letter-spacing:.04em}
 .swatch.on{border-color:var(--tx);box-shadow:0 0 0 2px var(--acc)}
