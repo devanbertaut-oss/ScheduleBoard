@@ -4847,7 +4847,16 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
     if(pdfBusy || !cards.length) return; setPdfBusy(true); setPdfErr("");
     try{
       const JsPDF = await ensureJsPDF();
-      const model = { paper, mode, reasons: REASONS.filter(r=>r!=="On plan"), cards: cards.map(cd=>{ const m=fieldCardModel(cd,crews);
+      // Board cards carry the real stencil watermark into the PDF (36pt tall, aspect kept);
+      // if the asset can't load (very first offline run) the renderer falls back to text.
+      let wm=null;
+      if(mode==="pad"){ try{
+        const bl = await (await fetch("assets/rngd-black.png")).blob();
+        const data = await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(bl); });
+        const dim = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight}); im.onerror=rej; im.src=data; });
+        wm = { data, w: 36*(dim.w/Math.max(1,dim.h)), h: 36 };
+      }catch(e){ wm=null; } }
+      const model = { paper, mode, wm, reasons: REASONS.filter(r=>r!=="On plan"), cards: cards.map(cd=>{ const m=fieldCardModel(cd,crews);
         return { scode:m.sc.code, sname:m.sc.name, bg:m.sc.bg, txc:m.sc.tx,
           crew:m.crewName, day:m.dayLbl, run:m.runLbl.toUpperCase(), cc:m.ccLbl,
           items:m.itemStrs, qty:m.merged?null:fmtN(m.t.qty,m.t.qty%1?1:0),
@@ -6057,51 +6066,60 @@ function drawPadCardsPdf(JsPDF, model){
   const tab = model.paper==="tabloid";
   const doc = new JsPDF({orientation:"portrait", unit:"pt", format: tab?[792,1224]:"letter"});
   const M=18, CW=288, CH=288, cols=2, per=tab?8:4;
+  // Geometry lifted from the DOM card's CSS (1in = 72pt): padding .2/.3/.34in, corners row
+  // .38in, watermark .5in + .22in below, body row gap .12in, values stagger after EACH label
+  // (+.12in gap) exactly like the flex layout — no fixed value column.
+  const PT=14.4, PX=21.6, PB=24.5, CNR=27.4, WMH=36, WMB=15.8, GAP=8.6;
   model.cards.forEach((c,i)=>{
     const p=i%per; if(i>0 && p===0) doc.addPage();
     const cx=M+(p%cols)*CW, cy=M+Math.floor(p/cols)*CH;
     doc.setLineDashPattern([],0); doc.setDrawColor(204,204,204); doc.setLineWidth(.6);
     doc.rect(cx,cy,CW,CH);                                  // cut guide
-    const padX=20, x=cx+padX, w=CW-padX*2;
+    const x=cx+PX, w=CW-PX*2;
     doc.setTextColor(0,0,0);
-    // corners: day count left, MH right — slight pad-convention tilt like the DOM card
+    // corners: day count left, MH right — 11pt mono with the pad-convention tilt
     doc.setFont("courier","bold"); doc.setFontSize(11);
-    if(c.runShort) doc.text(c.runShort, x, cy+26, {angle:4});
-    doc.text(c.mh+" MH", x+w, cy+26, {align:"right", angle:-4});
-    // stencil wordmark
-    doc.setFont("helvetica","bold"); doc.setFontSize(26);
-    doc.text("RNGD", cx+CW/2, cy+58, {align:"center"});
-    // labeled rows — bold label column, mono values WRAPPED to the value column (never
-    // past the card edge; the earlier char-count clip let long items bleed across cells)
-    const VX=72, VW=w-VX;
-    let yy=cy+86;
+    if(c.runShort) doc.text(c.runShort, x, cy+PT+10, {angle:4});
+    doc.text(c.mh+" MH", x+w, cy+PT+10, {align:"right", angle:-4});
+    // the actual RNGD stencil (fetched at share time); helvetica fallback if it didn't load
+    const wmTop=cy+PT+CNR;
+    if(model.wm && model.wm.data){ doc.addImage(model.wm.data, "PNG", cx+CW/2-model.wm.w/2, wmTop, model.wm.w, WMH); }
+    else { doc.setFont("helvetica","bold"); doc.setFontSize(26); doc.text("RNGD", cx+CW/2, wmTop+27, {align:"center"}); }
+    // labeled rows — merged cards step the type down exactly like the DOM (.merged / .n3)
+    const nLines=(c.names||[]).length;
+    const [LS,VS,RG] = nLines>=3 ? [11,9,3.6] : nLines===2 ? [12,10,5] : [12.5,10.5,GAP];
+    const LH=VS*1.18, bodyBottom=cy+CH-PB-22;               // keep clear of the pinned foot
+    let yy=wmTop+WMH+WMB+VS;
     const row=(lab,vals,cap)=>{
-      if(lab.trim()){ doc.setFont("helvetica","bold"); doc.setFontSize(12.5); doc.text(lab, x, yy); }
-      doc.setFont("courier","normal"); doc.setFontSize(9.5);
-      let lines=[]; (Array.isArray(vals)?vals:[vals]).forEach(v=>{ lines=lines.concat(doc.splitTextToSize(String(v==null?"":v)||" ", VW)); });
-      if(!lines.length) lines=[" "];
-      lines.slice(0,cap||3).forEach(v=>{ doc.text(v, x+VX, yy); yy+=11.5; });
-      yy+=4.5;
+      if(yy>bodyBottom) return;
+      doc.setFont("helvetica","bold"); doc.setFontSize(LS);
+      const lw=doc.getTextWidth(lab.trim()||"Goal:");       // psta passes " " → indents under Goal values
+      if(lab.trim()) doc.text(lab, x, yy);
+      const vx=x+lw+GAP, vw=w-lw-GAP;
+      doc.setFont("courier","normal"); doc.setFontSize(VS);
+      let lines=[]; (Array.isArray(vals)?vals:[vals]).forEach(v=>{ const seg=doc.splitTextToSize(String(v==null?"":v)||" ", vw); lines=lines.concat(seg.length?seg:[" "]); });
+      lines.slice(0,cap).forEach((v,li)=>{ if(yy>bodyBottom) return; doc.text(v, vx, yy); yy+=LH+(li<lines.length-1?2.2:0); });
+      yy+=RG;
     };
     row("Location:", c.rawLoc||" ", 2);
     row("Job #:", "2124013", 1);
     row("Item:", c.names&&c.names.length?c.names:[" "], 3);
     row("Goal:", c.goals&&c.goals.length?c.goals:[" "], 3);
-    if(c.stas&&c.stas.length) row(" ", c.stas, 2);
-    // foot pinned to the bottom: equipment + trucks, value offset MEASURED from the label
-    const fy=cy+CH-26;
-    const foot=(lab,val,fx,maxw)=>{
+    if(c.stas&&c.stas.length){ yy-=RG*0.4; row(" ", c.stas, 2); }
+    // foot pinned to the bottom: two half-width label+value pairs, .12in gap after the label
+    const fy=cy+CH-PB-2;
+    const foot=(lab,val,fx,half)=>{
       doc.setFont("helvetica","bold"); doc.setFontSize(12.5); doc.text(lab, fx, fy);
       const lw=doc.getTextWidth(lab);
-      doc.setFont("courier","normal"); doc.setFontSize(9.5);
-      const v=doc.splitTextToSize(String(val||" "), maxw-lw-8)[0]||" ";
-      doc.text(v, fx+lw+8, fy);
+      doc.setFont("courier","normal"); doc.setFontSize(10.5);
+      const v=doc.splitTextToSize(String(val||" "), half-lw-GAP)[0]||" ";
+      doc.text(v, fx+lw+GAP, fy);
     };
-    foot("Equipt.:", c.equip, x, w*0.5-6);
-    foot("Trucks:", c.trucks, x+w*0.52, w*0.48);
+    foot("Equipt.:", c.equip, x, w/2);
+    foot("Trucks:", c.trucks, x+w/2, w/2);
     // faint placement stamp (crew tag + M/D) bottom-right
-    doc.setFont("courier","bold"); doc.setFontSize(7); doc.setTextColor(165,165,165);
-    doc.text(c.place||"", cx+CW-8, cy+CH-6, {align:"right"});
+    doc.setFont("courier","bold"); doc.setFontSize(8); doc.setTextColor(209,209,209);
+    doc.text(c.place||"", cx+CW-4.3, cy+CH-2.2, {align:"right"});
     doc.setTextColor(0,0,0);
   });
   return doc;
@@ -7761,7 +7779,8 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .pcard.pad .pfoot>div{flex:1;display:flex;gap:.12in;align-items:baseline;min-width:0}
 .pcard.pad .pfoot label{font-weight:700;font-size:12.5pt}
 .pcard.pad .pfoot span{font:500 10.5pt "IBM Plex Mono",monospace;overflow-wrap:anywhere}
-.pcard.pad .pplace{position:absolute;right:.06in;bottom:.03in;font:600 8pt "IBM Plex Mono",monospace;color:#000;opacity:.18;white-space:nowrap;pointer-events:none}
+.pcard.pad .pplace{position:absolute;right:.06in;bottom:.03in;font:600 8pt "IBM Plex Mono",monospace;letter-spacing:.01em;color:#000;opacity:.18;white-space:nowrap;pointer-events:none;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+.pcard.pad .pline+.pline{margin-top:.03in}
 /* merged pad card: tighten so multiple item/goal/station lines fit the fixed 4×4 box */
 .pcard.pad.merged .ppadbody{gap:.07in}
 .pcard.pad.merged .ppadbody label{font-size:12pt}
