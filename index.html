@@ -4857,7 +4857,7 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
           loc:[m.loc&&("Location: "+m.loc), m.equip&&("Equipt: "+m.equip)].filter(Boolean).join("  ·  ") };
       }) };
       const doc = drawFieldCardsPdf(JsPDF, model);
-      const fname = "RNGD_FieldCards_"+lo+(hi!==lo?"_"+hi:"")+".pdf";
+      const fname = (mode==="pad"?"RNGD_BoardCards_":"RNGD_FieldCards_")+lo+(hi!==lo?"_"+hi:"")+".pdf";
       const blob = doc.output("blob"), file = new File([blob], fname, {type:"application/pdf"});
       if(navigator.canShare && navigator.canShare({files:[file]})){
         await navigator.share({files:[file], title:"RNGD field cards", text:"Field cards — "+rangeLbl});
@@ -6057,7 +6057,6 @@ function drawPadCardsPdf(JsPDF, model){
   const tab = model.paper==="tabloid";
   const doc = new JsPDF({orientation:"portrait", unit:"pt", format: tab?[792,1224]:"letter"});
   const M=18, CW=288, CH=288, cols=2, per=tab?8:4;
-  const clip=(s,n)=> s&&s.length>n ? s.slice(0,n-1)+"…" : (s||"");
   model.cards.forEach((c,i)=>{
     const p=i%per; if(i>0 && p===0) doc.addPage();
     const cx=M+(p%cols)*CW, cy=M+Math.floor(p/cols)*CH;
@@ -6065,30 +6064,41 @@ function drawPadCardsPdf(JsPDF, model){
     doc.rect(cx,cy,CW,CH);                                  // cut guide
     const padX=20, x=cx+padX, w=CW-padX*2;
     doc.setTextColor(0,0,0);
-    // corners: day count left, MH right
+    // corners: day count left, MH right — slight pad-convention tilt like the DOM card
     doc.setFont("courier","bold"); doc.setFontSize(11);
-    if(c.runShort) doc.text(c.runShort, x, cy+26);
-    doc.text(c.mh+" MH", x+w, cy+26, {align:"right"});
+    if(c.runShort) doc.text(c.runShort, x, cy+26, {angle:4});
+    doc.text(c.mh+" MH", x+w, cy+26, {align:"right", angle:-4});
     // stencil wordmark
-    doc.setFont("helvetica","bold"); doc.setFontSize(22);
-    doc.text("RNGD", cx+CW/2, cy+56, {align:"center"});
-    // labeled rows: bold label, mono value
-    let yy=cy+82;
-    const row=(lab,vals)=>{ doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.text(lab, x, yy);
-      doc.setFont("courier","normal"); doc.setFontSize(8.5);
-      (Array.isArray(vals)?vals:[vals]).forEach(v=>{ doc.text(clip(v,44), x+66, yy); yy+=11; });
-      if(!Array.isArray(vals)||!vals.length) yy+=0; yy+=4; };
-    row("Location:", c.rawLoc||" ");
-    row("Job #:", "2124013");
-    row("Item:", c.names&&c.names.length?c.names.map(s=>clip(s,44)):[" "]);
-    row("Goal:", c.goals&&c.goals.length?c.goals:[" "]);
-    if(c.stas&&c.stas.length) row(" ", c.stas);
-    // foot pinned to the bottom: equipment + trucks
+    doc.setFont("helvetica","bold"); doc.setFontSize(26);
+    doc.text("RNGD", cx+CW/2, cy+58, {align:"center"});
+    // labeled rows — bold label column, mono values WRAPPED to the value column (never
+    // past the card edge; the earlier char-count clip let long items bleed across cells)
+    const VX=72, VW=w-VX;
+    let yy=cy+86;
+    const row=(lab,vals,cap)=>{
+      if(lab.trim()){ doc.setFont("helvetica","bold"); doc.setFontSize(12.5); doc.text(lab, x, yy); }
+      doc.setFont("courier","normal"); doc.setFontSize(9.5);
+      let lines=[]; (Array.isArray(vals)?vals:[vals]).forEach(v=>{ lines=lines.concat(doc.splitTextToSize(String(v==null?"":v)||" ", VW)); });
+      if(!lines.length) lines=[" "];
+      lines.slice(0,cap||3).forEach(v=>{ doc.text(v, x+VX, yy); yy+=11.5; });
+      yy+=4.5;
+    };
+    row("Location:", c.rawLoc||" ", 2);
+    row("Job #:", "2124013", 1);
+    row("Item:", c.names&&c.names.length?c.names:[" "], 3);
+    row("Goal:", c.goals&&c.goals.length?c.goals:[" "], 3);
+    if(c.stas&&c.stas.length) row(" ", c.stas, 2);
+    // foot pinned to the bottom: equipment + trucks, value offset MEASURED from the label
     const fy=cy+CH-26;
-    doc.setFont("helvetica","bold"); doc.setFontSize(11);
-    doc.text("Equipt.:", x, fy); doc.text("Trucks:", x+w/2, fy);
-    doc.setFont("courier","normal"); doc.setFontSize(8.5);
-    doc.text(clip(c.equip,16), x+44, fy); doc.text(clip(c.trucks,16), x+w/2+40, fy);
+    const foot=(lab,val,fx,maxw)=>{
+      doc.setFont("helvetica","bold"); doc.setFontSize(12.5); doc.text(lab, fx, fy);
+      const lw=doc.getTextWidth(lab);
+      doc.setFont("courier","normal"); doc.setFontSize(9.5);
+      const v=doc.splitTextToSize(String(val||" "), maxw-lw-8)[0]||" ";
+      doc.text(v, fx+lw+8, fy);
+    };
+    foot("Equipt.:", c.equip, x, w*0.5-6);
+    foot("Trucks:", c.trucks, x+w*0.52, w*0.48);
     // faint placement stamp (crew tag + M/D) bottom-right
     doc.setFont("courier","bold"); doc.setFontSize(7); doc.setTextColor(165,165,165);
     doc.text(c.place||"", cx+CW-8, cy+CH-6, {align:"right"});
