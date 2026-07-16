@@ -1987,40 +1987,53 @@ function LookAhead(){
   };
   const rmTemplate = id => setTemplates(ts=>ts.filter(x=>x.id!==id));
   // Shape the current look-ahead (all stacked weeks) into a plain model for the vector PDF builder.
-  const buildPdfModel = () => ({
+  // weeksList/lo/hi/label are optional — the ranged trailer-board share passes them; the quick
+  // "Share look-ahead PDF" keeps the on-screen span. Days outside [lo,hi] render as blank cells.
+  const buildPdfModel = (weeksList, lo, hi, label) => { const ws = (weeksList&&weeksList.length)?weeksList:spanWeeks; return ({
     job: "DPW547 · Job 2124013",
-    subtitle: (spanWeeks.length>1 ? spanWeeks.length+"-Week" : "Weekly")+" Look-Ahead",
+    subtitle: label ? "Look-Ahead Board · "+label : (ws.length>1 ? ws.length+"-Week" : "Weekly")+" Look-Ahead",
     generated: new Date().toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}),
     legend: Object.keys(SCOPES).filter(k=>k!=="gen").map(k=>({code:SCOPES[k].code,name:SCOPES[k].name,hex:SCOPES[k].bg})),
-    weeks: spanWeeks.map(w=>{
+    weeks: ws.map(w=>{
       const rows=[...crewsOnly.map(c=>({res:c,kind:"crew"})), ...subsOnly.map(c=>({res:c,kind:"sub"}))].map(({res,kind})=>({
         name:res.name, kind,
-        cells:[0,1,2,3,4].map(d=> tasks.filter(t=>t.wk===w && t.res===res.id && t.day===d).map(t=>{
+        cells:[0,1,2,3,4].map(d=>{ const iso=addDays(w,d); if(lo && (iso<lo || iso>hi)) return [];
+          return tasks.filter(t=>t.wk===w && t.res===res.id && t.day===d).map(t=>{
           const c=taskCalc(t), it=c.it, sc=SCOPES[scopeOf(t,crews)]||SCOPES.gen;
           const trucks=(t.trucks!=null&&t.trucks!=="")?String(t.trucks):(c.trucks!=null?c.trucks+" trk":(c.loads>=0.05?fmtN(c.loads,1)+" lds":""));
           return { code:sc.code, hex:sc.bg, tx:sc.tx, name:it[CI.TASK], done:c.done,
             stat: fmtN(t.qty,t.qty%1?1:0)+" "+it[CI.UM]+" · "+fmtN(c.planMH,c.planMH%1?1:0)+"MH"+(trucks?" · "+trucks:"") };
-        }))
+        }); })
       })).filter(r=>r.cells.some(c=>c.length));
       return { title: wkTitle(w), dayLabels:[0,1,2,3,4].map(i=>dLabel(w,i)), rows };
     })
-  });
+  });};
   const [pdfBusy,setPdfBusy]=useState(false);
-  const shareLookaheadPdf = async () => {
+  const shareLookaheadPdf = async (weeksList, lo, hi, label) => {
     if(pdfBusy) return; setPdfBusy(true); flash("Building look-ahead PDF…");
     try{
       const JsPDF = await ensureJsPDF();
-      const doc = drawLookaheadPdf(JsPDF, buildPdfModel());
-      const fname = "RNGD_LookAhead_"+wk+".pdf";
+      const doc = drawLookaheadPdf(JsPDF, buildPdfModel(weeksList, lo, hi, label));
+      const fname = lo ? "RNGD_Board_"+lo+(hi&&hi!==lo?"_"+hi:"")+".pdf" : "RNGD_LookAhead_"+wk+".pdf";
       const blob = doc.output("blob"), file = new File([blob], fname, {type:"application/pdf"});
       if(navigator.canShare && navigator.canShare({files:[file]})){
-        await navigator.share({files:[file], title:"RNGD Look-Ahead", text:"Look-ahead — "+wkTitle(wk)});
+        await navigator.share({files:[file], title:"RNGD Look-Ahead", text:label?"Board — "+label:"Look-ahead — "+wkTitle(wk)});
       } else {
         const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=fname; document.body.appendChild(a); a.click(); a.remove();
         setTimeout(()=>URL.revokeObjectURL(a.href),4000); flash("Look-ahead PDF downloaded");
       }
     }catch(e){ if(!e || e.name!=="AbortError") flash("PDF: "+((e&&e.message)||"failed")); }
     finally{ setPdfBusy(false); }
+  };
+  // Trailer-wall board print: render the chosen weeks as stacked tables (one landscape page per
+  // week — the strip can't paginate) and open the print dialog. boardPrint holds the week list,
+  // which also overrides the mobile day view for the duration of the print.
+  const startBoardPrint = (weeks) => {
+    setBoardPrint(weeks && weeks.length ? weeks : spanWeeks);
+    document.body.classList.add("board-print");
+    const done=()=>{ document.body.classList.remove("board-print"); setBoardPrint(false); window.removeEventListener("afterprint",done); };
+    window.addEventListener("afterprint",done);
+    setTimeout(()=>{ window.print(); setTimeout(done,1200); },150);
   };
   // Full-board backup: serialize EVERYTHING (the schedule itself, not just cost data) for a file
   // export or a rolling local backup, and restore any of them wholesale. The pre-restore state is
@@ -2423,7 +2436,7 @@ function LookAhead(){
           ]}/>
           <MenuBtn label="Print / Share" items={[
             {label:"🗂 Print field cards", run:()=>setModal({type:"cards"})},
-            {label:"🖨 Print board — trailer wall", run:()=>{ setBoardPrint(true); document.body.classList.add("board-print"); const done=()=>{ document.body.classList.remove("board-print"); setBoardPrint(false); window.removeEventListener("afterprint",done); }; window.addEventListener("afterprint",done); setTimeout(()=>{ window.print(); setTimeout(done,1200); },150); }},
+            {label:"🖨 Print board — trailer wall", run:()=>setModal({type:"boardprint"})},
             {label:"📑 Print / PDF reports", run:()=>setModal({type:"print"})},
             {label:pdfBusy?"⏳ Building PDF…":"📄 Share look-ahead PDF", run:()=>{ if(!pdfBusy) shareLookaheadPdf(); }},
           ]}/>
@@ -2505,7 +2518,9 @@ function LookAhead(){
         </span>
         <button onClick={()=>setSel(new Set())}>Clear</button></div>}
       <div className="boardprinthdr print-only">
-        <div className="bphtitle">DPW547 · Job 2124013 — Look-Ahead Board · {wkTitle(wk)}</div>
+        <div className="bphtitle">DPW547 · Job 2124013 — Look-Ahead Board · {boardPrint&&boardPrint.length
+          ? (boardPrint.length>1 ? wkTitle(boardPrint[0])+"  →  "+wkTitle(boardPrint[boardPrint.length-1]) : wkTitle(boardPrint[0]))
+          : wkTitle(wk)}</div>
         <div className="bphleg">{Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/>{SCOPES[k].code} {SCOPES[k].name}</span>)}</div>
       </div>
       </>}
@@ -2513,13 +2528,14 @@ function LookAhead(){
 
       <div className={"bodyzone"+(effTab==="board"&&!isMobile?" stripzone":"")}>
       {/* ============ BOARD GRID ============ */}
-      {effTab==="board" && (isMobile ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
+      {effTab==="board" && ((isMobile && !boardPrint) ? <MobileBoard {...{crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,taskCalc,setModal,showEquip,sel,rescheduleDrop,milestones,cardStyle,setCardStyle,depMap,runDayMap,wxForDate}}/> :
       <div className="boardmain">
       <div className={"boardwrap"+(spanWeeks.length>1?" multiweek":"")} ref={boardWrapRef}>
         {boardPrint
           /* print-only: the strip can't paginate horizontally, so 🖨 Board falls back to the stacked
-             one-table-per-week rendering the print CSS already breaks one week per landscape page */
-          ? spanWeeks.map((w,wi)=>
+             one-table-per-week rendering the print CSS already breaks one week per landscape page.
+             boardPrint carries the CHOSEN week list (date-range modal) and overrides the mobile view. */
+          ? boardPrint.map((w,wi)=>
               <WeekTable key={w} wk={w} primary={wi===0} {...{crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>)
           : <BoardStrip {...{spanWeeks,crewsOnly,subsOnly,siteRows,tasks,notes,setNotes,addingIn,setAddingIn,addResource,logs,cfg,setModal,taskCalc,showEquip,sel,toggleSel,rescheduleDrop,reflow,reflowOn,cardStyle,depMap,runDayMap,linkApi,resizeApi:resizeRunToEnd,milestones,rainDays,holidays,wxForDate}}/>}
         <StormLayer {...{stormSig,wk,wkSpan,cardStyle,reflowOn,tasks,boardPrint}}/>
@@ -2553,6 +2569,7 @@ function LookAhead(){
       {modal?.type==="truckreport" && <TruckReportModal {...{wk,weekTasks,crews,taskCalc,cfg,setCfg,savings,setSavings,close:()=>setModal(null)}}/>}
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{tasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="boardprint" && <BoardPrintModal {...{wk,tasks,startBoardPrint,shareBoardPdf:shareLookaheadPdf,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
       {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} tasks={tasks} logs={logs} deps={deps} crews={crews} resliceRun={resliceRun} pullRunSuccessors={pullRunSuccessors} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
       {modal?.type==="move"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <MoveSheet t={t} crews={crews} upTask={upTask} close={()=>setModal(null)}/>; })()}
@@ -4591,6 +4608,68 @@ function OpsSnapshot({crews,weekTasks,taskCalc,wk}){
    code, bold qty · MH · 🚚 trucks, location/station) and the foreman hand-fills the ACTUAL block,
    delay reason, notes, and signature on site. The scope color prints ON the card
    (print-color-adjust), so sheets run on plain white paper — no more colored stock. */
+/* Date-range picker shared by the print/export modals (field cards, trailer-board print):
+   preset chips anchored on the viewed week + a custom from/to, normalized lo<=hi, a pretty
+   label, and the list of Mondays the range touches. */
+function useDateRange(wk){
+  const today = new Date().toISOString().slice(0,10);
+  const [from,setFrom]=useState(wk);
+  const [to,setTo]=useState(addDays(wk,6));
+  const [rangeK,setRangeK]=useState("week");
+  const RANGES=[["today","Today",()=>[today,today]],
+    ["week","This week",()=>[wk,addDays(wk,6)]],
+    ["next","Next week",()=>[addDays(wk,7),addDays(wk,13)]],
+    ["2wk","2 weeks",()=>[wk,addDays(wk,13)]],
+    ["4wk","4 weeks",()=>[wk,addDays(wk,27)]],
+    ["custom","Custom…",null]];
+  const pickRange=(k,fn)=>{ setRangeK(k); if(fn){ const [a,b]=fn(); setFrom(a); setTo(b); } };
+  const [lo,hi] = from<=to ? [from,to] : [to,from];
+  const fmtD = iso => new Date(iso+"T12:00:00").toLocaleDateString([],{month:"short",day:"numeric"});
+  const rangeLbl = lo===hi ? fmtD(lo) : fmtD(lo)+" – "+fmtD(hi);
+  const weeks=[]; for(let m=mondayOf(lo); m<=hi; m=addDays(m,7)) weeks.push(m);
+  return {from,to,setFrom,setTo,rangeK,RANGES,pickRange,lo,hi,rangeLbl,weeks};
+}
+function RangeBar({R}){
+  return <>
+    <div className="qmode sm rangebar" style={{margin:"6px 0 4px"}}>
+      {R.RANGES.map(([k,l,fn])=><button key={k} className={R.rangeK===k?"on":""} onClick={()=>R.pickRange(k,fn)}>{l}</button>)}
+    </div>
+    {R.rangeK==="custom" && <div className="logrow" style={{margin:"2px 0 4px"}}>
+      <label>From<input type="date" value={R.from} onChange={e=>{ if(e.target.value) R.setFrom(e.target.value); }}/></label>
+      <label>To<input type="date" value={R.to} onChange={e=>{ if(e.target.value) R.setTo(e.target.value); }}/></label>
+    </div>}
+  </>;
+}
+/* Trailer-wall board print/share with a date range. The DOM print covers whole weeks (one
+   landscape page per week — same stacked tables as always); the shared board PDF additionally
+   blanks days outside the exact range, so "Today" shares a one-day board. */
+function BoardPrintModal({wk,tasks,startBoardPrint,shareBoardPdf,close}){
+  const isMobile = useIsMobile();
+  const R = useDateRange(wk);
+  const [busy,setBusy]=useState(false);
+  const n = useMemo(()=>tasks.filter(t=>{ const d=addDays(t.wk,t.day); return d>=R.lo && d<=R.hi; }).length,[tasks,R.lo,R.hi]);
+  const partial = R.lo!==R.weeks[0] || R.hi!==addDays(R.weeks[R.weeks.length-1],6);
+  const doPdf = async ()=>{ if(busy||!n) return; setBusy(true); try{ await shareBoardPdf(R.weeks,R.lo,R.hi,R.rangeLbl); } finally{ setBusy(false); } };
+  const doPrint = ()=>{ close(); startBoardPrint(R.weeks); };
+  return (
+    <Modal close={close} w={520}>
+      <h3>🖨 Print board — trailer wall</h3>
+      <div className="ovnote">One landscape page per week — crews down the side, the five working days across, wall colors kept. Pick the span first: a single day, a week, or several weeks.</div>
+      <RangeBar R={R}/>
+      <div className="loghdr">{n} task{n===1?"":"s"} · {R.rangeLbl} → {R.weeks.length} page{R.weeks.length===1?"":"s"}</div>
+      {partial && <div className="ovnote">Partial week selected: printed pages cover the whole week{R.weeks.length===1?"":"s"}; the <b>shared PDF</b> leaves days outside {R.rangeLbl} blank.</div>}
+      {!n && <div className="ovnote">Nothing scheduled between {R.rangeLbl}.</div>}
+      <div className="btnrow">
+        {isMobile
+          ? <><button className="cta" disabled={!n||busy} onClick={doPdf}>{busy?"⏳ Building PDF…":"📄 Share board PDF"}</button>
+              <button className="ghost" disabled={!n} onClick={doPrint}>Print</button></>
+          : <><button className="cta" disabled={!n} onClick={doPrint}>Print board</button>
+              <button className="ghost" disabled={!n||busy} onClick={doPdf}>{busy?"⏳ Building PDF…":"📄 Share board PDF"}</button></>}
+        <button className="ghost" onClick={close}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
 /* Shared derivation for one field card — consumed by the DOM PCard AND the PDF renderer
    (drawFieldCardsPdf), so the printed sheet and the shared PDF can never drift apart. */
 function fieldCardModel(cd, crews){
@@ -4686,20 +4765,8 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
   const isMobile = useIsMobile();
   // Date range — the batch is any date span, a single day up to several weeks; presets are
   // anchored on the VIEWED week (Today is absolute). One scope color per batch, as always.
-  const today = new Date().toISOString().slice(0,10);
-  const [from,setFrom]=useState(wk);
-  const [to,setTo]=useState(addDays(wk,6));
-  const [rangeK,setRangeK]=useState("week");
-  const RANGES=[["today","Today",()=>[today,today]],
-    ["week","This week",()=>[wk,addDays(wk,6)]],
-    ["next","Next week",()=>[addDays(wk,7),addDays(wk,13)]],
-    ["2wk","2 weeks",()=>[wk,addDays(wk,13)]],
-    ["4wk","4 weeks",()=>[wk,addDays(wk,27)]],
-    ["custom","Custom…",null]];
-  const pickRange=(k,fn)=>{ setRangeK(k); if(fn){ const [a,b]=fn(); setFrom(a); setTo(b); } };
-  const [lo,hi] = from<=to ? [from,to] : [to,from];
-  const fmtD = iso => new Date(iso+"T12:00:00").toLocaleDateString([],{month:"short",day:"numeric"});
-  const rangeLbl = lo===hi ? fmtD(lo) : fmtD(lo)+" – "+fmtD(hi);
+  const R = useDateRange(wk);
+  const {lo,hi,rangeLbl} = R;
   const rangeTasks = useMemo(()=>tasks.filter(t=>{ const d=addDays(t.wk,t.day); return d>=lo && d<=hi; }),[tasks,lo,hi]);
   const countByScope = useMemo(()=>{ const m={}; rangeTasks.forEach(t=>{ const k=scopeOf(t,crews); m[k]=(m[k]||0)+1; }); return m; },[rangeTasks,crews]);
   const [sck,setSck]=useState(()=>{ const f=Object.keys(SCOPES).find(k=>countByScope[k]); return f||"drainage"; });
@@ -4770,13 +4837,7 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
       <Modal close={close} w={760}>
         <h3>Print field cards — daily crew cards</h3>
         <div className="ovnote">One card per crew per day: the plan is printed (scope band, item, qty · MH · trucks), the foreman fills the actuals, delay reason, and notes on site. Prints on plain white paper — the scope color band prints on the card.</div>
-        <div className="qmode sm rangebar" style={{margin:"6px 0 4px"}}>
-          {RANGES.map(([k,l,fn])=><button key={k} className={rangeK===k?"on":""} onClick={()=>pickRange(k,fn)}>{l}</button>)}
-        </div>
-        {rangeK==="custom" && <div className="logrow" style={{margin:"2px 0 4px"}}>
-          <label>From<input type="date" value={from} onChange={e=>{ if(e.target.value) setFrom(e.target.value); }}/></label>
-          <label>To<input type="date" value={to} onChange={e=>{ if(e.target.value) setTo(e.target.value); }}/></label>
-        </div>}
+        <RangeBar R={R}/>
         <div className="swatchrow">
           {swatchKeys.map(k=>
             <button key={k} className={"swatch"+(sck===k?" on":"")} style={{background:SCOPES[k].bg,color:SCOPES[k].tx}} onClick={()=>setSck(k)}>
