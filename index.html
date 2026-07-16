@@ -4703,9 +4703,13 @@ function fieldCardModel(cd, crews){
     place: ((crew?crew.name:String(t.res||"")).replace(/[^A-Za-z0-9]/g,"").slice(0,3).toUpperCase()||"—")+" "+iso.slice(5,7)+"/"+iso.slice(8,10),
     runLbl: cd.run && cd.run.total>1 ? "Day "+cd.run.idx+" of "+cd.run.total : "" };
 }
-/* The BOARD TRAILER card — the original 4×4in pad design, black ink only, printed onto the
-   scope-COLORED PAPER loaded in the printer (one color batch at a time). Values in mono, the
-   RNGD stencil watermark, corner day-count + MH, placement stamp bottom-right. */
+/* ⚠️ LOCKED — BOARD TRAILER CARD (owner-approved spec, restored from pre-redesign history).
+   Do NOT modify this component, its CSS (.pcard.pad block), or drawPadCardsPdf unless the
+   owner EXPLICITLY asks for board-card changes. Print geometry is regression-checked against
+   reference PDFs (scratchpad/vprintgeo.js pattern).
+   The original 4×4in pad design, black ink only, printed onto the scope-COLORED PAPER loaded
+   in the printer (one color batch at a time). Values in mono, the RNGD stencil watermark,
+   corner day-count + MH, placement stamp bottom-right. */
 function PCardPad({cd,crews}){
   const M = fieldCardModel(cd,crews);
   const {merged,lines} = M;
@@ -4773,21 +4777,37 @@ function PCard({cd,crews}){
    Cell height follows the paper: Letter runs 2×2 cards of 4×5.25in (fills the 8×10.5in content
    area exactly); 11×17 runs 2×4 of 4×4.125in with tightened type. */
 function CardSheets({pages,paper,mode,paperBg,preview,crews}){
-  // Field cards fill the page height (5.25/4.125in); board pad cards are the classic 4×4in.
-  const cols = 2, ch = mode==="pad" ? 4 : (paper==="tabloid" ? 4.125 : 5.25);
+  /* ⚠️ LOCKED — BOARD TRAILER CARD PRINT SPEC (owner-approved). The pad branch below is a
+     verbatim restore of commit 7b9728f ("how it printed the morning of 7/15"): a FIXED 4×4in
+     grid frame — verticals at 0/4/8in full height, horizontals at every 4in row, always drawn
+     even around empty cells (the owner prefers an extra cut over missing guides). Do NOT
+     change this branch, the cut lines, or the sheet geometry for any reason unless the owner
+     explicitly asks for board-card changes. */
+  if(mode==="pad"){
+    const rows = paper==="tabloid"?4:2;
+    return (
+      <div className={"cardsheets"+(preview?" prev":"")}>
+        {pages.map((pg,pi)=>
+          <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")} style={preview&&paperBg?{background:paperBg}:undefined}>
+            <div className="pgrid" style={{gridTemplateRows:"repeat("+rows+",4in)"}}>
+              {pg.map(cd=><PCardPad key={cd.t.id} cd={cd} crews={crews}/>)}
+              {Array.from({length:3},(_,i)=><i key={"v"+i} className="cut v" style={{left:(i*4)+"in"}}/>)}
+              {Array.from({length:rows+1},(_,j)=><i key={"h"+j} className="cut h" style={{top:(j*4)+"in"}}/>)}
+            </div>
+          </div>)}
+      </div>
+    );
+  }
+  // Field cards (white paper) fill the page height — 5.25in cells on Letter, 4.125in on 11×17.
+  const cols = 2, ch = paper==="tabloid" ? 4.125 : 5.25;
   return (
     <div className={"cardsheets"+(preview?" prev":"")}>
       {pages.map((pg,pi)=>{
         const filledRows = Math.ceil(pg.length/cols) || 1;
         return (
-        <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")}
-          style={preview && mode==="pad" && paperBg ? {background:paperBg} : undefined}>
-          {/* Corner trim marks: ink at the extremes of the printable area pins the sheet's
-              bounding box to the full paper, so a print dialog left on "Fit to printable
-              area" resolves to 100% and the cards stay EXACTLY 4in — never rescaled. */}
-          <i className="trim tl"/><i className="trim tr"/>
+        <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")}>
           <div className="pgrid" style={{gridTemplateRows:"repeat("+filledRows+","+ch+"in)"}}>
-            {pg.map(cd=> mode==="pad" ? <PCardPad key={cd.t.id} cd={cd} crews={crews}/> : <PCard key={cd.t.id} cd={cd} crews={crews}/>)}
+            {pg.map(cd=><PCard key={cd.t.id} cd={cd} crews={crews}/>)}
             {/* Vertical cut: only between two cells that are BOTH filled, scoped to that row's own height —
                 a partial row (e.g. col0 filled, col1 blank) gets no cut, so the blank cell stays attached scrap. */}
             {Array.from({length:filledRows},(_,r)=> r*cols+1<pg.length
@@ -4915,7 +4935,7 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
             ? <CardSheets pages={pages} paper={paper} mode={mode} paperBg={scope.bg} crews={crews} preview/>
             : <div className="ovnote" style={{padding:24,textAlign:"center"}}>No {scope.name} tasks between {rangeLbl}.</div>}
         </div>
-        <p className="ovnote deskonly" style={{marginTop:10}}>{mode==="pad"?"Load "+scope.name+" paper.":"Plain white paper."} In the print dialog (check <b>More settings</b>): paper size = {paperName}, <b>Scale = 100%</b> — never "Fit to printable area" — margins Default, headers/footers OFF. Cards are exactly 4"×4" between the trim lines only at 100%.</p>
+        <p className="ovnote deskonly" style={{marginTop:10}}>{mode==="pad"?"Load "+scope.name+" paper.":"Plain white paper."} In the print dialog (check <b>More settings</b>): paper size = {paperName}, <b>Scale = 100%</b> — never "Fit to printable area" — margins Default, headers/footers OFF. Cards are exactly 4"×4" between the cut lines only at 100%.</p>
         {pdfErr && <div className="ovnote" style={{color:"var(--bad)"}}>PDF: {pdfErr}</div>}
         <div className="btnrow">
           {isMobile
@@ -6063,8 +6083,9 @@ function drawFieldCardsPdf(JsPDF, model){
   });
   return doc;
 }
-/* Board trailer pad cards to PDF — the classic 4×4in black-ink layout, meant to be printed
-   onto the scope-colored paper (the PDF itself is ink only, no fills). 2×2 per Letter page,
+/* ⚠️ LOCKED — board-trailer pad cards to PDF (owner-approved spec; change only on the owner's
+   explicit ask). The classic 4×4in black-ink layout, meant to be printed onto the
+   scope-colored paper (the PDF itself is ink only, no fills). 2×2 per Letter page,
    2×4 per 11×17. Shares the model with the DOM PCardPad via fieldCardModel. */
 function drawPadCardsPdf(JsPDF, model){
   const tab = model.paper==="tabloid";
@@ -7698,11 +7719,6 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .cut{position:absolute;background:#000;opacity:.7;pointer-events:none}
 .cut.v{width:.5pt;top:0;bottom:0}
 .cut.h{height:.5pt;left:0;right:0}
-/* Corner trim marks — pin the printed sheet's ink to the full content width so a print
-   dialog left on "Fit to printable area" can never rescale the 4×4 grid. */
-.trim{position:absolute;top:0;width:.14in;height:.5pt;background:#bbb;pointer-events:none;print-color-adjust:exact;-webkit-print-color-adjust:exact}
-.trim.tl{left:0}
-.trim.tr{right:0}
 /* Detailed field card — the printed PLAN up top, hand-fill blocks below. The scope band and the
    dashed Actual box print their own color/fill (print-color-adjust), so plain white paper works.
    Letter cells are 4×5.25in (2×2 fills the 8×10.5in content area); 11×17 cells 4×4.125in (2×4). */
@@ -7764,7 +7780,8 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .cardpage.pt .prsns{gap:.01in .09in}
 .cardpage.pt .pck{font-size:7.2pt}
 .cardpage.pt .pact{gap:.04in;padding:.045in .07in}
-/* BOARD TRAILER pad card — the classic 4×4in, black ink only, printed on scope-COLORED paper
+/* ⚠️ LOCKED — BOARD TRAILER pad card CSS (owner-approved spec). Do not change without the
+   owner's explicit ask. The classic 4×4in, black ink only, printed on scope-COLORED paper
    (background transparent so no ink is wasted tinting the stock; the preview page shows the
    paper color instead). Overrides the field card's flex layout. */
 .pcard.pad{height:4in;padding:.2in .3in .34in;background:transparent;color:#000;
@@ -7839,7 +7856,12 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
  .modal .x,.btnrow,.crewhead select,.crewhead .cta,.prcfg{display:none!important}
  .prcfg,.prcfg *{visibility:hidden}
  .printarea{max-height:none;overflow:visible}
- /* MODE 2 — card-sheet path (Print Cards): show only the body-level 4x4 sheet copy */
+ /* MODE 2 — card-sheet path (Print Cards): show only the body-level 4x4 sheet copy.
+    ⚠️ LOCKED — board-trailer print spec: do not alter without the owner's explicit ask.
+    body/html forced white so a print dialog with "Background graphics" ON can never lay
+    the app's dark background under the sheets (the grey ink-wasting field). */
+ body.print-cards{background:#fff!important}
+ html:has(body.print-cards){background:#fff!important}
  body.print-cards .la-root{padding:0!important;margin:0!important;background:#fff}
  body.print-cards .la-root>*{display:none!important}
  body.print-cards .la-root>.cardsheets{display:block!important}
