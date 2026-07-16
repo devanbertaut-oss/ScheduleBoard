@@ -1487,7 +1487,7 @@ function autoDesc(name, ts, logs, calc, isSub){
 
 /* ============================================================ */
 function useIsMobile(){
-  const q="(max-width:720px)";
+  const q="(max-width:760px)";   // must match the CSS mobile block's breakpoint exactly
   const [m,setM]=useState(()=> typeof window!=="undefined" && window.matchMedia(q).matches);
   useEffect(()=>{ const mq=window.matchMedia(q); const on=()=>setM(mq.matches); mq.addEventListener?.("change",on); return ()=>mq.removeEventListener?.("change",on); },[]);
   return m;
@@ -2427,6 +2427,16 @@ function LookAhead(){
             {label:"📑 Print / PDF reports", run:()=>setModal({type:"print"})},
             {label:pdfBusy?"⏳ Building PDF…":"📄 Share look-ahead PDF", run:()=>{ if(!pdfBusy) shareLookaheadPdf(); }},
           ]}/>
+          {/* Phones: the desktop legend toolbar is hidden, so its board actions live here. */}
+          {isMobile && <MenuBtn label="🧰 Tools" items={[
+            {label:"⛈ Rain-out — push a rained-out day", run:()=>setModal({type:"rainout"})},
+            {label:"🌦 Weather location", run:()=>setModal({type:"wxloc"})},
+            {label:"⤳ Roll forward — unfinished → next week", run:()=>{ const open=tasks.filter(t=>t.wk===wk&&!logs[t.id]).length; if(open && window.confirm(`Roll ${open} unfinished task${open>1?"s":""} from this week into next week?`)){ const n=rollForward(); flash(`Rolled ${n} task${n>1?"s":""} into next week`); } else if(!open){ flash("Nothing unfinished to roll forward"); } }},
+            {label: baseline?("📸 Baseline "+baseline.takenAt.slice(5)+" — retake"):"📸 Take snapshot — freeze the plan", run:takeSnapshot},
+            {label:(reflowOn?"✓ ":"")+"Re-flow forecast — catch-up vs MH caps", run:()=>{ setReflowOn(v=>!v); flash(reflowOn?"Re-flow off":"Re-flow on — cards show forecast catch-up"); }},
+            ...(reflowOn?[{label:"Commit re-flow → plan", run:()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}]:[]),
+            {label:"🎨 Scope legend — color standard", run:()=>setModal({type:"legend"})},
+          ]}/>}
           </>}
           {effTab==="catalog" && <button onClick={()=>setModal({type:"data"})}>Data</button>}
           {(effTab==="progress"||effTab==="invoices") && <button onClick={()=>setModal({type:"docsimport", kind: effTab==="invoices"?"inv":"ts"})}>Import docs</button>}
@@ -2459,7 +2469,9 @@ function LookAhead(){
       </div>}
 
       {effTab==="board" && <>
-      <div className="legend no-print">
+      {/* Desktop board toolbar — on phones these actions live in the 🧰 Tools menu instead,
+          so nothing overflows the compact mobile header. */}
+      {!isMobile && <div className="legend no-print">
         <span className="legendswatches">
           {Object.keys(SCOPES).filter(k=>k!=="gen").map(k=><span key={k}><i style={{background:SCOPES[k].bg}}/><em className="lgcode">{SCOPES[k].code}</em>{SCOPES[k].name}</span>)}
         </span>
@@ -2477,7 +2489,7 @@ function LookAhead(){
         <button className="snapbtn" title="Mark a day rained out — every crew's work from that day pushes one working day, and the day's EOS records a rain-out" onClick={()=>setModal({type:"rainout"})}>⛈ Rain-out</button>
         <button className="snapbtn" title="Set where the day-by-day forecast is pulled from" onClick={()=>setModal({type:"wxloc"})}>🌦 Weather loc</button>
         <span className="hint">drag a card to move it · ⌘/Ctrl-click to multi-select · Re-flow forecasts catch-up vs each crew's MH cap</span>
-      </div>
+      </div>}
       {rainRisk && <div className="wxnudge no-print">
         <span className="wxntag">⛈ {DAYS[rainRisk.day]} {dLabel(mondayOf(rainRisk.date),(new Date(rainRisk.date+"T12:00:00").getDay()+6)%7)}</span>
         <span className="wxntxt"><b>{rainRisk.rain}% rain</b> forecast — {rainRisk.n} task{rainRisk.n>1?"s":""} scheduled that day.</span>
@@ -2542,7 +2554,8 @@ function LookAhead(){
       {modal?.type==="print"   && <PrintModal {...{crews,weekTasks,tasks,logs,notes,siteRows,taskCalc,installedFor,fcst,cfg,umOverrides,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="cards"   && <CardExportModal {...{weekTasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
-      {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
+      {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} tasks={tasks} logs={logs} deps={deps} crews={crews} resliceRun={resliceRun} pullRunSuccessors={pullRunSuccessors} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
+      {modal?.type==="move"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <MoveSheet t={t} crews={crews} upTask={upTask} close={()=>setModal(null)}/>; })()}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close:()=>setModal(null)}}/>}
       {modal?.type==="docsimport" && <DocsImportModal {...{kind:modal.kind||"ts",docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB:Math.round(((syncRef.current.latestJson||"").length)/1024),close:()=>setModal(null)}}/>}
       {modal?.type==="drill"   && <DrillDownModal {...{docs,dOff:modal.dOff,code:modal.code,close:()=>setModal(null)}}/>}
@@ -2852,7 +2865,10 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         {tks.length ? tks.map(t=>
           <div className="mcard" key={t.id}>
             <Card t={t} c={taskCalc(t)} canDrag selected={sel&&sel.has(t.id)} cardStyle={cardStyle} resKind={kind} run={runDayMap&&runDayMap[t.id]} dep={depMap&&depMap[runKey(t)]} onOpen={()=>setModal({type:"task",id:t.id})} onLog={()=>setModal({type:"qlog",id:t.id})}/>
-            <button className="mcardlog" onClick={()=>setModal({type:"qlog",id:t.id})}>{(taskCalc(t).done)?"✓ Logged — edit actuals":"✎ Log actuals"}</button>
+            <div className="mcardbtns">
+              <button className="mcardlog" onClick={()=>setModal({type:"qlog",id:t.id})}>{(taskCalc(t).done)?"✓ Logged — edit actuals":"✎ Log actuals"}</button>
+              <button className="mcardmove" onClick={()=>setModal({type:"move",id:t.id})} title="Move this day to another day, week, or crew">⇄ Move</button>
+            </div>
           </div>)
           : <div className="mempty">Nothing scheduled — tap Schedule.</div>}
       </div>
@@ -2875,6 +2891,8 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
         </div>
         <button className="mdaystep" onClick={()=>setDay(d=>Math.min(6,d+1))} disabled={day===6} aria-label="Next day">›</button>
       </div>
+      {(()=>{ const dts=weekTasks.filter(t=>t.day===day); const mh=dts.reduce((s,t)=>s+taskCalc(t).planMH,0);
+        return <div className="mdaysum">{dts.length? dts.length+" task"+(dts.length===1?"":"s")+" · "+fmtN(mh,mh%1?1:0)+" MH planned" : "Nothing scheduled this day"}</div>; })()}
       <div className="mcardtoggle">
         <span>HQ</span>
         <button role="switch" aria-checked={cardStyle==="highlighter"} className={"mswitch"+(cardStyle==="highlighter"?" on":"")}
@@ -3280,6 +3298,88 @@ function BlurInput({value,onCommit,...props}){
 }
 
 /* ============ TASK MODAL — two tabs: Details & Log / Edit ============ */
+/* ===== Run-aware logging, shared by TaskModal's log tab and the mobile quick-log ===== */
+/* computeRunFix derives the run recap plus the recovery chips for the qty currently being
+   typed; RunFixUI renders them; applyRunFix commits the chosen fix alongside the log write
+   (prorate remaining / add catch-up days / close early + pull successors). The parent owns
+   the `fix` selection state; an in-progress save must never call applyRunFix. */
+function computeRunFix(t, it, curQty, tasks, logs, deps, crews){
+  const myKey = runKey(t);
+  const runMem = tasks.filter(x=>runKey(x)===myKey).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
+  const runN = runMem.length, um = it[CI.UM];
+  const dayIdx = runMem.findIndex(m=>m.id===t.id)+1;
+  const runQtot = runMem.reduce((s,m)=>s+(+m.qty||0),0);
+  const runActual = runMem.filter(m=>logs[m.id]!=null).reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
+  const othersActual = runMem.filter(m=>m.id!==t.id && logs[m.id]).reduce((s,m)=>s+((logs[m.id].qty)||0),0);
+  const openAfter = runMem.filter(m=>m.id!==t.id && logs[m.id]==null).length;
+  const remAfter = curQty==null?null:Math.max(0, Math.round((runQtot-othersActual-curQty)*100)/100);
+  const openPlan = Math.round(runMem.filter(m=>logs[m.id]==null).reduce((s,m)=>s+(+m.qty||0),0)*100)/100;
+  const crewOf = crews.find(c=>c.id===t.res);
+  const capMH = (crewOf && crewOf.capMH>0) ? crewOf.capMH : 68;
+  const runRate = runMem.length ? Math.round(Math.max(...runMem.map(m=>+m.qty||0))*100)/100 : 0;
+  const runFinishWdi = runMem.length ? Math.max(...runMem.map(m=>wdi(m.wk,m.day))) : null;
+  const succCount = Object.keys(deps).filter(dk=>(deps[dk]||[]).includes(myKey)).length;
+  const chips=[];
+  if(runN>1 && curQty!=null && openAfter>0 && Math.abs(curQty-t.qty)>0.01){
+    const fN=(v,d)=>fmtN(v,v%1?(d==null?1:d):0);
+    if(remAfter<=0.01){
+      chips.push({id:"close", why:"Run complete "+(openAfter===1?"a day":openAfter+" days")+" early",
+        title:"Close the run — remove the "+(openAfter===1?"remaining card":openAfter+" remaining cards"),
+        sub:"the run's total is in the ground · successors stay where they are"});
+      if(succCount>0) chips.push({id:"closepull",
+        title:"Close the run + pull "+succCount+" successor"+(succCount===1?"":"s")+" left",
+        sub:"linked runs slide up to start right after the new finish (their other predecessors still hold them)"});
+      chips.push({id:"none", title:"Keep the remaining day"+(openAfter===1?"":"s"), sub:"hold as float — nothing moves"});
+    } else if(curQty<t.qty-0.01){
+      const pr=remAfter/openAfter, prMH=pr*it[CI.MH];
+      chips.push({id:"prorate", why:"Day came in short — what happens to the remaining "+fN(remAfter)+" "+um+"?",
+        title:"Prorate over the "+openAfter+" day"+(openAfter===1?"":"s")+" left → "+fN(pr)+" "+um+"/day",
+        sub:fN(prMH,0)+" MH/day"+(prMH>capMH+0.5?" — OVER the "+capMH+" MH cap":" (cap "+capMH+")")+" · finish unchanged", warn:prMH>capMH+0.5});
+      const extra=Math.max(0, Math.ceil(remAfter/Math.max(runRate,0.0001))-openAfter);
+      if(extra>0){ const nf=fromWdi(runFinishWdi+extra), r2=remAfter/(openAfter+extra);
+        chips.push({id:"addday", title:"Add "+(extra===1?"a day":extra+" days")+" to catch up → "+fN(r2)+" "+um+"/day",
+          sub:fN(r2*it[CI.MH],0)+" MH/day · finish moves to "+DAYS[nf.day]+" "+dLabel(nf.wk,nf.day)+(succCount?" · "+succCount+" successor"+(succCount===1?"":"s")+" push with it":"")}); }
+      chips.push({id:"none", title:"Leave the plan alone", sub:"remaining days stay as drawn — the run will under-run"});
+    } else {
+      const pr=remAfter/openAfter;
+      chips.push({id:"prorate", why:"Ahead of plan — "+fN(remAfter)+" "+um+" left over "+openAfter+" day"+(openAfter===1?"":"s"),
+        title:"Lighten the remaining day"+(openAfter===1?"":"s")+" → "+fN(pr)+" "+um+"/day",
+        sub:fN(pr*it[CI.MH],0)+" MH/day · finish unchanged"});
+      chips.push({id:"none", title:"Leave the plan alone", sub:"keep the drawn rate — the run may finish early"});
+    }
+  }
+  return {runN, dayIdx, um, runQtot, runActual, openAfter, openPlan, remAfter, chips};
+}
+const runFixEff = (rf,fix) => (rf && rf.chips.some(c=>c.id===fix)) ? fix : "none";
+const runFixLabel = (rf,fix,base) => { const e=runFixEff(rf,fix);
+  return e==="close"||e==="closepull" ? "Save + close run" : e!=="none" ? "Save + re-slice" : base; };
+function applyRunFix(t, rf, fix, qty, api){
+  const eff = runFixEff(rf,fix);
+  if(eff==="none") return;
+  const tl={[t.id]: +qty||0};
+  if(eff==="prorate") api.resliceRun(t,{fromActuals:true, days:rf.runN, treatLogged:tl});
+  else if(eff==="addday") api.resliceRun(t,{fromActuals:true, treatLogged:tl});
+  else { api.resliceRun(t,{closeRun:true, treatLogged:tl}); if(eff==="closepull") api.pullRunSuccessors(runKey(t)); }
+}
+function RunBarUI({rf}){
+  if(rf.runN<2) return null;
+  return <div className="runbar">
+    <b>{fmtN(rf.runQtot,rf.runQtot%1?1:0)} {rf.um}</b> run<i>·</i>{fmtN(rf.runActual,rf.runActual%1?1:0)} in the ground<i>·</i>
+    <b className={rf.openPlan>0.01?"rleft":""}>{fmtN(rf.openPlan,rf.openPlan%1?1:0)} still scheduled</b><i>·</i>{rf.openAfter} open day{rf.openAfter===1?"":"s"} after this
+    <span className="rtick"><i style={{width:Math.min(100,(rf.runActual+rf.openPlan)>0?rf.runActual/(rf.runActual+rf.openPlan)*100:0)+"%"}}/></span>
+  </div>;
+}
+function RunChipsUI({rf, fix, setFix}){
+  const effFix = runFixEff(rf,fix);
+  if(!rf.chips.length) return null;
+  return <div className={"fixchips"+(rf.remAfter<=0.01?" pull":"")}>
+    {rf.chips[0].why && <span className="fixwhy">{rf.chips[0].why}</span>}
+    {rf.chips.map(ch=>
+      <button key={ch.id} type="button" className={"fixchip"+(effFix===ch.id?" on":"")} onClick={()=>setFix(ch.id)}>
+        <i className="rb"/><span><b>{ch.title}</b><small className={ch.warn?"warn":""}>{ch.sub}</small></span>
+      </button>)}
+  </div>;
+}
 function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close}){
   const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
@@ -3410,62 +3510,20 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
             </tbody>
           </table>
         );
-        /* Run-aware logging: the recap bar shows the whole run, and when the qty being punched
-           leaves the run off-plan, one-tap recovery chips appear — the chosen fix commits WITH
-           the save (prorate remaining / add days at plan rate / close early + pull successors). */
+        /* Run-aware logging — shared computeRunFix/RunFixUI/applyRunFix (defined above TaskModal),
+           also mounted by the mobile quick-log. The chosen fix commits WITH the final save. */
         const um = it[CI.UM];
-        const dayIdx = runMem.findIndex(m=>m.id===t.id)+1;
-        const othersActual = runMem.filter(m=>m.id!==t.id && logs[m.id]).reduce((s,m)=>s+((logs[m.id].qty)||0),0);
-        const openAfter = runMem.filter(m=>m.id!==t.id && logs[m.id]==null).length;
         const curQty = L.qty===""?null:(+L.qty||0);
-        const remAfter = curQty==null?null:Math.max(0, Math.round((runQtot-othersActual-curQty)*100)/100);
-        const openPlan = Math.round(runMem.filter(m=>logs[m.id]==null).reduce((s,m)=>s+(+m.qty||0),0)*100)/100;
-        const chips=[];
-        if(runN>1 && curQty!=null && openAfter>0 && Math.abs(curQty-t.qty)>0.01){
-          const fN=(v,d)=>fmtN(v,v%1?(d==null?1:d):0);
-          if(remAfter<=0.01){
-            chips.push({id:"close", why:"Run complete "+(openAfter===1?"a day":openAfter+" days")+" early",
-              title:"Close the run — remove the "+(openAfter===1?"remaining card":openAfter+" remaining cards"),
-              sub:"the run's total is in the ground · successors stay where they are"});
-            if(succCount>0) chips.push({id:"closepull",
-              title:"Close the run + pull "+succCount+" successor"+(succCount===1?"":"s")+" left",
-              sub:"linked runs slide up to start right after the new finish (their other predecessors still hold them)"});
-            chips.push({id:"none", title:"Keep the remaining day"+(openAfter===1?"":"s"), sub:"hold as float — nothing moves"});
-          } else if(curQty<t.qty-0.01){
-            const pr=remAfter/openAfter, prMH=pr*it[CI.MH];
-            chips.push({id:"prorate", why:"Day came in short — what happens to the remaining "+fN(remAfter)+" "+um+"?",
-              title:"Prorate over the "+openAfter+" day"+(openAfter===1?"":"s")+" left → "+fN(pr)+" "+um+"/day",
-              sub:fN(prMH,0)+" MH/day"+(prMH>capMH+0.5?" — OVER the "+capMH+" MH cap":" (cap "+capMH+")")+" · finish unchanged", warn:prMH>capMH+0.5});
-            const extra=Math.max(0, Math.ceil(remAfter/Math.max(runRate,0.0001))-openAfter);
-            if(extra>0){ const nf=fromWdi(runFinishWdi+extra), r2=remAfter/(openAfter+extra);
-              chips.push({id:"addday", title:"Add "+(extra===1?"a day":extra+" days")+" to catch up → "+fN(r2)+" "+um+"/day",
-                sub:fN(r2*it[CI.MH],0)+" MH/day · finish moves to "+DAYS[nf.day]+" "+dLabel(nf.wk,nf.day)+(succCount?" · "+succCount+" successor"+(succCount===1?"":"s")+" push with it":"")}); }
-            chips.push({id:"none", title:"Leave the plan alone", sub:"remaining days stay as drawn — the run will under-run"});
-          } else {
-            const pr=remAfter/openAfter;
-            chips.push({id:"prorate", why:"Ahead of plan — "+fN(remAfter)+" "+um+" left over "+openAfter+" day"+(openAfter===1?"":"s"),
-              title:"Lighten the remaining day"+(openAfter===1?"":"s")+" → "+fN(pr)+" "+um+"/day",
-              sub:fN(pr*it[CI.MH],0)+" MH/day · finish unchanged"});
-            chips.push({id:"none", title:"Leave the plan alone", sub:"keep the drawn rate — the run may finish early"});
-          }
-        }
-        const effFix = chips.some(c=>c.id===fix) ? fix : "none";
+        const rf = computeRunFix(t, it, curQty, tasks, logs, deps, crews);
         const doSave = () => {
           saveLog(t.id,L.qty,L.mh,true,L.reason);
-          const tl={[t.id]:+L.qty||0};
-          if(effFix==="prorate") resliceRun(t,{fromActuals:true, days:runN, treatLogged:tl});
-          else if(effFix==="addday") resliceRun(t,{fromActuals:true, treatLogged:tl});
-          else if(effFix==="close"||effFix==="closepull"){ resliceRun(t,{closeRun:true, treatLogged:tl}); if(effFix==="closepull") pullRunSuccessors(myKey); }
+          applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors});
           close();
         };
         const logSection = (
           <>
-            <div className="loghdr">Log — {runN>1?`day ${dayIdx} of ${runN} · `:""}plan {fmtN(t.qty)} {um} / {fmtN(t.qty*it[CI.MH])} MH</div>
-            {runN>1 && <div className="runbar">
-              <b>{fmtN(runQtot,runQtot%1?1:0)} {um}</b> run<i>·</i>{fmtN(runActual,runActual%1?1:0)} in the ground<i>·</i>
-              <b className={openPlan>0.01?"rleft":""}>{fmtN(openPlan,openPlan%1?1:0)} still scheduled</b><i>·</i>{openAfter} open day{openAfter===1?"":"s"} after this
-              <span className="rtick"><i style={{width:Math.min(100,(runActual+openPlan)>0?runActual/(runActual+openPlan)*100:0)+"%"}}/></span>
-            </div>}
+            <div className="loghdr">Log — {runN>1?`day ${rf.dayIdx} of ${runN} · `:""}plan {fmtN(t.qty)} {um} / {fmtN(t.qty*it[CI.MH])} MH</div>
+            <RunBarUI rf={rf}/>
             {L.staTask && <div className="logrow">
               <label>Station reached<BlurInput type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached} onCommit={v=>{setReached(v); L.applyReached(v);}}/></label>
               <div className="gen">→ actual qty<b>{L.qty?fmtN(+L.qty,(+L.qty)%1?1:0)+" "+um:"—"}</b></div>
@@ -3476,15 +3534,9 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
               <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
                 <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
             </div>
-            {chips.length>0 && <div className={"fixchips"+(remAfter<=0.01?" pull":"")}>
-              {chips[0].why && <span className="fixwhy">{chips[0].why}</span>}
-              {chips.map(ch=>
-                <button key={ch.id} type="button" className={"fixchip"+(effFix===ch.id?" on":"")} onClick={()=>setFix(ch.id)}>
-                  <i className="rb"/><span><b>{ch.title}</b><small className={ch.warn?"warn":""}>{ch.sub}</small></span>
-                </button>)}
-            </div>}
+            <RunChipsUI rf={rf} fix={fix} setFix={setFix}/>
             <div className="btnrow">
-              <button className="cta" onClick={doSave}>{effFix==="close"||effFix==="closepull"?"Save + close run":effFix!=="none"?"Save + re-slice":"Save"}</button>
+              <button className="cta" onClick={doSave}>{runFixLabel(rf,fix,"Save")}</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>Save as in-progress</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true,""); close();}}>Log as planned ✓</button>
               <span className="sp"/>
@@ -6441,18 +6493,22 @@ function useLogEntry(t, it, lg){
   const short = qty!=="" && +qty < (+t.qty||0)-1e-9;   // logged less than planned → prompt a reason
   return { qty, mh, reason, setReason, short, setQty, setMh, staTask, endSta:t.sta?t.sta[1]:null, applyReached, fillPlan, planMH:()=>r1(t.qty*mhU) };
 }
-function QuickLogModal({t,c,lg,saveLog,openFull,close}){
+function QuickLogModal({t,c,lg,saveLog,tasks,logs,deps,crews,resliceRun,pullRunSuccessors,openFull,close}){
   const it=c.it;
   const L=useLogEntry(t,it,lg);
   const [reached,setReached]=useState("");
+  const [fix,setFix]=useState("none");   // run-recovery chip — same system as TaskModal's log tab
   const scope=SCOPES[scopeKeyOf(it[CI.CC])];
+  const curQty = L.qty===""?null:(+L.qty||0);
+  const rf = computeRunFix(t, it, curQty, tasks, logs, deps, crews);
   return (
     <Modal close={close} w={420}>
       <div className="qlhead">
         <span className="cscope" style={{background:scope.bg,color:scope.tx}}>{scope.code}</span>
         <h3 style={{margin:0}}>{it[CI.TASK]}</h3>
       </div>
-      <div className="qlplan">Plan {fmtN(t.qty)} {it[CI.UM]} · {fmtN(t.qty*it[CI.MH])} MH{t.loc?" · "+t.loc:""}</div>
+      <div className="qlplan">Plan {fmtN(t.qty)} {it[CI.UM]} · {fmtN(t.qty*it[CI.MH])} MH{rf.runN>1?` · day ${rf.dayIdx} of ${rf.runN}`:""}{t.loc?" · "+t.loc:""}</div>
+      <RunBarUI rf={rf}/>
       {L.staTask && <div className="logrow">
         <label>Station reached<input type="text" inputMode="decimal" placeholder={"e.g. "+staFmt(L.endSta)} value={reached}
           onChange={e=>setReached(e.target.value)} onBlur={()=>L.applyReached(reached)}
@@ -6467,12 +6523,50 @@ function QuickLogModal({t,c,lg,saveLog,openFull,close}){
         <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
           <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
       </div>
+      <RunChipsUI rf={rf} fix={fix} setFix={setFix}/>
       <button className="qlfill" onClick={()=>{ saveLog(t.id, t.qty, L.planMH(), true, ""); close(); }}>Log as planned ✓</button>
       <div className="btnrow">
-        <button className="cta big" onClick={()=>{saveLog(t.id,L.qty,L.mh,true,L.reason); close();}}>Save — done ✓</button>
+        <button className="cta big" onClick={()=>{ saveLog(t.id,L.qty,L.mh,true,L.reason); applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors}); close(); }}>{runFixLabel(rf,fix,"Save — done ✓")}</button>
         <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>In-progress</button>
       </div>
       <button className="qlmore" onClick={openFull}>Full details &amp; cost →</button>
+    </Modal>
+  );
+}
+/* Tap-first reschedule — the mobile answer to desktop drag. Moves ONE day-card via the same
+   upTask path as TaskModal's Edit tab, so run semantics and predecessor pushes are identical. */
+function MoveSheet({t,crews,upTask,close}){
+  const it=itemFor(t);
+  const [wkV,setWkV]=useState(t.wk);
+  const go = patch => { upTask(t.id, patch); close(); };
+  return (
+    <Modal close={close} w={430}>
+      <h3>⇄ Move — {it[CI.TASK]}</h3>
+      <div className="ovnote">Moves just this day-card ({fmtN(t.qty,t.qty%1?1:0)} {it[CI.UM]}). If the move delays the run, linked successors push automatically.</div>
+      <div className="mvwk">
+        <button className="ghost sm" onClick={()=>setWkV(addDays(wkV,-7))} aria-label="Previous week">‹</button>
+        <b>{wkTitle(wkV)}{wkV===t.wk?" · current":""}</b>
+        <button className="ghost sm" onClick={()=>setWkV(addDays(wkV,7))} aria-label="Next week">›</button>
+      </div>
+      <div className="mvdays">
+        {DAYS.map((d,i)=>{
+          const here = wkV===t.wk && i===t.day;
+          return <button key={d} className={"mvday"+(here?" on":"")+(i>4?" wknd":"")} disabled={here}
+            onClick={()=>go({wk:wkV, day:i})}>{d}<em>{dLabel(wkV,i)}</em></button>;
+        })}
+      </div>
+      <div className="logrow">
+        <label>Crew / sub (tap to hand off)
+          <select value={t.res} onChange={e=>{ if(e.target.value!==t.res) go({res:e.target.value}); }}>
+            {crews.map(c=><option key={c.id} value={c.id}>{c.name}{c.type==="sub"?" (sub)":""}</option>)}
+          </select></label>
+      </div>
+      <div className="btnrow">
+        <button className="ghost" onClick={()=>{ const w=fromWdi(wdi(t.wk,Math.min(t.day,4))+1); go({wk:w.wk, day:w.day}); }}>+1 working day</button>
+        <button className="ghost" onClick={()=>go({wk:addDays(t.wk,7)})}>Next week ⤳</button>
+        <span className="sp"/>
+        <button className="ghost" onClick={close}>Cancel</button>
+      </div>
     </Modal>
   );
 }
@@ -6894,6 +6988,23 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .clog.done{background:var(--good)}
 .card:hover .clog,.card:focus-within .clog{opacity:.95;pointer-events:auto}
 .mcard .clog{display:none}   /* mobile uses the full-width .mcardlog button instead */
+/* Log + Move sit side by side under each mobile card — log stays the big primary action. */
+.mcardbtns{display:flex;gap:6px;margin-top:2px}
+.mcardbtns .mcardlog{margin-top:0;flex:1;width:auto}
+.mcardmove{flex:none;background:var(--pn2);border:1px solid var(--ln);color:var(--tx);border-radius:9px;
+  padding:0 14px;font:700 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer;min-height:40px}
+.mcardmove:active{background:var(--pn)}
+/* MoveSheet — tap a day to commit the move */
+.mvwk{display:flex;align-items:center;justify-content:center;gap:12px;margin:10px 0 8px}
+.mvwk b{font:700 14px "Saira Condensed";letter-spacing:.04em}
+.mvdays{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:10px}
+.mvday{min-height:48px;background:var(--pn2);border:1px solid var(--ln);border-radius:9px;color:var(--tx);
+  font:700 12px "Saira Condensed";letter-spacing:.04em;cursor:pointer;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:2px;padding:4px 2px}
+.mvday em{font:600 10px "IBM Plex Mono";color:var(--dm);font-style:normal}
+.mvday.wknd{opacity:.7}
+.mvday.on{border-color:var(--acc);opacity:.55;cursor:default}
+.mvday:not(.on):hover{border-color:var(--acc)}
 .mcardlog{width:100%;margin-top:2px;background:var(--brand);border:0;color:#fff;border-radius:9px;
   padding:9px 12px;font:700 13px "Saira Condensed";letter-spacing:.04em;cursor:pointer;min-height:40px}
 .mcardlog:active{filter:brightness(.92)}
@@ -7144,8 +7255,11 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .mday b{display:block;font:600 16px "IBM Plex Mono";color:var(--tx)}
 .mday.on{background:var(--brand);border-color:var(--brand)}
 .mday.on span,.mday.on b{color:#fff}
+.mday.today:not(.on){border-color:var(--brand);box-shadow:0 0 0 1px var(--brand)}
 .mday.today:not(.on) b{color:var(--brand)}
 .mday.wknd:not(.on){opacity:.7}
+/* selected-day summary line under the day strip */
+.mdaysum{text-align:center;font:600 11.5px "IBM Plex Mono";color:var(--dm);margin:2px 0 8px}
 .mwx{display:block;font-size:13px;font-style:normal;line-height:1}
 .mcardtoggle{display:flex;align-items:center;justify-content:center;gap:8px;margin:2px 0 10px;font:700 11px "Saira Condensed";letter-spacing:.08em;text-transform:uppercase;color:var(--dm)}
 .mswitch{position:relative;width:42px;height:24px;border-radius:12px;background:var(--pn2);border:1px solid var(--ln);cursor:pointer;flex:none;padding:0}
@@ -7161,7 +7275,8 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 
 /* ===== responsive (phones/tablets ≤760px) ===== */
 @media (max-width:760px){
- .topzone{max-height:162px}
+ /* topzone auto-sizes on mobile — the desktop legend toolbar is gated off (🧰 Tools menu instead),
+    so the header is just brand + weeknav + the actions grid and never spills into the board. */
  .top{gap:10px;padding:10px 12px 8px}
  .brandlogo{height:22px}
  .brandmicro{display:none}
@@ -7213,11 +7328,8 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
  .card{padding:8px 10px}
  .chip{min-height:34px}
  /* Phase 10 — field polish: comfortable 44px tap targets + touch-friendly new UI */
- .weeknav button,.actions button,.btn,.tabs button,.mlog,.mqlog,.daychip,.snapbtn{min-height:44px}
- .mlog,.mqlog{font-size:14px;padding:11px 12px;border-radius:10px}
- .mqlog{width:100%}
- .wxstrip{margin:8px 12px 0;padding:6px 10px}
- .wxday{min-width:52px}
+ .weeknav button,.actions button,.btn,.tabs button,.mlog,.daychip,.snapbtn,.mcardmove,.mvday{min-height:44px}
+ .mlog{font-size:14px;padding:11px 12px;border-radius:10px}
  .daychips{gap:6px}.daychip{min-width:56px}
  .tchart{height:120px}
  .srctbl input{font-size:16px}
