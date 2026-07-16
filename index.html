@@ -4782,6 +4782,10 @@ function CardSheets({pages,paper,mode,paperBg,preview,crews}){
         return (
         <div key={pi} className={"cardpage "+(paper==="tabloid"?"pt":"pl")}
           style={preview && mode==="pad" && paperBg ? {background:paperBg} : undefined}>
+          {/* Corner trim marks: ink at the extremes of the printable area pins the sheet's
+              bounding box to the full paper, so a print dialog left on "Fit to printable
+              area" resolves to 100% and the cards stay EXACTLY 4in — never rescaled. */}
+          <i className="trim tl"/><i className="trim tr"/>
           <div className="pgrid" style={{gridTemplateRows:"repeat("+filledRows+","+ch+"in)"}}>
             {pg.map(cd=> mode==="pad" ? <PCardPad key={cd.t.id} cd={cd} crews={crews}/> : <PCard key={cd.t.id} cd={cd} crews={crews}/>)}
             {/* Vertical cut: only between two cells that are BOTH filled, scoped to that row's own height —
@@ -4911,7 +4915,7 @@ function CardExportModal({tasks,runDayMap,crews,taskCalc,cfg,wk,close}){
             ? <CardSheets pages={pages} paper={paper} mode={mode} paperBg={scope.bg} crews={crews} preview/>
             : <div className="ovnote" style={{padding:24,textAlign:"center"}}>No {scope.name} tasks between {rangeLbl}.</div>}
         </div>
-        <p className="ovnote deskonly" style={{marginTop:10}}>{mode==="pad"?"Load "+scope.name+" paper.":"Plain white paper."} In the print dialog: paper size = {paperName}, Scale 100%, default margins, headers/footers OFF.</p>
+        <p className="ovnote deskonly" style={{marginTop:10}}>{mode==="pad"?"Load "+scope.name+" paper.":"Plain white paper."} In the print dialog (check <b>More settings</b>): paper size = {paperName}, <b>Scale = 100%</b> — never "Fit to printable area" — margins Default, headers/footers OFF. Cards are exactly 4"×4" between the trim lines only at 100%.</p>
         {pdfErr && <div className="ovnote" style={{color:"var(--bad)"}}>PDF: {pdfErr}</div>}
         <div className="btnrow">
           {isMobile
@@ -7694,6 +7698,11 @@ tr.altrow .cell.rainy{background:linear-gradient(rgba(70,110,178,.17),rgba(70,11
 .cut{position:absolute;background:#000;opacity:.7;pointer-events:none}
 .cut.v{width:.5pt;top:0;bottom:0}
 .cut.h{height:.5pt;left:0;right:0}
+/* Corner trim marks — pin the printed sheet's ink to the full content width so a print
+   dialog left on "Fit to printable area" can never rescale the 4×4 grid. */
+.trim{position:absolute;top:0;width:.14in;height:.5pt;background:#bbb;pointer-events:none;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+.trim.tl{left:0}
+.trim.tr{right:0}
 /* Detailed field card — the printed PLAN up top, hand-fill blocks below. The scope band and the
    dashed Actual box print their own color/fill (print-color-adjust), so plain white paper works.
    Letter cells are 4×5.25in (2×2 fills the 8×10.5in content area); 11×17 cells 4×4.125in (2×4). */
