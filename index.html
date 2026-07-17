@@ -2128,8 +2128,11 @@ function LookAhead(){
       // log write is still in this click's queue (the inline recovery chips save + re-slice together).
       const lgOf = m => (edit.treatLogged && edit.treatLogged[m.id]!==undefined) ? {qty:edit.treatLogged[m.id]} : logs[m.id];
       const locked = members.filter(m=>lgOf(m)!=null), open = members.filter(m=>lgOf(m)==null);
-      if(!open.length) return ts;                                   // all logged → no-op
-      if(edit.closeRun) return [...ts.filter(x=>runKey(x)!==k), ...locked];   // run finished early — drop the unlogged tail
+      // All days logged: a plain re-slice is a no-op, but the catch-up mode (fromActuals) may
+      // still EXTEND the run — e.g. a single-day card logged short grows a next-working-day
+      // card carrying the remainder (freeSlots below already lands past the locked day).
+      if(!open.length && !edit.fromActuals) return ts;
+      if(edit.closeRun) return open.length ? [...ts.filter(x=>runKey(x)!==k), ...locked] : ts;   // run finished early — drop the unlogged tail
       const lockedWdis = new Set(locked.map(m=>wdi(m.wk,m.day)));
       const lockedQty = locked.reduce((s,m)=>s+(+m.qty||0),0);
       const lastLocked = locked.length ? locked.reduce((a,b)=>wdi(a.wk,a.day)>wdi(b.wk,b.day)?a:b) : null;
@@ -3364,6 +3367,17 @@ function computeRunFix(t, it, curQty, tasks, logs, deps, crews){
         sub:fN(pr*it[CI.MH],0)+" MH/day · finish unchanged"});
       chips.push({id:"none", title:"Leave the plan alone", sub:"keep the drawn rate — the run may finish early"});
     }
+  }
+  // Single-day card logged SHORT: offer to extend the card one working day and push the
+  // remainder onto it (same applyRunFix "addday" → resliceRun fromActuals path; the run's
+  // finish moves, so linked successors push automatically).
+  else if(runN===1 && curQty!=null && curQty<t.qty-0.01){
+    const rem=Math.round((t.qty-curQty)*100)/100;
+    const nx=fromWdi(wdi(t.wk,t.day)+1);
+    chips.push({id:"addday", why:"Day came in short — push the rest?",
+      title:"Extend to "+DAYS[nx.day]+" "+dLabel(nx.wk,nx.day)+" — push the remaining "+fmtN(rem,rem%1?1:0)+" "+um,
+      sub:"adds one working day · "+fmtN(rem*it[CI.MH],0)+" MH · linked successors push automatically"});
+    chips.push({id:"none", title:"Leave it — log the shortfall", sub:"card stays one day; the plan under-runs"});
   }
   return {runN, dayIdx, um, runQtot, runActual, openAfter, openPlan, remAfter, chips};
 }
