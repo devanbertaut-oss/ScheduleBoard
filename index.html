@@ -4024,15 +4024,33 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,holidays,add
           </tbody>
         </table>}
 
-        <div className="btnrow">
-          <button className="cta" disabled={!useQty} onClick={()=>{
+        {/* Same-crew collision: adding onto a day this crew already works needs an explicit
+            call — run both concurrently (stack the day) or start after the occupant finishes.
+            "After" = first working day past the occupying run's last card (single-day task →
+            next day), cascading past back-to-back runs, and formally linked as a successor. */}
+        {(()=>{
+          const occ=(()=>{
+            const hit=tasks.filter(t=>t.res===res && t.wk===wk && t.day===day);
+            if(!hit.length) return null;
+            const k=runKey(hit[0]);
+            const mem=tasks.filter(t=>runKey(t)===k);
+            let after=Math.max(...mem.map(m=>wdi(m.wk,m.day)))+1;
+            for(let g=0; g<10; g++){                     // skip past back-to-back runs too
+              const w2=fromWdi(after);
+              const nxt=tasks.filter(t=>t.res===res && t.wk===w2.wk && t.day===w2.day);
+              if(!nxt.length) break;
+              after=Math.max(...tasks.filter(t=>runKey(t)===runKey(nxt[0])).map(m=>wdi(m.wk,m.day)))+1;
+            }
+            return {k, item:itemFor(hit[0])[CI.TASK], n:mem.length, at:fromWdi(after)};
+          })();
+          const place=(startAt, depK)=>{
             const list=[]; let left=useQty, cursor=(mode==="sta"&&a!=null&&b!=null)?a:null;   // start at the entered Start station — preserves direction, incl. descending (110+00 → 103+00)
             const isCallout = kind==="callout" || endIsQty;   // endIsQty: qty punched, Start is a location callout
             // entered avg/day is the actual daily RATE: each day makes sliceRate, last = remainder;
             // station span is proportional to the day's qty so it lands exactly on the End station.
             const sliceRate = (prodOv!==""&&+prodOv>0) ? +prodOv : perDay;
             const calloutSta = (mode==="sta" && a!=null) ? [a, b??a] : null; // callout: location range kept in entered order, same on each day
-            let curDay=day, curWk=wk;                 // carry a multi-day run across working days,
+            let curDay=startAt.day, curWk=startAt.wk;   // carry a multi-day run across working days,
             const isHol = d => !!(holidays && holidays[addDays(curWk,d)]);   // curWk+d is a non-working holiday
             while(isHol(curDay)){ curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); } }   // never start a run on a holiday
             for(let i=0;i<nDays;i++){                 // rolling into the following week(s) — no stacking, no weekend/holiday work
@@ -4044,10 +4062,25 @@ function SchedModal({wk,crews,cfg,installedFor,preset,lastRes,tasks,holidays,add
               do { curDay++; if(curDay>4){ curDay=0; curWk=addDays(curWk,7); } } while(isHol(curDay));  // next working day, skipping weekends + holidays
             }
             if(predSel.length){ predSel.forEach(pk=>addDep(runId,pk)); }
+            if(depK && !predSel.includes(depK)) addDep(runId, depK);   // "after it ends" also links as successor
             add(list);
-          }}>Add {nDays>1?nDays+" days":"to board"}</button>
-          <button className="ghost" onClick={close}>Cancel</button>
-        </div>
+          };
+          const crewName=(crews.find(c=>c.id===res)||{}).name||"";
+          return <>
+            {occ && useQty>0 && <div className="fixchips" style={{marginTop:8}}>
+              <span className="fixwhy">⚠ {crewName} already has {occ.item}{occ.n>1?` (${occ.n}-day run)`:""} on {DAYS[day]} {dLabel(wk,day)} — run both, or start after it?</span>
+            </div>}
+            <div className="btnrow">
+              {occ ? <>
+                <button className="cta" disabled={!useQty} onClick={()=>place({wk,day},null)}>Same day — run concurrently</button>
+                <button className="cta" disabled={!useQty} title="Starts the first working day after the existing work finishes, and links this run as its successor so a delay there keeps pushing this one"
+                  onClick={()=>place({wk:occ.at.wk, day:occ.at.day}, occ.k)}>After it ends — starts {DAYS[occ.at.day]} {dLabel(occ.at.wk,occ.at.day)}</button>
+              </> :
+                <button className="cta" disabled={!useQty} onClick={()=>place({wk,day},null)}>Add {nDays>1?nDays+" days":"to board"}</button>}
+              <button className="ghost" onClick={close}>Cancel</button>
+            </div>
+          </>;
+        })()}
       </>}
     </Modal>
   );
