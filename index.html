@@ -1543,8 +1543,10 @@ function LookAhead(){
   useEffect(()=>{ if(syncPop && syncBtnRef.current){ const r=syncBtnRef.current.getBoundingClientRect();
     setSyncPopPos({top:r.bottom+6, right:Math.max(8,window.innerWidth-r.right)}); } },[syncPop]);
   const syncRef = useRef({rev:null, lastSyncedJson:null, latestJson:null, inflight:false, dirty:false,
-                          fail:0, pollMs:60000, nextPollAt:0, pendingRemote:null, keyPrompted:false, appliedRemote:false,
-                          bootPulled:false}); // no pushes until the boot pull resolves — else fresh seeds could overwrite the shared board
+                          fail:0, pollMs:25000, nextPollAt:0, pendingRemote:null, pendingSince:0, keyPrompted:false, appliedRemote:false,
+                          bootPulled:false, // no pushes until the boot pull resolves — else fresh seeds could overwrite the shared board
+                          needPull:false,   // set on wake-from-sleep/freeze — this tab must pull (and adopt) before it may push again
+                          lastTick:0, hiddenAt:0, justRescued:false});
   const hadLocalRef = useRef(false); // did localStorage have data at boot (vs fresh seeds)
   const busyRef = useRef(false);     // modal open / row-add input showing — defer remote applies
   const [theme, setTheme] = useState(()=>{ // "system" | "light" | "dark"
@@ -1634,9 +1636,14 @@ function LookAhead(){
       const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc});
       const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
+      const S = syncRef.current;
+      S.latestJson = json;
+      syncLS.setMeta({localSavedAt: Date.now()});
+      const coreChanged = core !== S.lastCore; S.lastCore = core;
       // Rolling backups: keep the last 7 calendar days restorable from Data → Full-board backup.
-      // Today's snapshot refreshes on every save; older days stay frozen as end-of-day states.
-      try{ if(_LS){
+      // Only a GENUINE local edit refreshes today's snapshot — an inbound remote apply must
+      // never overwrite this device's restore point with another device's (possibly bad) state.
+      try{ if(_LS && coreChanged && !S.appliedRemote){
         const day = new Date().toISOString().slice(0,10);
         const idx = JSON.parse(localStorage.getItem("lafable-bk-idx")||"[]");
         if(!idx.includes(day)){
@@ -1646,10 +1653,6 @@ function LookAhead(){
         }
         localStorage.setItem("lafable-bk-"+day, json);
       }}catch(e){}
-      const S = syncRef.current;
-      S.latestJson = json;
-      syncLS.setMeta({localSavedAt: Date.now()});
-      const coreChanged = core !== S.lastCore; S.lastCore = core;
       if (S.appliedRemote){
         S.appliedRemote = false;
         // Pure pull echo only if this serialization matches what the pull delivered.
@@ -1717,23 +1720,52 @@ function LookAhead(){
   },[tasks]);
 
   /* ---- Netlify Blobs sync engine: push after local saves; pull on boot, focus,
-     and a 60s visible-tab poll. Whole-state last-write-wins. Missing endpoint
-     (file://, non-Netlify hosting) or no network degrades to local-only with
-     backoff — the board itself always keeps working off localStorage. ---- */
+     and a 25s visible-tab poll. Writes are REV-GUARDED: every PUT carries baseRev
+     (the server rev this tab last saw) and the server rejects mismatches with 409 +
+     the current envelope — so a stale tab (overnight sleep, frozen browser) can
+     never overwrite fresh work; it adopts the board instead, and its unsent changes
+     are rescued to Data → Backups first. Wall clock decides NOTHING. Missing
+     endpoint (file://, non-Netlify hosting) or no network degrades to local-only
+     with backoff — the board itself always keeps working off localStorage. ---- */
   const setSyncStatus = (status, detail) => setSync({status, at: Date.now(), detail: detail||""});
   const syncHdrs = (hasBody) => { const h = hasBody? {"content-type":"application/json"} : {}; const k = syncLS.key(); if(k) h["x-board-key"]=k; return h; };
   const isBusy = () => busyRef.current || /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||"");
   const needKey = () => { const S=syncRef.current; setSyncStatus("key","This board requires a sync key"); if(!S.keyPrompted){ S.keyPrompted=true; setModal({type:"boardkey"}); } };
+  /* Rescue: before this tab's UNSENT changes get replaced (409 adopt, remote apply,
+     wake-from-sleep), copy them to a local backup (Data → Backups, newest 3 kept).
+     The loser of a sync race loses the race — never the work. */
+  const rescueUnsynced = () => {
+    const S = syncRef.current;
+    if (!_LS || !S.latestJson || S.latestJson === S.lastSyncedJson) return false;
+    try{
+      const ts = Date.now();
+      const idx = JSON.parse(localStorage.getItem("lafable-bk-unsynced-idx")||"[]");
+      const keep = [...idx.filter(t=>t!==ts), ts].slice(-3);
+      idx.filter(t=>!keep.includes(t)).forEach(t=>{ try{ localStorage.removeItem("lafable-bk-unsynced-"+t); }catch(e){} });
+      localStorage.setItem("lafable-bk-unsynced-idx", JSON.stringify(keep));
+      localStorage.setItem("lafable-bk-unsynced-"+ts, S.latestJson);
+      S.justRescued = true;
+      return true;
+    }catch(e){ return false; }
+  };
   const applyRemote = (env) => {
     const S = syncRef.current;
-    if (isBusy()){ // don't clobber a form mid-edit — hold the pull until idle
+    // Don't clobber a form mid-edit — hold the pull until idle. But not forever: a modal
+    // left open overnight must not freeze this tab on stale state, so after 60s the
+    // remote applies anyway (skipView + per-task log merge protect the form surfaces).
+    if (isBusy() && (!S.pendingSince || Date.now() - S.pendingSince < 60000)){
+      if (!S.pendingSince) S.pendingSince = Date.now();
       S.pendingRemote = env;
-      setTimeout(()=>{ const p=syncRef.current.pendingRemote; if(p && !isBusy()){ syncRef.current.pendingRemote=null; applyRemote(p); } }, 5000);
+      setTimeout(()=>{ const p=syncRef.current.pendingRemote; if(p){ syncRef.current.pendingRemote=null; applyRemote(p); } }, 5000);
       return;
     }
-    S.pendingRemote = null;
+    S.pendingRemote = null; S.pendingSince = 0;
     try{ if(_LS && !localStorage.getItem("lafable-v3-preSync") && localStorage.getItem("lafable-v3"))
       localStorage.setItem("lafable-v3-preSync", localStorage.getItem("lafable-v3")); }catch(e){} // one-time backup before the first remote apply
+    const rescued = rescueUnsynced() || S.justRescued; S.justRescued = false;
+    // Suppress any queued push of pre-apply content (retry timers, flushes): the rescued
+    // copy is in Backups, and the post-apply save effect re-decides what still needs pushing.
+    S.lastSyncedJson = S.latestJson;
     S.appliedRemote = true; S.rev = env.rev;
     // Echo fingerprint: which core keys the envelope carried and their exact
     // content. The save effect compares against this instead of trusting the
@@ -1746,16 +1778,26 @@ function LookAhead(){
     const by = (env.deviceName||"").trim() || (env.device && env.device!==syncLS.device() ? "device "+env.device : "");
     syncLS.setMeta({syncedRev: env.rev, syncedSavedAt: env.savedAt, lastBy: by, lastByAt: env.savedAt});
     setSyncStatus("synced");
-    if(S.bootPulled) flash("↻ Board updated"+(by?" by "+by:" from another device"));   // transparency: never change silently — and say WHO
+    if(S.bootPulled) flash("↻ Board updated"+(by?" by "+by:" from another device")+(rescued?" — your unsent changes are saved in Data → Backups":""));   // transparency: never change silently — and say WHO
   };
   const pushNow = async () => {
     const S = syncRef.current;
+    if (S.needPull){ // woke from a sleep/freeze — this tab may be stale; pull (and adopt) before any push
+      if (S.inflight){ S.dirty = true; return; }
+      const revBefore = S.rev;
+      await pullNow(true);
+      const s = syncRef.current; // re-push only if the pull proved us current (rev unchanged) and a local diff remains;
+      if (!s.needPull && s.rev === revBefore && s.latestJson && s.latestJson !== s.lastSyncedJson) pushNow();
+      return;                    // if the pull adopted a new rev, the post-apply save effect decides what still pushes
+    }
     if (S.inflight){ S.dirty = true; return; }
     if (!S.latestJson) return;
     S.inflight = true; S.dirty = false;
     setSyncStatus("syncing");
     try{
-      const body = '{"savedAt":'+Date.now()+',"device":"'+syncLS.device()+'","deviceName":'+JSON.stringify(syncLS.name()||"")+',"state":'+S.latestJson+'}';
+      // baseRev = the server rev this tab last saw — the server rejects the write (409 +
+      // current envelope) unless it still matches, so a stale tab can never overwrite.
+      const body = '{"baseRev":'+JSON.stringify(S.rev)+',"savedAt":'+Date.now()+',"device":"'+syncLS.device()+'","deviceName":'+JSON.stringify(syncLS.name()||"")+',"state":'+S.latestJson+'}';
       const res = await fetch(SYNC_URL, {method:"PUT", headers: syncHdrs(true), body});
       S.inflight = false;
       if (!res.headers.get("x-board")){ setSyncStatus("local","No sync endpoint on this hosting — changes stay on this device"); return; }
@@ -1767,7 +1809,9 @@ function LookAhead(){
         if (S.dirty) pushNow();
       }
       else if (res.status===401) needKey();
-      else if (res.status===409){ const env = await res.json(); S.lastSyncedJson = S.latestJson; applyRemote(env); }
+      // Lost the race: rescue our unsent diff to Backups, mark it handled (stops the retry
+      // timers re-firing this same body), then adopt the server's copy.
+      else if (res.status===409){ const env = await res.json(); rescueUnsynced(); S.lastSyncedJson = S.latestJson; applyRemote(env); }
       else throw new Error("HTTP "+res.status);
     }catch(err){
       S.inflight = false; S.fail++;
@@ -1783,11 +1827,12 @@ function LookAhead(){
       if (S.rev && !force) h["if-none-match"] = '"'+S.rev+'"';
       const res = await fetch(SYNC_URL, {method:"GET", headers:h, cache:"no-store"});
       if (!res.headers.get("x-board")){ // Netlify 404 page / anything that isn't our function
-        S.pollMs = Math.min((S.pollMs||60000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
+        S.pollMs = Math.min((S.pollMs||25000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
         setSyncStatus("local","No sync endpoint on this hosting — changes stay on this device"); return;
       }
-      S.pollMs = 60000; S.nextPollAt = 0;
+      S.pollMs = 25000; S.nextPollAt = 0;
       if (res.status===401){ needKey(); return; }
+      S.needPull = false; // fresh contact with the real endpoint — this tab is no longer waking up blind
       if (res.status===304){ setSyncStatus("synced"); return; }
       if (res.status===204){ // endpoint alive, board empty — seed it with this device's data
         const push = ()=>{ if(syncRef.current.latestJson) pushNow(); };
@@ -1797,27 +1842,46 @@ function LookAhead(){
       if (res.status===200){
         const env = await res.json();
         if (env.rev === S.rev){ setSyncStatus("synced"); return; }
-        const meta = syncLS.meta();
-        // First-contact matrix: fresh install or undatable local → take remote;
-        // both dated → newer savedAt wins (older side gets overwritten).
-        if (!hadLocalRef.current || !meta.localSavedAt || env.savedAt >= meta.localSavedAt) applyRemote(env);
-        else { S.rev = env.rev; pushNow(); }
+        // Boot race: the debounced first save may not have serialized local state yet —
+        // wait for it so applyRemote's rescue can still capture offline work before adopting.
+        if (!S.latestJson && hadLocalRef.current){
+          setTimeout(()=>{ const s=syncRef.current; if (env.rev !== s.rev) applyRemote(env); }, 1200);
+          return;
+        }
+        // Rev mismatch → the server copy IS the board; adopt it. applyRemote rescues any
+        // unsent local diff to Backups first, and the per-task log merge still blends both
+        // sides' logging. Never arbitrate by wall clock — a stale tab's "now" proves
+        // nothing about whose WORK is newer (that mistake once cost a day of scheduling).
+        applyRemote(env);
       }
     }catch(err){
-      S.pollMs = Math.min((S.pollMs||60000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
+      S.pollMs = Math.min((S.pollMs||25000)*2, 300000); S.nextPollAt = Date.now()+S.pollMs;
       setSyncStatus("offline","Will retry — changes are saved on this device");
     }finally{ S.bootPulled = true; }
   };
   useEffect(()=>{ if(loaded) pullNow(true); },[loaded]); // boot pull (after local hydration)
   useEffect(()=>{ // poll while visible + lifecycle pulls/flushes (all closures are ref-based — safe on mount)
+    const GAP = 120000; // >2 min without a heartbeat, or hidden that long = the tab slept; its rev is suspect
+    const wake = () => { const S=syncRef.current; if(!S.needPull){ S.needPull = true; rescueUnsynced(); } };
     const tick = () => { const S=syncRef.current;
+      const now = Date.now();
+      if (S.lastTick && now - S.lastTick > GAP) wake(); // frozen timers = slept laptop / parked tab
+      S.lastTick = now;
       if (document.visibilityState!=="visible") return;
-      if (S.nextPollAt && Date.now() < S.nextPollAt) return;
+      if (S.nextPollAt && now < S.nextPollAt) return;
       pullNow(); };
-    const iv = setInterval(tick, 60000);
-    const flushPush = () => { const S=syncRef.current; if(S.latestJson && S.latestJson!==S.lastSyncedJson && !S.inflight) pushNow(); };
+    const iv = setInterval(tick, 20000);
+    // A tab flagged stale must not fire a parting shot on close/background — its unsent
+    // changes are already rescued, and the pull-before-push gate handles them if it wakes.
+    const flushPush = () => { const S=syncRef.current; if(S.needPull) return;
+      if(S.latestJson && S.latestJson!==S.lastSyncedJson && !S.inflight) pushNow(); };
     const onFocus = () => { syncRef.current.nextPollAt = 0; pullNow(); };
-    const onVis = () => { if(document.visibilityState==="visible") onFocus(); else flushPush(); };
+    const onVis = () => { const S=syncRef.current;
+      if(document.visibilityState==="visible"){
+        if (S.hiddenAt && Date.now() - S.hiddenAt > GAP) wake();
+        S.hiddenAt = 0; S.lastTick = Date.now(); // don't double-count the hidden stretch as a timer gap
+        onFocus();
+      } else { S.hiddenAt = Date.now(); flushPush(); } };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pagehide", flushPush);
@@ -2051,6 +2115,8 @@ function LookAhead(){
   };
   const listBackups = () => { const out=[]; try{
       if(_LS && localStorage.getItem("lafable-bk-prerestore")) out.push("prerestore");
+      const uidx=JSON.parse((_LS && localStorage.getItem("lafable-bk-unsynced-idx"))||"[]");
+      uidx.slice().reverse().forEach(t=>out.push("unsynced-"+t)); // rescued unsent changes (lost sync races), newest first
       const idx=JSON.parse((_LS && localStorage.getItem("lafable-bk-idx"))||"[]");
       idx.slice().reverse().forEach(d=>out.push(d));
     }catch(e){} return out; };
@@ -2470,7 +2536,8 @@ function LookAhead(){
             <div className="spline">This device: {syncLS.name()||("id "+syncLS.device())}</div>
             {sync.detail && <div className="spline">{sync.detail}</div>}
             <div className="btnrow" style={{marginTop:8}}>
-              <button className="ghost sm" onClick={()=>{ syncRef.current.nextPollAt=0; pullNow(true); const S=syncRef.current; if(S.latestJson && S.latestJson!==S.lastSyncedJson) pushNow(); }}>Sync now</button>
+              <button className="ghost sm" onClick={async()=>{ const S=syncRef.current; S.nextPollAt=0; const r0=S.rev; await pullNow(true);
+                if(S.rev===r0 && S.latestJson && S.latestJson!==S.lastSyncedJson) pushNow(); }}>Sync now</button>
               <button className="ghost sm" onClick={()=>{ setSyncPop(false); setModal({type:"boardkey"}); }}>Board key</button>
             </div>
           </div>}
@@ -5771,6 +5838,23 @@ function SplitEditorModal({invAlloc,k,onSave,close}){
 function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
+  // Server snapshots: the cloud's own 7-slot weekday ring (frozen on the first save of
+  // each day) — an off-device restore point that survives anything a browser does.
+  const [srv,setSrv]=useState(null);
+  const srvHdrs=()=>{ const h={}; const k=syncLS.key(); if(k) h["x-board-key"]=k; return h; };
+  useEffect(()=>{ (async()=>{ try{
+      const r=await fetch(SYNC_URL+"?backup=list",{headers:srvHdrs(),cache:"no-store"});
+      if(r.status===200 && r.headers.get("x-board")){ const j=await r.json(); setSrv((j.backups||[]).slice().sort((a,b)=>(b.savedAt||0)-(a.savedAt||0))); }
+      else setSrv([]);
+    }catch(e){ setSrv([]); } })(); },[]);
+  const restoreSrv=async(slot,label)=>{ try{
+      const r=await fetch(SYNC_URL+"?backup="+slot,{headers:srvHdrs(),cache:"no-store"});
+      if(r.status!==200){ setMsg("Server snapshot unavailable."); return; }
+      const env=await r.json();
+      if(window.confirm("Replace the ENTIRE board with the server snapshot from "+label+"? The current state is saved under Backups first.")){
+        if(restoreBoard({state:env.state})) close();
+      }
+    }catch(e){ setMsg("Server snapshot fetch failed."); } };
   const nCtc=Object.keys(ctc||{}).length;
   const nLaborCtc=Object.keys(ctc||{}).filter(isLaborCode).length;
   const nOverhead=nCtc-nLaborCtc;
@@ -5830,17 +5914,31 @@ function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups
           e.target.value="";
         }}/></label>
       </div>
-      {(()=>{ const bks=listBackups(); return bks.length ? <table className="dt list" style={{marginTop:6}}>
-        <tbody>{bks.map(d=><tr key={d}><td>{d==="prerestore"?"Before last restore":"End of "+d}</td>
+      {(()=>{ const bks=listBackups();
+        const label=d=> d==="prerestore" ? "Before last restore"
+          : d.startsWith("unsynced-") ? "Unsent changes · "+new Date(+d.slice(9)).toLocaleString([], {month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"})
+          : "End of "+d;
+        return bks.length ? <table className="dt list" style={{marginTop:6}}>
+        <tbody>{bks.map(d=><tr key={d}><td>{label(d)}</td>
           <td className="r"><button className="ghost sm" onClick={()=>{
             const v=getBackup(d); if(!v){ setMsg("Backup unavailable."); return; }
             try{ const parsed=JSON.parse(v);
-              if(window.confirm("Replace the ENTIRE board with the "+(d==="prerestore"?"pre-restore":d)+" backup?")){
+              if(window.confirm("Replace the ENTIRE board with the \""+label(d)+"\" backup?")){
                 if(restoreBoard(parsed.state?parsed:{state:parsed})) close();
               }
             }catch(err){ setMsg("Restore failed: "+err.message); }
           }}>Restore</button></td></tr>)}</tbody></table>
         : <p className="dim2">No local backups yet — one is kept automatically at the end of each day.</p>; })()}
+
+      <div className="loghdr">Server snapshots <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(kept in the cloud — one per weekday, safe from any single device)</em></div>
+      {srv==null ? <p className="dim2">Checking the cloud…</p>
+        : srv.length ? <table className="dt list" style={{marginTop:6}}>
+        <tbody>{srv.map(s=>{ const DOW=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+          const when=s.savedAt? new Date(s.savedAt).toLocaleString([], {month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"}) : "";
+          const lbl=(DOW[s.slot]||("Slot "+s.slot))+(when?" · "+when:"")+(s.deviceName?" · "+s.deviceName:"");
+          return <tr key={s.slot}><td>{lbl}</td>
+            <td className="r"><button className="ghost sm" onClick={()=>restoreSrv(s.slot,lbl)}>Restore</button></td></tr>; })}</tbody></table>
+        : <p className="dim2">No server snapshots yet — the cloud freezes one automatically on the first save of each day.</p>}
 
       <div className="btnrow"><button className="cta" onClick={close}>Done</button></div>
     </Modal>
