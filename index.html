@@ -1021,7 +1021,7 @@ function bedForItem(cc, desc, um, ov){
    come from `tcfg` (editable autos); geometry from bedForItem. Non-LF items → not applicable. */
 const TRUCK_DEFAULTS = {
   axle:"tri", triCY:17, quadCY:21, stoneTnTri:16, stoneTnQuad:20,
-  stone57Den:1.4, sandDen:1.4, swell:1.25, compaction:1.20,   // stone57Den = loose hauled tn/CY — MUST match STONE_TON_PER_CY (takeoff basis)
+  stone57Den:STONE_TON_PER_CY, sandDen:1.4, swell:1.25, compaction:1.20,   // stone57Den default = STONE_TON_PER_CY (takeoff basis) — single-sourced so they can't drift
   spoilDen:1.5, weightCap:false,   // weightCap ON = spoil/sand loads governed by payload tn ÷ density, not the box CY
   roadSection:1.0, shiftHrs:8, loadSpot:6, tipMin:3, baseDen:1.4, avgDepth:8,   // shiftHrs = hours a truck runs per day — 8 means 8 (no hidden efficiency derate; real cycle times carry the slack)
   cycSpoil:24, cycStone:26, cycSand:32, cycBase:28, maxLegMin:60,
@@ -2895,7 +2895,11 @@ const capOf = (crews, id) => { const c=crews.find(x=>x.id===id); return (c && c.
 function computeReflow(tasks, logs, baseline, crews, cfg){
   const byTask={}, byCrew={}, crewDayLoads={}, crewDayTrucks={};
   const truckRate = (cfg && cfg.truckRate>0) ? cfg.truckRate : 220;
-  const LOADS_PER_TRUCK_DAY = TRUCK_BASE.loadsHr * (((cfg&&cfg.truck&&+cfg.truck.shiftHrs)||8)); // proxy for non-pipe haul items (no physical model) — empirical loads/hr × the configured shift
+  // Proxy for non-pipe haul items (no physical model): trips/day a truck makes on the MAP's
+  // dump cycle (2·oneWayMin×traffic + stops) × the configured truck shift — so dragging a pin
+  // or editing a drive time moves this too (was a fixed empirical loads/hr).
+  const _tc = {...TRUCK_DEFAULTS, ...((cfg&&cfg.truck)||{})};
+  const LOADS_PER_TRUCK_DAY = (60/Math.max(1,truckCycles(_tc).spoil)) * (+_tc.shiftHrs||8);
   const groups={};
   tasks.forEach(t=>{ const k=runKey(t); (groups[k]||(groups[k]=[])).push(t); });
   Object.entries(groups).forEach(([k,arr])=>{
@@ -6666,8 +6670,6 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const today = new Date().toISOString().slice(0,10);
   const day = truckDay.date===today ? truckDay : {date:today,trucks:[],loads:[]};
   const upDay = fn => setTruckDay(d=>fn(d.date===today?{...d}:{date:today,trucks:[],loads:[]}));
-  const pitKeys = Object.keys(TRUCK_BASE.pits);
-
   // ===== Advanced — trucking model autos (cfg.truck) =====
   const T = {...TRUCK_DEFAULTS, ...((cfg&&cfg.truck)||{})};
   const twOv = T.tw||{};
@@ -6692,6 +6694,15 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const pv = truckModel(pvItem, +pvLF, +pvDepth, T);
   // Sources + back-haul routing (drives the map & readout; streams come from the preview item).
   const sources = {...TRUCK_DEFAULTS.sources, ...(T.sources||{})};   // ensure every role (incl. #610 base) exists for older saved configs
+  const CYC = truckCycles({...T, sources});   // the map-driven round trips (2·oneWayMin×traffic + wait@site + stop@pit) — one basis for every tool below
+  // Sign-out pit list: the four CONFIGURED map sources first (round trips from the live map
+  // cycles, so renaming a pin or refreshing drive times flows straight through), then the
+  // legacy named pits (timesheet field estimates) that don't collide by name.
+  const PIT_RT = (()=>{ const m={};
+    [["dump","spoil"],["stone","stone"],["sand","sand"],["base","base"]].forEach(([k,ck])=>{ const nm=(sources[k]&&sources[k].name)||k; m[nm]=Math.max(1,Math.round(CYC[ck])); });
+    Object.entries(TRUCK_BASE.pits).forEach(([n,v])=>{ if(!(n in m)) m[n]=v; });
+    return m; })();
+  const pitKeys = Object.keys(PIT_RT);
   const setSource = (key,patch)=>setCfg(c=>{ const t={...TRUCK_DEFAULTS,...((c&&c.truck)||{})}; const src={...(t.sources||TRUCK_DEFAULTS.sources)}; src[key]={...(src[key]||{}), ...patch}; return {...c, truck:{...t, sources:src}}; });
   const plan = pv.applicable ? routePlan({spoil:pv.spoil.loads, stone:pv.stone.loads, sand:pv.sand.loads, base:pv.base?pv.base.loads:0}, sources, T) : null;
   // Roadway preview (Phase 6): excavation CY/day + #610 base TON/day → streams + back-haul.
@@ -6701,13 +6712,14 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const rwB = truckModel(rwItem("32.07.13.00","Base Course Dump And Spread","TON"), +rwBase, 0, T);
   const rwPlan = (rwE.applicable||rwB.applicable) ? routePlan({spoil:rwE.spoil.loads, base:rwB.base.loads, sand:0}, sources, T) : null;
   const bplan = op==="road" ? rwPlan : plan;   // routing readout follows the selected operation
-  const SRC_ROWS = { dump:["dump","#e5484d","Dump / haul-out"], stone:["stone","#8B63E0","#57 stone pit"], sand:["sand","#F58A2E","Sand pit"], base:["base","#B0894B","#610 limestone pit"] };
+  const _rc = Object.fromEntries(SRC_ROLES.map(r=>[r.key,r.color]));   // pin colors — single source, shared with the map
+  const SRC_ROWS = { dump:["dump",_rc.dump,"Dump / haul-out"], stone:["stone",_rc.stone,"#57 stone pit"], sand:["sand",_rc.sand,"Sand pit"], base:["base",_rc.base,"#610 limestone pit"] };
 
   // ===== Fleet balancer =====
-  const [cyc,setCyc]=useState(TRUCK_BASE.minLoad);
-  const [loadT,setLoadT]=useState(6);
+  const [cyc,setCyc]=useState(Math.max(1,Math.round(CYC.spoil - siteStopOf({...T,sources},"dump"))));  // away-cycle on the map's dump route (round trip minus the load/spot at site)
+  const [loadT,setLoadT]=useState(siteStopOf({...T,sources},"dump"));
   const [have,setHave]=useState(3);
-  const [tRate,setTRate]=useState(105);
+  const [tRate,setTRate]=useState(TRUCK_BASE.rates[T.axle==="quad"?"quadHr":"triHr"]);
   const [idle,setIdle]=useState(240);
   const need = Math.max(1, Math.ceil((+cyc + +loadT)/Math.max(1,+loadT)));
   const scen = n => { const C=+cyc,L=+loadT,R=+tRate,I=+idle;
@@ -6731,8 +6743,8 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const [pit,setPit]=useState(pitKeys[0]);
   const [bed,setBed]=useState(18);
   const [loads,setLoads]=useState(1);
-  const [rt,setRt]=useState(TRUCK_BASE.pits[pitKeys[0]]);
-  const [hRate,setHRate]=useState(105);
+  const [rt,setRt]=useState(PIT_RT[pitKeys[0]]);
+  const [hRate,setHRate]=useState(TRUCK_BASE.rates[T.axle==="quad"?"quadHr":"triHr"]);
   const mr=TRUCK_BASE.rates[mat]||{r:8.5,u:"CY"};
   const hold=(+rt/60)*(+hRate)*(+loads);
   const byload = mr.u==="CY" ? (+loads)*(+bed)*mr.r : (+loads)*(+bed)*1.4*mr.r;
@@ -6767,10 +6779,11 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
   const totLoads=day.loads.reduce((a,l)=>a+(+l.qty||0),0);
   const lphNow=elapsedHr>0?totLoads/elapsedHr:0;
   const hourlyN=day.trucks.filter(t=>t.mode==="hourly").length;
-  const runCost=hourlyN*elapsedHr*105;
+  const runCost=hourlyN*elapsedHr*TRUCK_BASE.rates[T.axle==="quad"?"quadHr":"triHr"];
   const truckHrs = day.trucks.reduce((a,t)=>{ const q=(t.inT||"").split(":"); if(q.length!==2) return a; const mins=nowMin-(+q[0]*60+ +q[1]); return a+(mins>0?mins/60:0); },0);
   const obsCycle = (totLoads>0 && truckHrs>0) ? Math.round(60/(totLoads/truckHrs)) : null;
-  const lphTone = !lphNow?"":lphNow>=TRUCK_BASE.loadsHr?"good":lphNow>=TRUCK_BASE.loadsHr*0.8?"warn":"bad";
+  const expLph = 60/Math.max(1,CYC.spoil);   // per-truck loads/hr the MAP's dump cycle supports
+  const lphTone = !lphNow?"":lphNow>=expLph?"good":lphNow>=expLph*0.8?"warn":"bad";
 
   const num=(v,set,w=64,step=1)=><input type="number" step={step} value={v} onChange={e=>set(e.target.value)} style={{width:w}}/>;
   const NF=(k,lbl,step=1,w=74)=><label>{lbl}<input type="number" step={step} value={T[k]} onChange={e=>tset(k, e.target.value===""?TRUCK_DEFAULTS[k]:+e.target.value)} style={{width:w}}/></label>;
@@ -6913,7 +6926,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
 
       {/* Fleet balancer */}
       <div className="panel">
-        <div className="ph">Fleet balancer — trucks to keep one excavator working</div>
+        <div className="ph">Fleet balancer — trucks to keep one excavator working <em className="dim2" style={{fontWeight:400}}>(cycle &amp; $/hr default from the map route + axle — edit freely)</em></div>
         <div className="trkrow">
           <label>Round-trip cycle (min){num(cyc,setCyc)}</label>
           <label>Load + spot (min){num(loadT,setLoadT)}</label>
@@ -6945,7 +6958,7 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
         <div className="ph">Sign-out &amp; staging — hourly hold vs by-load delivery</div>
         <div className="trkrow">
           <label>Material<select value={mat} onChange={e=>setMat(e.target.value)}>{matKeys.map(k=><option key={k}>{k}</option>)}</select></label>
-          <label>Source pit<select value={pit} onChange={e=>{setPit(e.target.value); setRt(TRUCK_BASE.pits[e.target.value]);}}>{pitKeys.map(k=><option key={k}>{k}</option>)}</select></label>
+          <label>Source pit<select value={pit} onChange={e=>{setPit(e.target.value); setRt(PIT_RT[e.target.value]);}}>{pitKeys.map(k=><option key={k}>{k}</option>)}</select></label>
           <label>Bed (CY){num(bed,setBed)}</label>
           <label>Loads{num(loads,setLoads)}</label>
           <label>Round-trip (min){num(rt,setRt)}</label>
@@ -7001,7 +7014,8 @@ function TruckingView({truckDay,setTruckDay,savings,setSavings,cfg,setCfg}){
           <div className="kpi"><label>Loads/hr</label><b>{TRUCK_BASE.loadsHr}</b></div>
           <div className="kpi"><label>Range</label><b>{TRUCK_BASE.minLoadLo}–{TRUCK_BASE.minLoadHi} min</b></div>
         </div>
-        <p className="dim2" style={{fontSize:12}}>Per-pit round-trips (field estimates — edit in the optimizer): {pitKeys.map(k=>k+" "+TRUCK_BASE.pits[k]+"m").join(" · ")}. Rates: triaxle {fmt$(105)}/hr, quad {fmt$(120)}/hr; sand {fmt$(8.5,2)}/CY, dirt {fmt$(10,2)}/CY, limestone {fmt$(7.5,2)}/TN.</p>
+        <p className="dim2" style={{fontSize:12}}><b>Live cycles from the map</b> (2·drive×traffic + stops — what the model runs on): spoil {Math.round(CYC.spoil)}m · #57 {Math.round(CYC.stone)}m · sand {Math.round(CYC.sand)}m · #610 {Math.round(CYC.base)}m.</p>
+        <p className="dim2" style={{fontSize:12}}>Per-pit round-trips ({pitKeys.map(k=>k+" "+PIT_RT[k]+"m").join(" · ")}). Rates: triaxle {fmt$(TRUCK_BASE.rates.triHr)}/hr, quad {fmt$(TRUCK_BASE.rates.quadHr)}/hr; sand {fmt$(TRUCK_BASE.rates.Sand.r,2)}/CY, dirt {fmt$(TRUCK_BASE.rates.Dirt.r,2)}/CY, limestone {fmt$(TRUCK_BASE.rates["57 Limestone"].r,2)}/TN.</p>
       </div>
     </div>
   );
