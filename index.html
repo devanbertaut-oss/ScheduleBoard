@@ -56,7 +56,7 @@ const SYNC_URL = "/api/state";
    can never be mistaken for the pull's own re-serialization. */
 const SYNC_CORE_KEYS = ["crews","siteRows","tasks","logs","notes","cfg","eosMeta","umOverrides","showEquip",
   "ctc","baseline","milestones","deps","rainDays","holidays","reflowOn","cardStyle","truckDay","savings",
-  "templates","progress","invAlloc"];
+  "templates","progress","invAlloc","prodEvents"];
 const syncLS = {
   meta(){ try{ return JSON.parse(localStorage.getItem("lafable-sync")||"{}"); }catch(e){ return {}; } },
   setMeta(p){ try{ localStorage.setItem("lafable-sync", JSON.stringify({...syncLS.meta(),...p})); }catch(e){} },
@@ -716,6 +716,13 @@ function dpwApplyDecision(A, k, st, sug, device){
    re-attached when a later import contains the hash again. */
 const ILI = { K:0, INV:1, RID:2, CC:3, QTY:4, RATE:5, TK:6, AMT:7, DOFF:8, IT:9, MAT:10, PIT:11,
               LDS:12, UN:13, FL:14, SUG:15, M:16, CF:17, ST:18, OV:19, AT:20, BY:21, DSC:22 };
+/* Production-history ledger merge (run extends/prorates/closes): append-only records,
+   union by id — local wins on an id tie — newest first, capped. */
+function mergeEvents(local, remote){
+  if(!local||!local.length) return remote||[]; if(!remote||!remote.length) return local;
+  const by={}; [...remote, ...local].forEach(e=>{ if(e&&e.id) by[e.id]=e; });
+  return Object.values(by).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,400);
+}
 function mergeProgress(local, remote){
   if(!local) return remote; if(!remote) return local;
   const base = ((remote.src&&remote.src.importedAt)||0) > ((local.src&&local.src.importedAt)||0) ? remote : local;
@@ -1523,6 +1530,7 @@ function LookAhead(){
   const [catalogOK, setCatalogOK] = useState(()=>{ try{ return sessionStorage.getItem("catUnlock")==="1"; }catch(e){ return false; } });
   const [truckDay, setTruckDay] = useState({date:"",trucks:[],loads:[]}); // live daily trucking log
   const [savings, setSavings] = useState([]); // {id,date,amount,note} captured optimizer savings
+  const [prodEvents, setProdEvents] = useState([]); // durable actual-vs-plan ledger: run extends/prorates/closes with reason+comment (newest first, capped 400)
   const [templates, setTemplates] = useState([]); // saved operation recipes {id,name,ci,perDay,dig,equip,loc,trucks} — one-tap reuse in Schedule work
   /* Document features (Progress / Invoices tabs). progress + invAlloc are shared/synced;
      docs holds the raw imported rows (drill-down + the allocator's truck-day joins) on THIS
@@ -1596,6 +1604,7 @@ function LookAhead(){
     // boot hydration replaces wholesale, mirroring the logs rule above.
     if (s.progress) setProgress(local => (opts&&opts.mergeLogs) ? mergeProgress(local, s.progress) : s.progress);
     if (s.invAlloc) setInvAlloc(local => (opts&&opts.mergeLogs) ? mergeInvAlloc(local, s.invAlloc) : s.invAlloc);
+    if (s.prodEvents) setProdEvents(local => (opts&&opts.mergeLogs) ? mergeEvents(local, s.prodEvents) : s.prodEvents);
     if (opts && opts.skipView) return;
     // NB: we intentionally do NOT restore s.wk — the board always opens on the current week.
     if (s.cardStyle) setCardStyle(s.cardStyle); // per-device display pref (skipped on remote pulls)
@@ -1633,8 +1642,8 @@ function LookAhead(){
     saveTimer.current = setTimeout(async()=>{
       // core = everything EXCEPT lastUpdated; used to detect a genuine content change
       // so stamping lastUpdated can't re-trigger itself (echo loop) or ping-pong on sync.
-      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc});
-      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,lastUpdated});
+      const core = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents});
+      const json = JSON.stringify({crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents,lastUpdated});
       try{ await store.set("lafable-v3", json); }catch(e){}
       const S = syncRef.current;
       S.latestJson = json;
@@ -1658,7 +1667,7 @@ function LookAhead(){
         // Pure pull echo only if this serialization matches what the pull delivered.
         // A local edit inside the same debounce window (or local rows a merge kept)
         // makes the content differ — that's a real change and must stamp + push.
-        const stateMap = {crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc};
+        const stateMap = {crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents};
         const echo = !S.remoteEchoKeys || JSON.stringify(S.remoteEchoKeys.map(k=>stateMap[k])) === S.remoteEchoJson;
         if (echo){ S.lastSyncedJson = json; }
         else if (S.bootPulled){ setLastUpdated(Date.now()); pushNow(); }
@@ -1668,7 +1677,7 @@ function LookAhead(){
         if (json !== S.lastSyncedJson && S.bootPulled) pushNow();
       }
     }, 600);
-  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,lastUpdated,loaded]);
+  },[crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents,lastUpdated,loaded]);
   useEffect(()=>{ busyRef.current = modal!=null || addingIn!=null; },[modal,addingIn]);
   const finishRef = useRef({});   // runKey -> last settled finish working-day (for delay detection)
   /* Predecessor propagation — MS-Project "hold dates, push later". Every run holds its own dates.
@@ -2103,7 +2112,7 @@ function LookAhead(){
   // export or a rolling local backup, and restore any of them wholesale. The pre-restore state is
   // saved first so a bad restore is itself reversible.
   const boardSnapshot = () => JSON.stringify({version:"board-v1", exportedAt:new Date().toISOString(),
-    state:{crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,lastUpdated}}, null, 1);
+    state:{crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents,lastUpdated}}, null, 1);
   const restoreBoard = (obj) => {
     const s = obj && obj.state ? obj.state : obj;
     if(!s || !Array.isArray(s.tasks) || !Array.isArray(s.crews)){ flash("Not a board backup file"); return false; }
@@ -2216,10 +2225,16 @@ function LookAhead(){
         if(nOpen===0) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // shrank to locked only
         targetOpenQty = rho*openLen; stepA = stepFt;
       } else if(edit.perDay!=null || edit.days!=null || edit.fromActuals){
-        // fromActuals: remaining = contract total − what was ACTUALLY installed on logged days,
-        // re-sliced over the open tail at the planned rate (absorbs an over/under-run into the plan).
-        const lockedActualQty = locked.reduce((s,m)=>{ const lg=lgOf(m); return s+((lg&&lg.qty)||0); },0);
-        const openQty = edit.fromActuals ? Math.max(0, Qtot - lockedActualQty) : (Qtot - lockedQty);
+        // fromActuals: remaining = what was still OPEN at click time (unlogged planned qty,
+        // where the day being logged via treatLogged counts as open) − what that day actually
+        // installed. NEVER Σ planned − Σ actuals: locked cards keep their as-planned qty, so
+        // after one re-slice the member sum overstates the contract and a second extend/prorate
+        // would double-count the earlier shortfall (e.g. 100 → log 60 → +40 card → log 30
+        // must leave 10 remaining, not 50).
+        const openPlanned = members.reduce((s,m)=>
+          (logs[m.id]==null || (edit.treatLogged && edit.treatLogged[m.id]!==undefined)) ? s+(+m.qty||0) : s, 0);
+        const tlSum = edit.treatLogged ? Object.keys(edit.treatLogged).reduce((s,id)=>s+(+edit.treatLogged[id]||0),0) : 0;
+        const openQty = edit.fromActuals ? Math.max(0, Math.round((openPlanned - tlSum)*100)/100) : (Qtot - lockedQty);
         if(openQty<=EPS) return [...ts.filter(x=>runKey(x)!==k), ...locked];  // remaining installed → drop open days
         // fromActuals + days = prorate: hold the day count, respread the actual remainder evenly.
         // fromActuals alone = catch-up at the planned rate, growing the tail as needed.
@@ -2299,7 +2314,19 @@ function LookAhead(){
   };
   // Preserve-merge each write: keep a prior reason when the caller doesn't pass one, and stamp `at` so the
   // sync layer can merge per-task instead of clobbering another device's actuals (whole-state LWW otherwise).
-  const saveLog = (id,qty,mh,done,reason)=> setLogs(l=>({...l,[id]:{...l[id], qty:+qty||0, mh:+mh||0, done, reason: reason!==undefined?reason:((l[id]&&l[id].reason)||""), at:Date.now()}}));
+  const saveLog = (id,qty,mh,done,reason,comment)=> setLogs(l=>({...l,[id]:{...l[id], qty:+qty||0, mh:+mh||0, done, reason: reason!==undefined?reason:((l[id]&&l[id].reason)||""), comment: comment!==undefined?comment:((l[id]&&l[id].comment)||""), at:Date.now()}}));
+  // Production-history ledger: one record per applied run recovery (extend / prorate / close) —
+  // the day's plan vs actual, the run's day count, what was pushed, and the logged reason +
+  // comment. Synced (union-by-id merge) so the whole crew shares one history; Reports →
+  // Production history reads and exports it.
+  const addProdEvent = (t, rf, act, qty, meta) => setProdEvents(evs=>{
+    const it = itemFor(t);
+    const e = { id:"pe"+Date.now().toString(36)+Math.random().toString(36).slice(2,6), at:Date.now(),
+      date:addDays(t.wk,t.day), rid:runKey(t), res:t.res, cc:it[CI.CC], task:it[CI.TASK], loc:t.loc||"",
+      act, days:rf.runN, plan:+t.qty||0, qty:+qty||0, rem:rf.remAfter!=null?rf.remAfter:0, um:rf.um||it[CI.UM],
+      reason:(meta&&meta.reason)||"", comment:(meta&&meta.comment)||"" };
+    return [e, ...evs].slice(0,400);
+  });
   /* Capacity-aware catch-up re-slice for one run: spreads a logged shortfall across the run's
      own remaining (open) days first — never pushing a day past the crew's daily MH cap — and
      only appends new days once that capacity is exhausted. If an appended day lands on a slot
@@ -2500,6 +2527,7 @@ function LookAhead(){
             {label:"🚚 Truck report — order & cost", run:()=>setModal({type:"truckreport"})},
             {label:"📦 Materials cheat sheet", run:()=>setModal({type:"cheat"})},
             {label:"📋 Weekly rhythm", run:()=>setModal({type:"rhythm"})},
+            {label:"📈 Production history — actual vs plan", run:()=>setModal({type:"prodhist"})},
             {label:"⚙ Truck setup — sources & assumptions", run:()=>setModal({type:"trucking"})},
             {label:"❓ Help & shortcuts", run:()=>setModal({type:"help"})},
           ]}/>
@@ -2517,6 +2545,7 @@ function LookAhead(){
             {label: baseline?("📸 Baseline "+baseline.takenAt.slice(5)+" — retake"):"📸 Take snapshot — freeze the plan", run:takeSnapshot},
             {label:(reflowOn?"✓ ":"")+"Re-flow forecast — catch-up vs MH caps", run:()=>{ setReflowOn(v=>!v); flash(reflowOn?"Re-flow off":"Re-flow on — cards show forecast catch-up"); }},
             ...(reflowOn?[{label:"Commit re-flow → plan", run:()=>{ const n=commitReflow(); flash(n?`Re-flowed ${n} run${n>1?"s":""} into the plan`:"No runs with a variance to re-flow"); }}]:[]),
+            {label:"📈 Production history — actual vs plan", run:()=>setModal({type:"prodhist"})},
             {label:"🎨 Scope legend — color standard", run:()=>setModal({type:"legend"})},
           ]}/>}
           </>}
@@ -2627,7 +2656,7 @@ function LookAhead(){
 
 
       {/* ============ MODALS ============ */}
-      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close:()=>setModal(null)}}/>}
+      {modal?.type==="task"    && <TaskModal t={tasks.find(x=>x.id===modal.id)} {...{logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,addProdEvent,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="crew"    && <CrewModal res={crews.find(c=>c.id===modal.id)} {...{weekTasks,logs,taskCalc,setCrews,rmResource,close:()=>setModal(null)}}/>}
       {modal?.type==="sched"   && <SchedModal {...{wk:(modal.wk||wk),crews,cfg,installedFor,preset:modal, lastRes:(tasks.length?tasks[tasks.length-1].res:null), tasks, holidays, addDep, templates, rmTemplate, close:()=>setModal(null), add:(list)=>{setTasks(t=>[...t,...list]); setModal(null);} }}/>}
       {modal?.type==="eos"     && <EOSModal {...{wk,day:modal.day,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEosMeta,rainDays,cfg,close:()=>setModal(null)}}/>}
@@ -2641,8 +2670,9 @@ function LookAhead(){
       {modal?.type==="cards"   && <CardExportModal {...{tasks,runDayMap,crews,taskCalc,cfg,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="boardprint" && <BoardPrintModal {...{wk,tasks,startBoardPrint,shareBoardPdf:shareLookaheadPdf,close:()=>setModal(null)}}/>}
       {modal?.type==="legend"  && <LegendModal close={()=>setModal(null)}/>}
-      {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} tasks={tasks} logs={logs} deps={deps} crews={crews} resliceRun={resliceRun} pullRunSuccessors={pullRunSuccessors} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
+      {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} tasks={tasks} logs={logs} deps={deps} crews={crews} resliceRun={resliceRun} pullRunSuccessors={pullRunSuccessors} addProdEvent={addProdEvent} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
       {modal?.type==="move"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <MoveSheet t={t} crews={crews} upTask={upTask} close={()=>setModal(null)}/>; })()}
+      {modal?.type==="prodhist" && <ProdHistoryModal {...{tasks,logs,crews,taskCalc,prodEvents,wk,close:()=>setModal(null)}}/>}
       {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close:()=>setModal(null)}}/>}
       {modal?.type==="docsimport" && <DocsImportModal {...{kind:modal.kind||"ts",docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB:Math.round(((syncRef.current.latestJson||"").length)/1024),close:()=>setModal(null)}}/>}
       {modal?.type==="drill"   && <DrillDownModal {...{docs,dOff:modal.dOff,code:modal.code,close:()=>setModal(null)}}/>}
@@ -3395,12 +3425,18 @@ function computeRunFix(t, it, curQty, tasks, logs, deps, crews){
   const runMem = tasks.filter(x=>runKey(x)===myKey).slice().sort((a,b)=>wdi(a.wk,a.day)-wdi(b.wk,b.day));
   const runN = runMem.length, um = it[CI.UM];
   const dayIdx = runMem.findIndex(m=>m.id===t.id)+1;
-  const runQtot = runMem.reduce((s,m)=>s+(+m.qty||0),0);
   const runActual = runMem.filter(m=>logs[m.id]!=null).reduce((s,m)=>s+((logs[m.id]&&logs[m.id].qty)||0),0);
   const othersActual = runMem.filter(m=>m.id!==t.id && logs[m.id]).reduce((s,m)=>s+((logs[m.id].qty)||0),0);
   const openAfter = runMem.filter(m=>m.id!==t.id && logs[m.id]==null).length;
-  const remAfter = curQty==null?null:Math.max(0, Math.round((runQtot-othersActual-curQty)*100)/100);
   const openPlan = Math.round(runMem.filter(m=>logs[m.id]==null).reduce((s,m)=>s+(+m.qty||0),0)*100)/100;
+  // Honest run total: logged actuals + still-open planned. A raw Σ of member plans would
+  // OVERSTATE after a re-slice (locked cards keep their as-planned qty while the shortfall
+  // was pushed onto the open tail), inflating every later remaining-qty preview.
+  const runQtot = Math.round((runActual + openPlan)*100)/100;
+  // Remaining after this log = what was still open (this card's plan counts as open —
+  // also when RE-logging an already-logged day) minus what today actually installed.
+  const remBasis = openPlan + (logs[t.id]!=null ? (+t.qty||0) : 0);
+  const remAfter = curQty==null?null:Math.max(0, Math.round((remBasis-curQty)*100)/100);
   const crewOf = crews.find(c=>c.id===t.res);
   const capMH = (crewOf && crewOf.capMH>0) ? crewOf.capMH : 68;
   const runRate = runMem.length ? Math.round(Math.max(...runMem.map(m=>+m.qty||0))*100)/100 : 0;
@@ -3435,29 +3471,41 @@ function computeRunFix(t, it, curQty, tasks, logs, deps, crews){
       chips.push({id:"none", title:"Leave the plan alone", sub:"keep the drawn rate — the run may finish early"});
     }
   }
-  // Single-day card logged SHORT: offer to extend the card one working day and push the
-  // remainder onto it (same applyRunFix "addday" → resliceRun fromActuals path; the run's
-  // finish moves, so linked successors push automatically).
-  else if(runN===1 && curQty!=null && curQty<t.qty-0.01){
-    const rem=Math.round((t.qty-curQty)*100)/100;
-    const nx=fromWdi(wdi(t.wk,t.day)+1);
+  // LAST open day of a run logged SHORT — a single-day card, or the final card of a run
+  // (including one that was already extended before): offer to extend and push the remainder
+  // (same applyRunFix "addday" → resliceRun fromActuals path; the run's finish moves, so
+  // linked successors push automatically). runN>1 with openAfter===0 lands here because the
+  // multi-day branch above needs an open day AFTER this one to prorate into.
+  else if(curQty!=null && openAfter===0 && curQty<t.qty-0.01 && remAfter>0.01){
+    const rem=remAfter;
+    const extra=Math.max(1, Math.ceil(rem/Math.max(runRate,0.0001) - 1e-6));
+    const nx=fromWdi((runFinishWdi!=null?runFinishWdi:wdi(t.wk,t.day))+1);
+    const nf=fromWdi((runFinishWdi!=null?runFinishWdi:wdi(t.wk,t.day))+extra);
     chips.push({id:"addday", why:"Day came in short — push the rest?",
-      title:"Extend to "+DAYS[nx.day]+" "+dLabel(nx.wk,nx.day)+" — push the remaining "+fmtN(rem,rem%1?1:0)+" "+um,
-      sub:"adds one working day · "+fmtN(rem*it[CI.MH],0)+" MH · linked successors push automatically"});
-    chips.push({id:"none", title:"Leave it — log the shortfall", sub:"card stays one day; the plan under-runs"});
+      title: extra===1
+        ? "Extend to "+DAYS[nx.day]+" "+dLabel(nx.wk,nx.day)+" — push the remaining "+fmtN(rem,rem%1?1:0)+" "+um
+        : "Extend "+extra+" days — push the remaining "+fmtN(rem,rem%1?1:0)+" "+um,
+      sub:(extra===1 ? "adds one working day · "+fmtN(rem*it[CI.MH],0)+" MH"
+                     : fmtN(rem/extra,1)+" "+um+"/day · finish moves to "+DAYS[nf.day]+" "+dLabel(nf.wk,nf.day))
+          +" · linked successors push automatically"});
+    chips.push({id:"none", title:"Leave it — log the shortfall",
+      sub:(runN===1?"card stays one day":"run stays "+runN+" days")+"; the plan under-runs"});
   }
   return {runN, dayIdx, um, runQtot, runActual, openAfter, openPlan, remAfter, chips};
 }
 const runFixEff = (rf,fix) => (rf && rf.chips.some(c=>c.id===fix)) ? fix : "none";
 const runFixLabel = (rf,fix,base) => { const e=runFixEff(rf,fix);
   return e==="close"||e==="closepull" ? "Save + close run" : e!=="none" ? "Save + re-slice" : base; };
-function applyRunFix(t, rf, fix, qty, api){
+function applyRunFix(t, rf, fix, qty, api, meta){
   const eff = runFixEff(rf,fix);
   if(eff==="none") return;
   const tl={[t.id]: +qty||0};
   if(eff==="prorate") api.resliceRun(t,{fromActuals:true, days:rf.runN, treatLogged:tl});
   else if(eff==="addday") api.resliceRun(t,{fromActuals:true, treatLogged:tl});
   else { api.resliceRun(t,{closeRun:true, treatLogged:tl}); if(eff==="closepull") api.pullRunSuccessors(runKey(t)); }
+  // Durable ledger: every applied recovery (extend / prorate / close) is recorded with the
+  // day's plan-vs-actual and the logged reason+comment — the source for Production history.
+  if(api.addProdEvent) api.addProdEvent(t, rf, eff, +qty||0, meta);
 }
 function RunBarUI({rf}){
   if(rf.runN<2) return null;
@@ -3478,7 +3526,7 @@ function RunChipsUI({rf, fix, setFix}){
       </button>)}
   </div>;
 }
-function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close}){
+function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatchup,asapRun,pullRunSuccessors,addProdEvent,setRunDig,upTask,cfg,installedFor,fcstFor,crews,tasks,deps,depMap,addDep,rmDep,saveTemplate,wk,close}){
   const isMobile = useIsMobile();
   const [tab,setTab]=useState("log");
   const [showDetails,setShowDetails]=useState(false);
@@ -3614,8 +3662,8 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
         const curQty = L.qty===""?null:(+L.qty||0);
         const rf = computeRunFix(t, it, curQty, tasks, logs, deps, crews);
         const doSave = () => {
-          saveLog(t.id,L.qty,L.mh,true,L.reason);
-          applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors});
+          saveLog(t.id,L.qty,L.mh,true,L.reason,L.comment);
+          applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors, addProdEvent}, {reason:L.reason, comment:L.comment});
           close();
         };
         const logSection = (
@@ -3632,10 +3680,15 @@ function TaskModal({t,logs,saveLog,rmTask,rmRun,dupRun,resliceRun,resliceRunCatc
               <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
                 <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
             </div>
+            {L.reason==="Other" && <div className="logrow">
+              <label style={{flex:1}}>What happened? <em className="dim2" style={{fontWeight:400}}>(optional — saved with the log)</em>
+                <input type="text" value={L.comment} maxLength={160} placeholder="e.g. hit rock at STA 12+40, waited on locates…"
+                  onChange={e=>L.setComment(e.target.value)}/></label>
+            </div>}
             <RunChipsUI rf={rf} fix={fix} setFix={setFix}/>
             <div className="btnrow">
               <button className="cta" onClick={doSave}>{runFixLabel(rf,fix,"Save")}</button>
-              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>Save as in-progress</button>
+              <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason,L.comment); close();}}>Save as in-progress</button>
               <button className="ghost" onClick={()=>{saveLog(t.id,t.qty,L.planMH(),true,""); close();}}>Log as planned ✓</button>
               <span className="sp"/>
               <button className="ghost" onClick={()=>dupRun(t)} title="Clone this run to the working days right after it — drag to reposition">⧉ Duplicate</button>
@@ -4348,7 +4401,7 @@ function EOSModal({wk,day:d0,crews,weekTasks,logs,taskCalc,saveLog,eosMeta,setEo
         L.push(`Planned Production: ${fmtN(t.qty)} ${cc.it[CI.UM]}`);
         L.push(`Actual Production: ${lg?fmtN(cc.actQty):"0"} ${cc.it[CI.UM]}`);
         L.push(`% of Plan: ${lg&&t.qty?Math.round(cc.actQty/t.qty*100):0}%`);
-        if(lg && lg.reason && lg.reason!=="On plan" && cc.actQty < t.qty) L.push(`Delay: ${lg.reason}`);
+        if(lg && lg.reason && lg.reason!=="On plan" && cc.actQty < t.qty) L.push(`Delay: ${lg.reason}${lg.comment?" — "+lg.comment:""}`);
       });
       L.push("Description:");
       L.push(crewDesc(c.id, autoDesc(c.name, ts, logs, taskCalc, false)));
@@ -5835,6 +5888,69 @@ function SplitEditorModal({invAlloc,k,onSave,close}){
     </Modal>
   );
 }
+/* Production history — the durable actual-vs-plan record with a date-range export.
+   Every logged day-card keeps its as-planned qty (locked cards are never re-sliced), so
+   planned vs actual per day survives every extend/prorate; run-length changes (extended /
+   prorated / closed early) live in the synced prodEvents ledger with reason + comment. */
+function ProdHistoryModal({tasks,logs,crews,taskCalc,prodEvents,wk,close}){
+  const R=useDateRange(wk); const {lo,hi,rangeLbl}=R;
+  const [msg,setMsg]=useState("");
+  const crewName=id=>{ const c=crews.find(x=>x.id===id); return c?c.n:(id||""); };
+  const dayPos=useMemo(()=>{ const by={}; tasks.forEach(t=>{ (by[runKey(t)]||(by[runKey(t)]=[])).push(t); });
+    const m={}; Object.values(by).forEach(a=>{ a.sort((x,y)=>wdi(x.wk,x.day)-wdi(y.wk,y.day)); a.forEach((t,i)=>{ m[t.id]=(i+1)+"/"+a.length; }); }); return m; },[tasks]);
+  const rows=useMemo(()=>tasks
+    .filter(t=>{ const d=addDays(t.wk,t.day); return d>=lo&&d<=hi; })
+    .map(t=>{ const c=taskCalc(t), lg=logs[t.id];
+      return { date:addDays(t.wk,t.day), crew:crewName(t.res), cc:c.it[CI.CC], task:c.it[CI.TASK], loc:t.loc||"",
+        day:dayPos[t.id]||"1/1", plan:Math.round((+t.qty||0)*100)/100, act:lg?c.actQty:"", um:c.it[CI.UM],
+        pct:lg&&t.qty?Math.round(c.actQty/t.qty*100):"", planMH:Math.round(c.planMH*10)/10, actMH:lg?c.actMH:"",
+        reason:(lg&&lg.reason)||"", comment:(lg&&lg.comment)||"" }; })
+    .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:(a.crew<b.crew?-1:1)),[tasks,logs,lo,hi,dayPos]);
+  const evs=useMemo(()=>(prodEvents||[]).filter(e=>e.date>=lo&&e.date<=hi)
+    .slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:(a.at||0)-(b.at||0)),[prodEvents,lo,hi]);
+  const ACT={addday:"Extended", prorate:"Prorated", close:"Closed early", closepull:"Closed early + pulled successors"};
+  const DCOLS=["Date","Crew","Cost code","Task","Location","Run day","Planned qty","Actual qty","UM","% of plan","Planned MH","Actual MH","Reason","Comment"];
+  const dRow=r=>({"Date":r.date,"Crew":r.crew,"Cost code":r.cc,"Task":r.task,"Location":r.loc,"Run day":r.day,"Planned qty":r.plan,"Actual qty":r.act,"UM":r.um,"% of plan":r.pct,"Planned MH":r.planMH,"Actual MH":r.actMH,"Reason":r.reason,"Comment":r.comment});
+  const ECOLS=["Date","Crew","Task","Action","Run days","Day plan","Day actual","Remaining pushed","UM","Reason","Comment"];
+  const eRow=e=>({"Date":e.date,"Crew":crewName(e.res),"Task":e.task,"Action":ACT[e.act]||e.act,"Run days":e.days,"Day plan":e.plan,"Day actual":e.qty,"Remaining pushed":e.rem,"UM":e.um||"","Reason":e.reason,"Comment":e.comment});
+  const fname="RNGD_Production_"+lo+"_"+hi;
+  const dl=(name,mime,content)=>{ const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([content],{type:mime})); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); };
+  const doCsv=()=>{ const parts=[dpwToCsv(rows.map(dRow),DCOLS)];
+    if(evs.length) parts.push("", "RUN CHANGES (extended / prorated / closed early)", dpwToCsv(evs.map(eRow),ECOLS));
+    dl(fname+".csv","text/csv",parts.join("\n")); setMsg("CSV downloaded — opens straight into Excel."); };
+  const doXlsx=async()=>{ try{ const XLSX=await ensureXLSX(); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.map(dRow),{header:DCOLS}), "Daily");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(evs.length?evs.map(eRow):[{"Note":"no run changes in this range"}]), "Run changes");
+      XLSX.writeFile(wb, fname+".xlsx"); setMsg("Excel workbook downloaded.");
+    }catch(e){ setMsg("Excel export failed ("+e.message+") — CSV always works."); } };
+  const shown=rows.slice(0,60);
+  return (
+    <Modal close={close} w={720}>
+      <h3>Production history — actual vs plan</h3>
+      <p className="dim2">Every logged day keeps the qty it was <b>planned</b> at next to what actually went in — extensions and prorates never rewrite history. Run-length changes are recorded below with their reasons and comments. Pick a range, then export for Excel.</p>
+      <RangeBar R={R}/>
+      <div className="loghdr">{rows.length} day row{rows.length!==1?"s":""} · {evs.length} run change{evs.length!==1?"s":""} — {rangeLbl}</div>
+      <div style={{maxHeight:300,overflow:"auto",marginTop:6}}>
+        <table className="dt list"><thead><tr><th>Date</th><th>Crew</th><th>Task</th><th className="r">Plan</th><th className="r">Actual</th><th className="r">%</th><th>Reason</th></tr></thead>
+        <tbody>{shown.map((r,i)=><tr key={i}><td>{r.date.slice(5)}</td><td>{r.crew}</td><td>{r.task}{r.day!=="1/1"?" · d"+r.day:""}</td><td className="r">{fmtN(r.plan)} {r.um}</td><td className="r">{r.act===""?"—":fmtN(r.act)}</td><td className="r">{r.pct===""?"—":r.pct+"%"}</td><td>{r.reason}{r.comment?" — "+r.comment:""}</td></tr>)}</tbody></table>
+        {rows.length>shown.length && <p className="dim2">…{rows.length-shown.length} more day rows are in the export.</p>}
+      </div>
+      {evs.length>0 && <>
+        <div className="loghdr">Run changes — projected vs actual duration</div>
+        <table className="dt list"><tbody>{evs.map(e=><tr key={e.id}><td>{e.date.slice(5)}</td><td>{crewName(e.res)}</td><td>{e.task}</td>
+          <td>{ACT[e.act]||e.act}{e.rem?` — ${fmtN(e.rem)} ${e.um||""} pushed`:""}</td>
+          <td>{e.reason}{e.comment?" — "+e.comment:""}</td></tr>)}</tbody></table>
+      </>}
+      {msg && <p className="dim2" style={{marginTop:8}}>{msg}</p>}
+      <div className="btnrow">
+        <button className="cta" onClick={doCsv}>Export CSV</button>
+        <button className="btn" onClick={doXlsx}>Export Excel</button>
+        <span className="sp"/>
+        <button className="ghost" onClick={close}>Done</button>
+      </div>
+    </Modal>
+  );
+}
 function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
@@ -6935,6 +7051,7 @@ function CommandPalette({setTab,setModal,crews,setPalette,takeSnapshot,setReflow
     {label:"Truck report — order & cost",hint:"action",run:()=>setModal({type:"truckreport"})},
     {label:"Truck setup — sources & assumptions",hint:"action",run:()=>setModal({type:"trucking"})},
     {label:"Data — import / export / backups",hint:"action",run:()=>setModal({type:"data"})},
+    {label:"Production history — actual vs plan export",hint:"report",run:()=>setModal({type:"prodhist"})},
     {label:"Help & shortcuts",hint:"action",run:()=>setModal({type:"help"})},
     {label:"Take plan snapshot",hint:"action",run:()=>{takeSnapshot(); setTab("board");}},
     {label:"Weekly rhythm",hint:"action",run:()=>setModal({type:"rhythm"})},
@@ -6993,6 +7110,7 @@ function useLogEntry(t, it, lg){
   const [qty,setQtyRaw]=useState(lg.qty!=null?String(lg.qty):"");
   const [mh,setMhRaw]=useState(lg.mh!=null?String(lg.mh):"");
   const [reason,setReason]=useState(lg.reason||"");
+  const [comment,setComment]=useState(lg.comment||"");   // free-text "why" — shown when reason is "Other"
   const [mhAuto,setMhAuto]=useState(lg.mh==null);   // auto until the user touches MH (or a log already has one)
   const setQty = v => { setQtyRaw(v); if(mhAuto){ const q=+v; setMhRaw(q>0&&mhU>0?String(r1(q*mhU)):""); } };
   const setMh  = v => { setMhRaw(v); setMhAuto(false); };
@@ -7002,9 +7120,9 @@ function useLogEntry(t, it, lg){
   const applyReached = raw => { const R=parseSTA(raw); if(R==null||dayStart==null) return; setQty(String(r2(rho*Math.abs(R-dayStart)))); };
   const fillPlan = () => { setQtyRaw(String(t.qty)); setMhRaw(String(r1(t.qty*mhU))); setMhAuto(false); };
   const short = qty!=="" && +qty < (+t.qty||0)-1e-9;   // logged less than planned → prompt a reason
-  return { qty, mh, reason, setReason, short, setQty, setMh, staTask, endSta:t.sta?t.sta[1]:null, applyReached, fillPlan, planMH:()=>r1(t.qty*mhU) };
+  return { qty, mh, reason, setReason, comment, setComment, short, setQty, setMh, staTask, endSta:t.sta?t.sta[1]:null, applyReached, fillPlan, planMH:()=>r1(t.qty*mhU) };
 }
-function QuickLogModal({t,c,lg,saveLog,tasks,logs,deps,crews,resliceRun,pullRunSuccessors,openFull,close}){
+function QuickLogModal({t,c,lg,saveLog,tasks,logs,deps,crews,resliceRun,pullRunSuccessors,addProdEvent,openFull,close}){
   const it=c.it;
   const L=useLogEntry(t,it,lg);
   const [reached,setReached]=useState("");
@@ -7034,11 +7152,16 @@ function QuickLogModal({t,c,lg,saveLog,tasks,logs,deps,crews,resliceRun,pullRunS
         <label className={"logreason"+(L.short?" flag":"")}>{L.short?"Reason short ⚠":"Reason (if delayed)"}
           <select value={L.reason} onChange={e=>L.setReason(e.target.value)}><option value="">—</option>{REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
       </div>
+      {L.reason==="Other" && <div className="logrow">
+        <label style={{flex:1}}>What happened? <em className="dim2" style={{fontWeight:400}}>(optional)</em>
+          <input type="text" value={L.comment} maxLength={160} placeholder="e.g. hit rock, waited on locates…"
+            onChange={e=>L.setComment(e.target.value)}/></label>
+      </div>}
       <RunChipsUI rf={rf} fix={fix} setFix={setFix}/>
       <button className="qlfill" onClick={()=>{ saveLog(t.id, t.qty, L.planMH(), true, ""); close(); }}>Log as planned ✓</button>
       <div className="btnrow">
-        <button className="cta big" onClick={()=>{ saveLog(t.id,L.qty,L.mh,true,L.reason); applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors}); close(); }}>{runFixLabel(rf,fix,"Save — done ✓")}</button>
-        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason); close();}}>In-progress</button>
+        <button className="cta big" onClick={()=>{ saveLog(t.id,L.qty,L.mh,true,L.reason,L.comment); applyRunFix(t, rf, fix, L.qty, {resliceRun, pullRunSuccessors, addProdEvent}, {reason:L.reason, comment:L.comment}); close(); }}>{runFixLabel(rf,fix,"Save — done ✓")}</button>
+        <button className="ghost" onClick={()=>{saveLog(t.id,L.qty,L.mh,false,L.reason,L.comment); close();}}>In-progress</button>
       </div>
       <button className="qlmore" onClick={openFull}>Full details &amp; cost →</button>
     </Modal>
