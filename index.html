@@ -3045,16 +3045,86 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
 /* Weekly-rhythm banner — loss-framed nudge when the board has gone stale (a shared
    board that no one has touched in 3+ days is drifting from the field), else a calm
    strip showing the SOP touchpoints. lastUpdated is the shared last-edit timestamp. */
-/* 7-day forecast at the project site (Open-Meteo — free, no key), shared by any component
-   that wants per-day weather. Returns Open-Meteo's raw `daily` block (or null while
-   loading / offline / coords unset) — index-aligned arrays keyed by .time (ISO dates). */
+/* Map an NWS shortForecast phrase to a WMO-ish weathercode so the shared wxIcon() works
+   unchanged (NWS gives text + an icon URL, not WMO codes). */
+function nwsWmo(txt){
+  const s=(txt||"").toLowerCase();
+  if(/thunder|t-?storm|tstm/.test(s)) return 95;          // ⛈
+  if(/snow|sleet|flurr|winter|ice|wintry/.test(s)) return 73; // ❄
+  if(/rain|shower|drizzle/.test(s)) return 63;            // 🌦
+  if(/fog|haze|mist|smoke/.test(s)) return 45;            // 🌫
+  if(/cloud|overcast/.test(s)) return 3;                  // ⛅ (wxIcon groups 1–44)
+  if(/sun|clear/.test(s)) return 0;                       // ☀
+  return 2;
+}
+/* Fold NWS 12-hour day/night periods (/gridpoints/.../forecast) into a per-ISO-date summary:
+   daytime high + nighttime low + the day's MAX precip probability + a code from the daytime
+   text. NWS assigns a night period the same calendar date as its preceding day. */
+function nwsDaily(periods){
+  const by={};
+  (periods||[]).forEach(p=>{
+    const d=(p.startTime||"").slice(0,10); if(!d) return;
+    const o=by[d]||(by[d]={});
+    const pop=p.probabilityOfPrecipitation && p.probabilityOfPrecipitation.value;
+    if(pop!=null) o.rain=Math.max(o.rain==null?0:o.rain, Math.round(pop));
+    if(p.isDaytime){ o.tmax=p.temperature; o.code=nwsWmo(p.shortForecast); }
+    else { o.tmin=p.temperature; if(o.code==null) o.code=nwsWmo(p.shortForecast); }
+  });
+  return by;
+}
+/* Per-field merge: NWS overrides the near-term (~7 days) of Open-Meteo's 16-day axis, each
+   field falling back to Open-Meteo when NWS lacks it (e.g. today's high after an evening fetch).
+   Same shape all consumers already read (time / temperature_2m_max|min / precipitation_probability_max /
+   weathercode). `src` marks which source each day came from (for the UI note only). */
+function mergeWx(om, nws){
+  const t=om.time, pick=(d,f,fb)=>(nws[d]&&nws[d][f]!=null)?nws[d][f]:fb;
+  return { time:t,
+    temperature_2m_max: t.map((d,i)=>pick(d,"tmax",om.temperature_2m_max[i])),
+    temperature_2m_min: t.map((d,i)=>pick(d,"tmin",om.temperature_2m_min[i])),
+    precipitation_probability_max: t.map((d,i)=>pick(d,"rain",om.precipitation_probability_max[i])),
+    weathercode: t.map((d,i)=>pick(d,"code", om.weathercode?om.weathercode[i]:null)),
+    src: t.map(d=>nws[d]?"nws":"om") };
+}
+function fromNws(by){
+  const time=Object.keys(by).sort();
+  // Backfill a missing high/low from the other (a night-only "today" after an evening fetch, or
+  // a day-only tail date, carries just one period) so the temp readout never renders "NaN°" on
+  // this NWS-only path. The normal merge path fills gaps from Open-Meteo instead.
+  return { time,
+    temperature_2m_max: time.map(d=>by[d].tmax!=null?by[d].tmax:by[d].tmin),
+    temperature_2m_min: time.map(d=>by[d].tmin!=null?by[d].tmin:by[d].tmax),
+    precipitation_probability_max: time.map(d=>by[d].rain==null?null:by[d].rain),
+    weathercode: time.map(d=>by[d].code),
+    src: time.map(()=>"nws") };
+}
+/* Per-day forecast, shared by any component that wants weather. US near-term comes from the
+   National Weather Service (api.weather.gov) — its human-tuned probability of precipitation
+   matches the NWS-derived apps crews check on their phones; Open-Meteo's model PoP under-reports
+   Gulf-Coast pop-up-thunderstorm days by roughly half. Open-Meteo (free, no key, global, 16-day)
+   supplies the long-range tail and is the sole source outside the US or if NWS is unreachable.
+   Progressive: Open-Meteo paints first (~0.5s), NWS upgrades it (~2s) — a slow gov endpoint can
+   never delay or blank the board. Returns the Open-Meteo `daily` shape (or null while loading). */
 function useForecast(site){
   const [wx,setWx]=useState(null);
   useEffect(()=>{ let dead=false; setWx(null);
     if(!site||site.lat==null) return;
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=16`;
-    fetch(url).then(r=>r.json()).then(j=>{ if(!dead && j&&j.daily&&j.daily.time) setWx(j.daily); }).catch(()=>{});
-    return ()=>{dead=true;};
+    let om=null, nws=null;
+    const apply=()=>{ if(dead) return;
+      if(om && nws) setWx(mergeWx(om,nws));
+      else if(om) setWx(om);
+      else if(nws) setWx(fromNws(nws)); };
+    const omUrl=`https://api.open-meteo.com/v1/forecast?latitude=${site.lat}&longitude=${site.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=16`;
+    fetch(omUrl).then(r=>r.json()).then(j=>{ if(j&&j.daily&&j.daily.time){ om=j.daily; apply(); } }).catch(()=>{});
+    // NWS: /points → the location's gridpoint /forecast. Hard 8s timeout so a hung/oversea
+    // (404) request only ever leaves Open-Meteo standing — it never delays the board.
+    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),8000);
+    fetch(`https://api.weather.gov/points/${(+site.lat).toFixed(4)},${(+site.lng).toFixed(4)}`,{signal:ctrl.signal})
+      .then(r=>r.ok?r.json():Promise.reject())
+      .then(j=>(j&&j.properties&&j.properties.forecast)?fetch(j.properties.forecast,{signal:ctrl.signal}):Promise.reject())
+      .then(r=>r.ok?r.json():Promise.reject())
+      .then(j=>{ clearTimeout(to); if(!dead && j&&j.properties&&j.properties.periods){ nws=nwsDaily(j.properties.periods); apply(); } })
+      .catch(()=>clearTimeout(to));
+    return ()=>{dead=true; clearTimeout(to); try{ctrl.abort();}catch(e){}};
   },[site&&site.lat, site&&site.lng]);
   return wx;
 }
@@ -4301,6 +4371,7 @@ function WeatherLocModal({cfg,setCfg,close}){
     <Modal close={close} w={520}>
       <h3>🌦 Weather forecast location</h3>
       <div className="ovnote">The board's day-by-day forecast (and the rain/lightning storm days) is pulled for this spot. Currently using <b>{cur.name||"job site"}</b> <span className="dim2">({(+cur.lat).toFixed(3)}, {(+cur.lng).toFixed(3)}{usingOverride?"":" · job-site pin"})</span>.</div>
+      <div className="ovnote dim2" style={{fontSize:12}}>Near-term rain % comes from the <b>National Weather Service</b> (same basis as the apps crews check on their phones); the long-range tail beyond ~7 days, and anywhere outside the U.S., falls back to Open-Meteo.</div>
       <div className="logrow" style={{marginTop:10}}>
         <label style={{flex:1}}>Search a place<input type="text" autoFocus placeholder="City, ZIP, or place name (e.g. New Orleans, LA)" value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}}/></label>
         <button className="cta" disabled={busy||!q.trim()} onClick={search}>{busy?"…":"Search"}</button>
