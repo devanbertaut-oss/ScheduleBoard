@@ -2451,13 +2451,16 @@ function LookAhead(){
     return {tmax:wx.temperature_2m_max[i], tmin:wx.temperature_2m_min[i], rain:wx.precipitation_probability_max[i], code:wx.weathercode&&wx.weathercode[i]}; };
   // Which visible columns are storming (rain ≥ 40%) — drives the canvas StormLayer's rebuild.
   const stormSig = useMemo(()=> spanWeeks.map(w=>[0,1,2,3,4].map(i=>{ const f=wxForDate(addDays(w,i)); return (f && f.rain!=null && f.rain>=40)?"1":"0"; }).join("")).join("|"), [spanWeeks, wx]);
-  // Rain-out nudge: the nearest upcoming working day with ≥60% rain AND scheduled work that hasn't
-  // already been rained out — connects the forecast to the rain-out tool instead of just tinting a header.
+  // Rain-out nudge: the nearest upcoming working day with a rain likelihood high enough to suggest
+  // pushing the schedule, AND scheduled work that hasn't already been rained out. Bar is ≥70% —
+  // "rain likely" on the NWS scale. (The old ≥60% was tuned to Open-Meteo's under-reported numbers;
+  // now that the daytime PoP reads true, 60% recurs on ordinary humid Gulf days, so the schedule-push
+  // suggestion is held to a genuine likely-washout. Days at 40–69% still show the storm tint.)
   const rainRisk = useMemo(()=>{
     const today = new Date().toISOString().slice(0,10);
     for(const w of spanWeeks) for(let d=0; d<5; d++){
       const date=addDays(w,d); if(date<today || rainDays[date]) continue;
-      const f=wxForDate(date); if(!(f && f.rain!=null && f.rain>=60)) continue;
+      const f=wxForDate(date); if(!(f && f.rain!=null && f.rain>=70)) continue;
       const n=tasks.filter(t=>t.wk===w && t.day===d).length;
       if(n>0) return {date, day:d, rain:f.rain, n};
     }
@@ -3050,7 +3053,7 @@ function MobileBoard({crewsOnly,subsOnly,siteRows,weekTasks,notes,setNotes,wk,ta
 function nwsWmo(txt){
   const s=(txt||"").toLowerCase();
   if(/thunder|t-?storm|tstm/.test(s)) return 95;          // ⛈
-  if(/snow|sleet|flurr|winter|ice|wintry/.test(s)) return 73; // ❄
+  if(/snow|sleet|flurr|winter|ice|wintry|freez/.test(s)) return 73; // ❄ (incl. freezing rain/drizzle)
   if(/rain|shower|drizzle/.test(s)) return 63;            // 🌦
   if(/fog|haze|mist|smoke/.test(s)) return 45;            // 🌫
   if(/cloud|overcast/.test(s)) return 3;                  // ⛅ (wxIcon groups 1–44)
@@ -3058,17 +3061,19 @@ function nwsWmo(txt){
   return 2;
 }
 /* Fold NWS 12-hour day/night periods (/gridpoints/.../forecast) into a per-ISO-date summary:
-   daytime high + nighttime low + the day's MAX precip probability + a code from the daytime
-   text. NWS assigns a night period the same calendar date as its preceding day. */
+   daytime high + nighttime low + the DAYTIME precip probability (the number that matters for a
+   crew working ~6a–6p — a 60% *overnight* storm must not tint the day or fire the rain-out
+   nudge), with the icon from that same daytime period so they agree. A date that only has a
+   night period (today, fetched after 6pm) falls back to the night PoP. NWS labels a night
+   period with its preceding day's date. */
 function nwsDaily(periods){
   const by={};
   (periods||[]).forEach(p=>{
     const d=(p.startTime||"").slice(0,10); if(!d) return;
     const o=by[d]||(by[d]={});
     const pop=p.probabilityOfPrecipitation && p.probabilityOfPrecipitation.value;
-    if(pop!=null) o.rain=Math.max(o.rain==null?0:o.rain, Math.round(pop));
-    if(p.isDaytime){ o.tmax=p.temperature; o.code=nwsWmo(p.shortForecast); }
-    else { o.tmin=p.temperature; if(o.code==null) o.code=nwsWmo(p.shortForecast); }
+    if(p.isDaytime){ o.tmax=p.temperature; o.code=nwsWmo(p.shortForecast); if(pop!=null) o.rain=Math.round(pop); }
+    else { o.tmin=p.temperature; if(o.code==null) o.code=nwsWmo(p.shortForecast); if(pop!=null && o.rain==null) o.rain=Math.round(pop); }
   });
   return by;
 }
@@ -4371,7 +4376,7 @@ function WeatherLocModal({cfg,setCfg,close}){
     <Modal close={close} w={520}>
       <h3>🌦 Weather forecast location</h3>
       <div className="ovnote">The board's day-by-day forecast (and the rain/lightning storm days) is pulled for this spot. Currently using <b>{cur.name||"job site"}</b> <span className="dim2">({(+cur.lat).toFixed(3)}, {(+cur.lng).toFixed(3)}{usingOverride?"":" · job-site pin"})</span>.</div>
-      <div className="ovnote dim2" style={{fontSize:12}}>Near-term rain % comes from the <b>National Weather Service</b> (same basis as the apps crews check on their phones); the long-range tail beyond ~7 days, and anywhere outside the U.S., falls back to Open-Meteo.</div>
+      <div className="ovnote dim2" style={{fontSize:12}}>Near-term rain % uses the <b>National Weather Service</b> when it's reachable (the basis for the apps crews check on their phones) — the daytime chance, so an overnight storm doesn't flag a work day. It falls back to Open-Meteo for the long-range tail beyond ~7 days, anywhere outside the U.S., or if the NWS feed is down.</div>
       <div className="logrow" style={{marginTop:10}}>
         <label style={{flex:1}}>Search a place<input type="text" autoFocus placeholder="City, ZIP, or place name (e.g. New Orleans, LA)" value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}}/></label>
         <button className="cta" disabled={busy||!q.trim()} onClick={search}>{busy?"…":"Search"}</button>

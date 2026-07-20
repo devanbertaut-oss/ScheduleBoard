@@ -4,7 +4,7 @@
    - Cross-origin runtime deps (unpkg React/ReactDOM/Babel, Google Fonts) are
      cached stale-while-revalidate on first successful online load, so the app
      fully boots offline afterwards. */
-const VERSION = "rngd-v72";
+const VERSION = "rngd-v73";
 const SHELL = VERSION + "-shell";
 const RUNTIME = VERSION + "-runtime";
 const SHELL_ASSETS = [
@@ -39,6 +39,20 @@ self.addEventListener("fetch", e => {
   const url = new URL(req.url);
   // Sync endpoint: never cache, and never let the index.html fallback answer it.
   if (url.pathname.startsWith("/api/")) return;
+
+  // Weather APIs (NWS + Open-Meteo): network-FIRST so a reload always shows today's forecast,
+  // falling back to the last cached forecast only when offline. Plain stale-while-revalidate
+  // would pin the previous load's numbers until a second reload — bad for a same-day rain call.
+  if (url.hostname === "api.weather.gov" || url.hostname.endsWith("open-meteo.com")) {
+    e.respondWith(
+      caches.open(RUNTIME).then(cache =>
+        fetch(req).then(res => { if (res && res.ok) cache.put(req, res.clone()); return res; })
+                  .catch(() => cache.match(req))
+      )
+    );
+    return;
+  }
+
   const sameOrigin = url.origin === self.location.origin;
 
   // App shell / navigations: cache-first, fall back to network, then cached index.
