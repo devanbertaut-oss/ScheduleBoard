@@ -6109,7 +6109,7 @@ function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,fullBackup,restoreBoard,
       {msg && <p className="dim2" style={{marginTop:8}}>{msg}</p>}
 
       <div className="loghdr">Full backup — everything <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(schedule cards, logs, notes, links, CTC, settings + imported source docs)</em></div>
-      <p className="dim2">The board lives in this browser + the shared cloud sync. If you ever lose the cloud copy — <b>switching Netlify accounts, or a browser wipe</b> — this one file rebuilds the whole thing. It saves <b>every schedule card and global edit to date, plus your imported CTC/progress/invoice tables</b>. Keep a copy off-device (email it to yourself, drop it in Drive). Restoring replaces the whole board; the pre-restore state is kept under Backups below.</p>
+      <p className="dim2">The board lives in this browser + the shared cloud sync. If you ever lose the cloud copy — <b>switching Netlify accounts, or a browser wipe</b> — <b>Export</b> gives you one file with the whole thing (every schedule card and global edit to date, plus your imported CTC/progress/invoice tables), and <b>Import</b> rebuilds it. Keep a copy off-device (email it to yourself, drop it in Drive). Import replaces the whole board; the pre-restore state is kept under Backups below.</p>
       <div className="btnrow">
         <button className="btn cta" onClick={()=>{
           const blob=new Blob([fullBackup()],{type:"application/json"});
@@ -6117,16 +6117,21 @@ function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,fullBackup,restoreBoard,
           document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
           setMsg("Full backup downloaded — everything to date. Keep it somewhere off this device (email, Drive) before switching hosting.");
         }}>⬇ Export full backup (.json)</button>
-        <label className="btn" style={{cursor:"pointer"}}>Restore from file<input type="file" accept=".json" style={{display:"none"}} onChange={async e=>{
+        <label className="btn cta" style={{cursor:"pointer"}}>⬆ Import backup (.json)<input type="file" accept=".json" style={{display:"none"}} onChange={async e=>{
           const f=e.target.files&&e.target.files[0]; if(!f) return;
           try{ const parsed=JSON.parse(await f.text());
-            if(window.confirm("Replace the ENTIRE board with \""+f.name+"\"? The current state is saved under Backups first.")){
-              if(restoreBoard(parsed)) close();
+            // Informed confirm: read the file's counts block (a full backup carries one) so you
+            // can see exactly what you're about to restore before it replaces the board.
+            const c=parsed&&parsed.counts, when=(parsed&&parsed.exportedAt||"").slice(0,10);
+            const summary = c ? `\n\nThat file holds: ${c.tasks} schedule cards · ${c.crews} crews · ${c.logsLogged} logged days · ${c.ctcCodes} CTC codes${c.sourceDocTables?` · ${c.sourceDocTables} source table${c.sourceDocTables>1?"s":""}`:""}${when?`\nExported ${when}`:""}.` : "";
+            if(window.confirm(`Import "${f.name}" and REPLACE the entire board?${summary}\n\nYour current board is saved under Backups first, so this is reversible. It then syncs up to the cloud for every device.`)){
+              if(restoreBoard(parsed)){ setMsg("Imported — the board now matches that file, and it's syncing to the cloud for every device."); close(); }
             }
-          }catch(err){ setMsg("Restore failed: "+err.message); }
+          }catch(err){ setMsg("Import failed — is this a board backup .json? ("+err.message+")"); }
           e.target.value="";
         }}/></label>
       </div>
+      <p className="dim2" style={{fontSize:12,marginTop:4}}><b>Moving to a new Netlify account?</b> Deploy the app there, open it once yourself first (so the fresh cloud starts from your device), then <b>Import</b> your backup — it becomes the shared board every crew device syncs to. Have crews reopen the new URL after that.</p>
       {(()=>{ const bks=listBackups();
         const label=d=> d==="prerestore" ? "Before last restore"
           : d.startsWith("unsynced-") ? "Unsent changes · "+new Date(+d.slice(9)).toLocaleString([], {month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"})
