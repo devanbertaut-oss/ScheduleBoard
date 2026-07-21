@@ -2113,12 +2113,29 @@ function LookAhead(){
   // saved first so a bad restore is itself reversible.
   const boardSnapshot = () => JSON.stringify({version:"board-v1", exportedAt:new Date().toISOString(),
     state:{crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents,lastUpdated}}, null, 1);
+  // COMPLETE off-device backup — for a total loss or a hosting move (a new Netlify account starts
+  // with an empty shared cloud copy). Everything restoreBoard needs: the full synced board state
+  // PLUS the device-local imported source tables (`docs` — CTC/progress/invoice spreadsheets),
+  // which boardSnapshot and the rolling in-app backups omit to fit the sync size limit. A
+  // self-describing `counts` block lets you eyeball that the file really has your data.
+  const fullBackup = () => JSON.stringify({
+    version:"board-full-v1", app:"RNGD Look-Ahead", job:"DPW547 / Job 2124013",
+    exportedAt:new Date().toISOString(),
+    counts:{ tasks:tasks.length, crews:crews.length, logsLogged:Object.keys(logs).length,
+      notes:notes.length, links:Object.keys(deps).length, milestones:milestones.length,
+      templates:(templates||[]).length, runChanges:(prodEvents||[]).length,
+      ctcCodes:Object.keys(ctc||{}).length,
+      sourceDocTables: docs ? Object.keys(docs).filter(k=>k!=="v"&&k!=="memOnly").length : 0 },
+    state:{crews,siteRows,tasks,logs,notes,cfg,eosMeta,umOverrides,showEquip,ctc,baseline,milestones,deps,rainDays,holidays,reflowOn,cardStyle,truckDay,savings,templates,progress,invAlloc,prodEvents,lastUpdated},
+    docs: docs || null
+  }, null, 1);
   const restoreBoard = (obj) => {
     const s = obj && obj.state ? obj.state : obj;
     if(!s || !Array.isArray(s.tasks) || !Array.isArray(s.crews)){ flash("Not a board backup file"); return false; }
     try{ if(_LS) localStorage.setItem("lafable-bk-prerestore", boardSnapshot()); }catch(e){}
     pushUndo("Restored board");
     applyState(s);
+    if(obj && obj.docs && typeof obj.docs==="object") setDocs(obj.docs);  // a full backup also carried the imported source tables — bring them back
     flash("Board restored — the pre-restore state is saved under Backups");
     return true;
   };
@@ -2676,7 +2693,7 @@ function LookAhead(){
       {modal?.type==="qlog"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <QuickLogModal t={t} c={taskCalc(t)} lg={logs[t.id]||{}} saveLog={saveLog} tasks={tasks} logs={logs} deps={deps} crews={crews} resliceRun={resliceRun} pullRunSuccessors={pullRunSuccessors} addProdEvent={addProdEvent} openFull={()=>setModal({type:"task",id:t.id})} close={()=>setModal(null)}/>; })()}
       {modal?.type==="move"    && (()=>{ const t=tasks.find(x=>x.id===modal.id); return t && <MoveSheet t={t} crews={crews} upTask={upTask} close={()=>setModal(null)}/>; })()}
       {modal?.type==="prodhist" && <ProdHistoryModal {...{tasks,logs,crews,taskCalc,prodEvents,wk,close:()=>setModal(null)}}/>}
-      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close:()=>setModal(null)}}/>}
+      {modal?.type==="data"    && <DataModal {...{cfg,setCfg,ctc,setCtc,boardSnapshot,fullBackup,restoreBoard,listBackups,getBackup,close:()=>setModal(null)}}/>}
       {modal?.type==="docsimport" && <DocsImportModal {...{kind:modal.kind||"ts",docs,setDocs,progress,setProgress,invAlloc,setInvAlloc,stateKB:Math.round(((syncRef.current.latestJson||"").length)/1024),close:()=>setModal(null)}}/>}
       {modal?.type==="drill"   && <DrillDownModal {...{docs,dOff:modal.dOff,code:modal.code,close:()=>setModal(null)}}/>}
       {modal?.type==="split"   && invAlloc && <SplitEditorModal {...{invAlloc,k:modal.k,onSave:(k,sug)=>setInvAlloc(Ax=>dpwApplyDecision(Ax,k,DPW_ST.OVERRIDDEN,sug,syncLS.device())),close:()=>setModal(null)}}/>}
@@ -6031,7 +6048,7 @@ function ProdHistoryModal({tasks,logs,crews,taskCalc,prodEvents,wk,close}){
     </Modal>
   );
 }
-function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups,getBackup,close}){
+function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,fullBackup,restoreBoard,listBackups,getBackup,close}){
   const F=(k,label,step=1)=><label>{label}<input type="number" step={step} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:+e.target.value||0}))}/></label>;
   const [msg,setMsg]=useState("");
   // Server snapshots: the cloud's own 7-slot weekday ring (frozen on the first save of
@@ -6091,15 +6108,15 @@ function DataModal({cfg,setCfg,ctc,setCtc,boardSnapshot,restoreBoard,listBackups
       </div>
       {msg && <p className="dim2" style={{marginTop:8}}>{msg}</p>}
 
-      <div className="loghdr">Full-board backup <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(the schedule itself — tasks, logs, notes, links, everything)</em></div>
-      <p className="dim2">The board lives in this browser + the shared sync. Keep a file copy off-device, and restore any of the last 7 days below. Restoring replaces the whole board (the pre-restore state is kept).</p>
+      <div className="loghdr">Full backup — everything <em className="dim2" style={{fontWeight:400,textTransform:"none"}}>(schedule cards, logs, notes, links, CTC, settings + imported source docs)</em></div>
+      <p className="dim2">The board lives in this browser + the shared cloud sync. If you ever lose the cloud copy — <b>switching Netlify accounts, or a browser wipe</b> — this one file rebuilds the whole thing. It saves <b>every schedule card and global edit to date, plus your imported CTC/progress/invoice tables</b>. Keep a copy off-device (email it to yourself, drop it in Drive). Restoring replaces the whole board; the pre-restore state is kept under Backups below.</p>
       <div className="btnrow">
-        <button className="btn" onClick={()=>{
-          const blob=new Blob([boardSnapshot()],{type:"application/json"});
-          const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="board_backup_"+new Date().toISOString().slice(0,10)+".json";
+        <button className="btn cta" onClick={()=>{
+          const blob=new Blob([fullBackup()],{type:"application/json"});
+          const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="RNGD_FullBackup_"+new Date().toISOString().slice(0,10)+".json";
           document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
-          setMsg("Board backup downloaded — keep it somewhere off this device.");
-        }}>Export board (.json)</button>
+          setMsg("Full backup downloaded — everything to date. Keep it somewhere off this device (email, Drive) before switching hosting.");
+        }}>⬇ Export full backup (.json)</button>
         <label className="btn" style={{cursor:"pointer"}}>Restore from file<input type="file" accept=".json" style={{display:"none"}} onChange={async e=>{
           const f=e.target.files&&e.target.files[0]; if(!f) return;
           try{ const parsed=JSON.parse(await f.text());
